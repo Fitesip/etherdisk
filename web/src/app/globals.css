@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/* Theme is chosen by the inline script in layout.tsx (data-theme on <html>). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f6f6f7;
+  --card: #ffffff;
+  --fg: #111113;
+  --muted: #6b6b76;
+  --border: #e4e4e8;
+  --accent: #4f46e5;
+  --accent-fg: #ffffff;
+  --accent-soft: #eef0ff;
+  --danger: #dc2626;
+  --success: #16a34a;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #0b0b0d;
+  --bg-subtle: #131316;
+  --card: #141417;
+  --fg: #ececf1;
+  --muted: #8e8e99;
+  --border: #26262c;
+  --accent: #818cf8;
+  --accent-fg: #0b0b0d;
+  --accent-soft: #1d1e33;
+  --danger: #f87171;
+  --success: #4ade80;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-card: var(--card);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}

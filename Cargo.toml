@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/vault-crypto", "crates/vault-crypto-wasm", "crates/vault-server"]
+
+# Argon2 is slow in debug builds; optimize dependencies even for `cargo test`.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = true
