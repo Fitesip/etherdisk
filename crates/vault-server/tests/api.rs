@@ -421,6 +421,57 @@ async fn folders_move_and_recursive_delete() {
     assert_eq!(app.get("/api/vaults/1", Some(t)).await.json()["used_bytes"], 0);
 }
 
+#[tokio::test]
+async fn folder_path_for_breadcrumbs() {
+    let app = app().await;
+    let alice = PrivateKeySigner::random();
+    app.chain.mint(1, alice.address(), 1);
+    app.chain.mint(2, alice.address(), 1);
+    let t = app.login(&alice).await;
+
+    let folder = |id: Uuid, parent: Option<Uuid>| json!({ "id": id, "parent_id": parent, "metadata": "AA==" });
+    let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    for (id, parent) in [(a, None), (b, Some(a)), (c, Some(b))] {
+        assert_eq!(app.json(Method::POST, "/api/vaults/1/folders", Some(&t), folder(id, parent)).await.status, StatusCode::CREATED);
+    }
+    let ids = |v: Value| v.as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    let r = app.get(&format!("/api/vaults/1/objects/{c}/path"), Some(&t)).await;
+    assert_eq!(ids(r.json()), [a, b, c].map(|u| u.to_string()));
+    assert_eq!(ids(app.get(&format!("/api/vaults/1/objects/{a}/path"), Some(&t)).await.json()), [a.to_string()]);
+    // Another vault of the same owner does not see it.
+    assert_eq!(app.get(&format!("/api/vaults/2/objects/{c}/path"), Some(&t)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.get(&format!("/api/vaults/1/objects/{}/path", Uuid::new_v4()), Some(&t)).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn vault_profile() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let t = app.login(&alice).await;
+
+    let v = app.get("/api/vaults/1", Some(&t)).await.json();
+    assert!(v["name"].is_null() && v["stroke"].is_null() && v["fill"].is_null());
+
+    let put = |body: Value| app.json(Method::PUT, "/api/vaults/1/profile", Some(&t), body);
+    let r = put(json!({ "name": "  Photos  ", "stroke": "#AABBCC", "fill": "#112233" })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!((r.json()["name"].clone(), r.json()["stroke"].clone()), (json!("Photos"), json!("#aabbcc")));
+    assert_eq!(app.get("/api/vaults", Some(&t)).await.json()[0]["fill"], "#112233");
+
+    assert_eq!(put(json!({ "name": "x".repeat(65) })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "name": "a
+b" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "fill": "red" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "fill": "#12345g" })).await.status, StatusCode::BAD_REQUEST);
+    // Null/blank resets to defaults.
+    let r = put(json!({ "name": " ", "stroke": null })).await.json();
+    assert!(r["name"].is_null() && r["stroke"].is_null() && r["fill"].is_null());
+
+    let tb = app.login(&bob).await;
+    assert_eq!(app.json(Method::PUT, "/api/vaults/1/profile", Some(&tb), json!({ "name": "mine" })).await.status, StatusCode::FORBIDDEN);
+}
+
 // ------------------------------------------------------------ shares & transfer
 
 #[tokio::test]

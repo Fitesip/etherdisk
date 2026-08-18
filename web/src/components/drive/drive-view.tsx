@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 
 import { useT } from "@/i18n";
 import { api, ApiError } from "@/lib/api";
+import { driveName, driveVars } from "@/lib/drive-style";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { RequireSession } from "../require-session";
@@ -33,10 +34,23 @@ function DriveGate({ token, tokenId }: { token: string; tokenId: string }) {
     return <Notice tone="danger">{msg}</Notice>;
   }
   const vault = info.data!;
-  if (unlocked) return <FileBrowser token={token} info={vault} unlocked={unlocked} />;
-  if (!vault.initialized) return <SetupForm token={token} tokenId={tokenId} />;
-  if (key.isLoading || !key.data) return key.error ? <Notice tone="danger">{t("errors.network")}</Notice> : <Spinner className="mx-auto mt-24" />;
-  return <UnlockForm token={token} tokenId={tokenId} keyBlob={key.data.key_blob} etag={key.data.etag} />;
+  const name = driveName(vault, t);
+  // The drive's colors recolor every accent inside it (buttons, progress, dialogs).
+  return (
+    <div style={driveVars(vault)}>
+      {unlocked ? (
+        <FileBrowser token={token} info={vault} unlocked={unlocked} />
+      ) : !vault.initialized ? (
+        <SetupForm token={token} tokenId={tokenId} name={name} />
+      ) : key.data ? (
+        <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+      ) : key.error ? (
+        <Notice tone="danger">{t("errors.network")}</Notice>
+      ) : (
+        <Spinner className="mx-auto mt-24" />
+      )}
+    </div>
+  );
 }
 
 export function DriveView() {

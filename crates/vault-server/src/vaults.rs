@@ -3,7 +3,7 @@
 use alloy::primitives::U256;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +17,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}", get(one))
         .route("/vaults/{token_id}/key", get(get_key).put(put_key))
         .route("/vaults/{token_id}/reset", post(reset))
+        .route("/vaults/{token_id}/profile", put(put_profile))
 }
 
 pub(crate) fn parse_token(s: &str) -> AppResult<U256> {
@@ -47,7 +48,20 @@ pub struct VaultInfo {
     used_bytes: u64,
     /// Whether a passphrase/key blob has been set up.
     initialized: bool,
+    #[serde(flatten)]
+    profile: Profile,
 }
+
+/// Owner-chosen name and colors. Plaintext, so the drive list can show them while locked.
+#[derive(Serialize, Deserialize, Default, sqlx::FromRow)]
+pub struct Profile {
+    name: Option<String>,
+    /// '#rrggbb'
+    stroke: Option<String>,
+    fill: Option<String>,
+}
+
+pub const MAX_NAME_CHARS: usize = 64;
 
 async fn info(st: &AppState, id: U256) -> AppResult<VaultInfo> {
     let token = id.to_string();
@@ -55,7 +69,13 @@ async fn info(st: &AppState, id: U256) -> AppResult<VaultInfo> {
         .bind(&token)
         .fetch_one(&st.db)
         .await?;
+    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill FROM vault_profiles WHERE token_id = ?")
+        .bind(&token)
+        .fetch_optional(&st.db)
+        .await?
+        .unwrap_or_default();
     Ok(VaultInfo {
+        profile,
         capacity_bytes: st.chain.capacity_bytes(id).await?,
         used_bytes: used_bytes(st, &token).await?,
         initialized,
@@ -74,6 +94,46 @@ async fn list(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<
 
 async fn one(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<VaultInfo>> {
     let (id, _) = owned(&st, &user, &token_id).await?;
+    Ok(Json(info(&st, id).await?))
+}
+
+fn clean_name(name: Option<String>) -> AppResult<Option<String>> {
+    let Some(name) = name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()) else { return Ok(None) };
+    if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err(AppError::bad(format!("name must be at most {MAX_NAME_CHARS} printable characters")));
+    }
+    Ok(Some(name))
+}
+
+fn clean_color(c: Option<String>) -> AppResult<Option<String>> {
+    match c {
+        None => Ok(None),
+        Some(c) if c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit()) => Ok(Some(c.to_ascii_lowercase())),
+        Some(_) => Err(AppError::bad("colors must be #rrggbb")),
+    }
+}
+
+/// Replaces the whole profile; `null` fields reset to defaults.
+async fn put_profile(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(token_id): Path<String>,
+    Json(req): Json<Profile>,
+) -> AppResult<Json<VaultInfo>> {
+    let (id, token) = owned(&st, &user, &token_id).await?;
+    let p = Profile { name: clean_name(req.name)?, stroke: clean_color(req.stroke)?, fill: clean_color(req.fill)? };
+    sqlx::query(
+        "INSERT INTO vault_profiles (token_id, name, stroke, fill, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET name = excluded.name, stroke = excluded.stroke,
+            fill = excluded.fill, updated_at = excluded.updated_at",
+    )
+    .bind(&token)
+    .bind(&p.name)
+    .bind(&p.stroke)
+    .bind(&p.fill)
+    .bind(now())
+    .execute(&st.db)
+    .await?;
     Ok(Json(info(&st, id).await?))
 }
 

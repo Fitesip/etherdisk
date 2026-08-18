@@ -47,6 +47,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}/objects/{id}", delete(remove))
         .route("/vaults/{token_id}/objects/{id}/metadata", put(set_metadata))
         .route("/vaults/{token_id}/objects/{id}/move", post(move_object))
+        .route("/vaults/{token_id}/objects/{id}/path", get(path))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -90,6 +91,26 @@ async fn list(
     .bind(parent)
     .fetch_all(&st.db)
     .await?;
+    Ok(Json(rows))
+}
+
+/// The object and its ancestors, root first (to rebuild breadcrumbs from a folder id in the URL).
+async fn path(State(st): State<AppState>, user: AuthUser, Path((token_id, id)): Path<(String, Uuid)>) -> AppResult<Json<Vec<Object>>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let rows = sqlx::query_as::<_, Object>(
+        "WITH RECURSIVE up(id, depth) AS (
+            SELECT id, 0 FROM objects WHERE id = ? AND token_id = ?
+            UNION ALL SELECT o.parent_id, up.depth + 1 FROM objects o JOIN up ON o.id = up.id WHERE o.parent_id IS NOT NULL
+         ) SELECT o.id, o.parent_id, o.kind, o.metadata, o.size, o.thumb_size, o.created_at, o.updated_at
+           FROM objects o JOIN up USING (id) ORDER BY up.depth DESC",
+    )
+    .bind(id.to_string())
+    .bind(&token)
+    .fetch_all(&st.db)
+    .await?;
+    if rows.is_empty() {
+        return Err(AppError::NotFound);
+    }
     Ok(Json(rows))
 }
 

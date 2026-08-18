@@ -5,5 +5,6 @@ export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "")
 export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || undefined;
 export const WC_PROJECT_ID = process.env.NEXT_PUBLIC_WC_PROJECT_ID || undefined;
 
-/** Passphrase policy (the crypto crate only rejects empty ones). */
-export const MIN_PASSPHRASE_LENGTH = 12;
+/** Passphrase policy for new passphrases (the crypto crate only rejects empty ones). */
+export const MIN_PASSPHRASE_LENGTH = 8;
+export const MAX_DRIVE_NAME = 64;

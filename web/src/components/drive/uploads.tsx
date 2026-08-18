@@ -1,19 +1,23 @@
 "use client";
 
-import { CheckCircle2, CircleAlert, Clock } from "lucide-react";
+import { CheckCircle2, CircleAlert, Clock, Folder } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useT, type Translate } from "@/i18n";
 import { ApiError } from "@/lib/api";
+import { entryLabel, type TreeEntry } from "@/lib/folder-upload";
 import { uploadFile } from "@/lib/upload";
 
 import { Button, Card, Progress } from "../ui";
-import type { DriveCtx } from "./dialogs";
+import { createFolder, type DriveCtx } from "./dialogs";
 
 interface UploadItem {
   key: string;
-  file: File;
+  /** Upload batch: folders of one picked/dropped tree are created once per batch. */
+  batch: string;
   parentId: string | null;
+  entry: TreeEntry;
+  label: string;
   progress: number;
   status: "queued" | "uploading" | "done" | "error";
   error?: string;
@@ -35,6 +39,8 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
   const queue = useRef<UploadItem[]>([]);
   const running = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  /** `${batch}/${path}` -> folder id, so each folder of a batch is created once. */
+  const folders = useRef(new Map<string, string>());
   // The pump outlives renders; it reads the latest context through a ref.
   const latest = useRef({ ctx, onUploaded, t });
   useEffect(() => {
@@ -50,6 +56,21 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
   const update = (key: string, patch: Partial<UploadItem>) =>
     setItems((xs) => xs.map((x) => (x.key === key ? { ...x, ...patch } : x)));
 
+  /** Creates the missing folders of `item.entry.dirs` and returns the deepest one. */
+  async function ensureFolders(ctx: DriveCtx, item: UploadItem): Promise<string | null> {
+    let parent = item.parentId;
+    for (let i = 0; i < item.entry.dirs.length; i++) {
+      const key = `${item.batch}/${item.entry.dirs.slice(0, i + 1).join("/")}`;
+      let id = folders.current.get(key);
+      if (!id) {
+        id = await createFolder(ctx, parent, item.entry.dirs[i]);
+        folders.current.set(key, id);
+      }
+      parent = id;
+    }
+    return parent;
+  }
+
   const pump = useCallback(async () => {
     if (running.current) return;
     running.current = true;
@@ -60,13 +81,16 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
         const { ctx, onUploaded, t } = latest.current;
         update(item.key, { status: "uploading" });
         try {
-          await uploadFile({
-            ...ctx,
-            parentId: item.parentId,
-            file: item.file,
-            onProgress: (progress) => update(item.key, { progress }),
-            signal: abort.current.signal,
-          });
+          const parentId = await ensureFolders(ctx, item);
+          if (item.entry.file) {
+            await uploadFile({
+              ...ctx,
+              parentId,
+              file: item.entry.file,
+              onProgress: (progress) => update(item.key, { progress }),
+              signal: abort.current.signal,
+            });
+          }
           update(item.key, { status: "done", progress: 1 });
           onUploaded();
         } catch (e) {
@@ -78,9 +102,20 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
     }
   }, []);
 
+  /** Loose files and/or folder trees, uploaded into `parentId`. */
   const enqueue = useCallback(
-    (files: File[], parentId: string | null) => {
-      const added = files.map((file) => ({ key: crypto.randomUUID(), file, parentId, progress: 0, status: "queued" as const }));
+    (entries: TreeEntry[], parentId: string | null) => {
+      if (!entries.length) return;
+      const batch = crypto.randomUUID();
+      const added = entries.map((entry) => ({
+        key: crypto.randomUUID(),
+        batch,
+        parentId,
+        entry,
+        label: entryLabel(entry),
+        progress: 0,
+        status: "queued" as const,
+      }));
       queue.current.push(...added);
       setItems((xs) => [...xs, ...added]);
       void pump();
@@ -97,10 +132,13 @@ export function UploadPanel({ items, onClear }: { items: UploadItem[]; onClear: 
   const t = useT();
   if (!items.length) return null;
   const finished = items.some((i) => i.status === "done" || i.status === "error");
+  const done = items.filter((i) => i.status === "done").length;
   return (
     <Card className="fixed right-4 bottom-4 z-20 w-80 shadow-xl">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <span className="text-sm font-medium">{t("files.uploads")}</span>
+        <span className="text-sm font-medium">
+          {t("files.uploads")} <span className="font-normal text-muted tabular-nums">{done}/{items.length}</span>
+        </span>
         {finished && (
           <Button size="sm" variant="ghost" onClick={onClear}>
             {t("files.clearDone")}
@@ -111,12 +149,15 @@ export function UploadPanel({ items, onClear }: { items: UploadItem[]; onClear: 
         {items.map((i) => (
           <li key={i.key} className="px-4 py-2.5">
             <div className="flex items-center gap-2 text-sm">
-              <span className="min-w-0 flex-1 truncate">{i.file.name}</span>
-              {i.status === "done" && <CheckCircle2 className="h-4 w-4 text-success" />}
-              {i.status === "error" && <CircleAlert className="h-4 w-4 text-danger" />}
-              {i.status === "queued" && <Clock className="h-4 w-4 text-muted" />}
+              {!i.entry.file && <Folder className="h-4 w-4 shrink-0 text-accent" />}
+              <span className="min-w-0 flex-1 truncate" title={i.label}>
+                {i.label}
+              </span>
+              {i.status === "done" && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
+              {i.status === "error" && <CircleAlert className="h-4 w-4 shrink-0 text-danger" />}
+              {i.status === "queued" && <Clock className="h-4 w-4 shrink-0 text-muted" />}
             </div>
-            {i.status === "uploading" && <Progress value={i.progress} className="mt-2" />}
+            {i.status === "uploading" && i.entry.file && <Progress value={i.progress} className="mt-2" />}
             {i.status === "error" && <p className="mt-1 text-xs text-danger">{i.error}</p>}
           </li>
         ))}

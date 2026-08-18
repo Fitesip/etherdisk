@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { HardDrive, Lock, LockOpen, Sparkles } from "lucide-react";
+import { Lock, LockOpen, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useEffect } from "react";
 import { formatEther } from "viem";
@@ -14,8 +14,9 @@ import { formatBytes } from "@/lib/format";
 import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { DriveTile } from "./drive/dialogs";
 import { RequireSession } from "./require-session";
-import { Button, Card, Notice, Progress, Spinner } from "./ui";
+import { Button, Card, Notice, Spinner } from "./ui";
 
 export const vaultsKey = (token: string) => ["vaults", token];
 
@@ -25,26 +26,22 @@ function DriveCard({ v }: { v: VaultInfo }) {
   const status = !v.initialized ? t("drives.notSetUp") : unlocked ? t("drives.unlocked") : t("drives.locked");
   const StatusIcon = unlocked ? LockOpen : Lock;
   return (
-    <Link href={`/drive/${v.token_id}`}>
-      <Card className="flex items-center gap-4 p-4 transition hover:border-accent">
-        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
-          <HardDrive className="h-6 w-6" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="font-medium">{t("drives.drive", { id: v.token_id })}</span>
-            <span className="flex items-center gap-1 text-xs text-muted">
-              <StatusIcon className="h-3 w-3" />
-              {status}
-            </span>
-          </div>
-          <Progress value={v.used_bytes / v.capacity_bytes} className="mt-2" />
+    <Link href={`/drive/${v.token_id}`} className="rounded-xl transition hover:-translate-y-0.5 hover:shadow-md">
+      <DriveTile
+        info={v}
+        status={
+          <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
+            <StatusIcon className="h-3 w-3" />
+            {status}
+          </span>
+        }
+        footer={
           <div className="mt-1.5 flex justify-between text-xs text-muted">
             <span>{t("drives.usage", { used: formatBytes(v.used_bytes), total: formatBytes(v.capacity_bytes) })}</span>
             <span>{t("drives.free", { free: formatBytes(Math.max(0, v.capacity_bytes - v.used_bytes)) })}</span>
           </div>
-        </div>
-      </Card>
+        }
+      />
     </Link>
   );
 }

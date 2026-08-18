@@ -9,6 +9,7 @@ import {
   Film,
   Folder,
   FolderPlus,
+  FolderUp,
   Image as ImageIcon,
   KeyRound,
   Link2,
@@ -16,29 +17,34 @@ import {
   MoreHorizontal,
   Move,
   Music,
+  Palette,
   Pencil,
   Share2,
   Trash2,
   TriangleAlert,
   Upload,
 } from "lucide-react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 
 import { useT } from "@/i18n";
-import { api, type VaultInfo } from "@/lib/api";
+import { api, ApiError, type ObjectRow, type VaultInfo } from "@/lib/api";
 import { fromB64 } from "@/lib/crypto";
+import { driveName } from "@/lib/drive-style";
+import { entriesFromDrop, entriesFromInput } from "@/lib/folder-upload";
 import { formatBytes, formatDate, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
 import { downloadFile, ownerSource, type StreamSource } from "@/lib/stream";
 import { useThumbnail } from "@/lib/thumbs";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 
-import { Button, Card, cn, Notice, Progress, Spinner } from "../ui";
+import { Button, cn, Notice, Progress, Spinner } from "../ui";
 import { Viewer } from "../viewer";
 import {
   ChangePassphraseDialog,
   createFolder,
   DeleteDialog,
+  DriveSettingsDialog,
   LinksDialog,
   MoveDialog,
   NameDialog,
@@ -124,6 +130,7 @@ type Dialogs =
   | { type: "links" }
   | { type: "passphrase" }
   | { type: "reset" }
+  | { type: "settings" }
   | null;
 
 export function FileBrowser({ token, info, unlocked }: { token: string; info: VaultInfo; unlocked: Unlocked }) {
@@ -131,18 +138,38 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const qc = useQueryClient();
   const store = useUnlocked();
   const tokenId = info.token_id;
-  const ctx: DriveCtx = useMemo(() => ({ token, tokenId, vault: unlocked.vault }), [token, tokenId, unlocked.vault]);
+  const name = driveName(info, t);
+  const ctx: DriveCtx = useMemo(() => ({ token, tokenId, name, vault: unlocked.vault }), [token, tokenId, name, unlocked.vault]);
 
-  const [path, setPath] = useState<{ id: string; name: string }[]>([]);
-  const current = path.at(-1)?.id ?? null;
+  // The open folder lives in the URL (?folder=id): reload and back/forward keep the place.
+  const pathname = usePathname();
+  const current = useSearchParams().get("folder");
+  const go = useCallback(
+    (folderId: string | null) => window.history.pushState(null, "", folderId ? `${pathname}?folder=${folderId}` : pathname),
+    [pathname],
+  );
+
+  // Breadcrumbs: the folder and its ancestors, decrypted.
+  const pathQuery = useQuery({
+    queryKey: ["path", token, tokenId, current],
+    queryFn: () => api.path(token, tokenId, current!),
+    enabled: !!current,
+    retry: false,
+    select: (rows) => rows.map((r) => ({ id: r.id, name: itemName(openItem(unlocked.vault, r)) })),
+  });
+  const path = current ? (pathQuery.data ?? []) : [];
+  const missing = pathQuery.error instanceof ApiError && pathQuery.error.status === 404;
+
   const [dialog, setDialog] = useState<Dialogs>(null);
   const [viewing, setViewing] = useState<StreamSource | null>(null);
   const [dragging, setDragging] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
 
   const objects = useQuery({
     queryKey: ["objects", token, tokenId, current],
     queryFn: () => api.list(token, tokenId, current),
+    enabled: !missing,
     select: (rows) => sortItems(rows.map((r) => openItem(unlocked.vault, r))),
   });
 
@@ -150,11 +177,18 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     qc.invalidateQueries({ queryKey: ["objects", token, tokenId] });
     qc.invalidateQueries({ queryKey: ["vault", token, tokenId] });
   }, [qc, token, tokenId]);
+
+  // Seed the breadcrumbs of a folder opened from the list, so they show instantly.
+  const seedPath = (row: ObjectRow) => {
+    const parent = current ? qc.getQueryData<ObjectRow[]>(["path", token, tokenId, current]) : [];
+    if (parent) qc.setQueryData(["path", token, tokenId, row.id], [...parent, row]);
+  };
   const uploads = useUploads(ctx, refresh);
 
   const open = (item: Item) => {
     if (item.row.kind === "folder") {
-      setPath([...path, { id: item.row.id, name: itemName(item) }]);
+      seedPath(item.row);
+      go(item.row.id);
       return;
     }
     if (!isFileMeta(item.meta)) return;
@@ -166,12 +200,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setDragging(0);
-    // Dropped folders show up as entries that are not files; skip them.
-    const files = Array.from(e.dataTransfer.items)
-      .filter((i) => i.kind === "file" && i.webkitGetAsEntry()?.isFile !== false)
-      .map((i) => i.getAsFile())
-      .filter((f): f is File => !!f);
-    if (files.length) uploads.enqueue(files, current);
+    const target = current;
+    entriesFromDrop(e.dataTransfer).then((entries) => uploads.enqueue(entries, target));
   };
 
   const close = () => setDialog(null);
@@ -190,16 +220,17 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       {/* Header: breadcrumbs + actions */}
       <div className="flex flex-wrap items-center gap-3">
         <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-lg font-semibold tracking-tight">
-          <button type="button" className={cn(path.length > 0 && "text-muted hover:text-fg")} onClick={() => setPath([])}>
-            {t("files.root", { id: tokenId })}
+          <button type="button" className={cn("truncate", current && "text-muted hover:text-fg")} onClick={() => go(null)}>
+            {name}
           </button>
+          {current && pathQuery.isLoading && <Spinner className="ml-2 h-4 w-4" />}
           {path.map((p, i) => (
             <span key={p.id} className="flex min-w-0 items-center gap-1">
               <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
               <button
                 type="button"
                 className={cn("truncate", i < path.length - 1 && "text-muted hover:text-fg")}
-                onClick={() => setPath(path.slice(0, i + 1))}
+                onClick={() => go(p.id)}
               >
                 {p.name}
               </button>
@@ -213,14 +244,38 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             multiple
             hidden
             onChange={(e) => {
-              uploads.enqueue(Array.from(e.target.files ?? []), current);
+              uploads.enqueue(Array.from(e.target.files ?? [], (file) => ({ file, dirs: [] })), current);
               e.target.value = "";
             }}
           />
-          <Button variant="primary" onClick={() => fileInput.current?.click()}>
-            <Upload className="h-4 w-4" />
-            {t("files.upload")}
-          </Button>
+          <input
+            ref={(el) => {
+              folderInput.current = el;
+              // No typed React prop for it; Chrome, Firefox and Safari all support it.
+              el?.setAttribute("webkitdirectory", "");
+            }}
+            type="file"
+            hidden
+            onChange={(e) => {
+              uploads.enqueue(entriesFromInput(e.target.files ?? []), current);
+              e.target.value = "";
+            }}
+          />
+          <Menu
+            trigger={
+              <Button variant="primary">
+                <Upload className="h-4 w-4" />
+                {t("files.upload")}
+              </Button>
+            }
+          >
+            {(closeMenu) => (
+              <>
+                <MenuItem icon={Upload} label={t("files.uploadFiles")} onClick={() => (closeMenu(), fileInput.current?.click())} />
+                <MenuItem icon={FolderUp} label={t("files.uploadFolder")} onClick={() => (closeMenu(), folderInput.current?.click())} />
+              </>
+            )}
+          </Menu>
           <Button onClick={() => setDialog({ type: "newFolder" })}>
             <FolderPlus className="h-4 w-4" />
             <span className="hidden sm:inline">{t("files.newFolder")}</span>
@@ -238,6 +293,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
           >
             {(closeMenu) => (
               <>
+                <MenuItem icon={Palette} label={t("vault.editDrive")} onClick={() => (closeMenu(), setDialog({ type: "settings" }))} />
                 <MenuItem icon={KeyRound} label={t("vault.changePassphrase")} onClick={() => (closeMenu(), setDialog({ type: "passphrase" }))} />
                 <MenuItem icon={Lock} label={t("vault.lock")} onClick={() => store.lock(tokenId)} />
                 <MenuItem icon={Trash2} label={t("vault.resetTitle")} danger onClick={() => (closeMenu(), setDialog({ type: "reset" }))} />
@@ -252,15 +308,24 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         {t("drives.usage", { used: formatBytes(info.used_bytes), total: formatBytes(info.capacity_bytes) })}
       </div>
 
+      {missing && (
+        <Notice tone="danger">
+          {t("files.folderNotFound")}{" "}
+          <button type="button" className="underline" onClick={() => go(null)}>
+            {name}
+          </button>
+        </Notice>
+      )}
+
       {/* File list */}
-      <Card className="overflow-hidden">
+      <div className="overflow-hidden rounded-xl border border-(--drive-stroke,var(--border)) bg-card">
         <div className="hidden grid-cols-[1fr_7rem_11rem_2.5rem] gap-4 border-b border-border px-4 py-2 text-xs text-muted sm:grid">
           <span>{t("files.name")}</span>
           <span className="text-right">{t("files.size")}</span>
           <span>{t("files.modified")}</span>
           <span />
         </div>
-        {objects.isLoading ? (
+        {missing ? null : objects.isLoading ? (
           <Spinner className="m-6" />
         ) : objects.error ? (
           <div className="p-4">
@@ -320,7 +385,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             })}
           </ul>
         )}
-      </Card>
+      </div>
 
       {dragging > 0 && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl border-2 border-dashed border-accent bg-accent-soft/80">
@@ -338,7 +403,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
           ctx={ctx}
           title={t("files.newFolder")}
           submitLabel={t("files.create")}
-          onSubmit={(name) => createFolder(ctx, current, name)}
+          onSubmit={async (folderName) => void (await createFolder(ctx, current, folderName))}
         />
       )}
       {dialog?.type === "rename" && (
@@ -349,7 +414,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
           title={t("files.rename")}
           initial={itemName(dialog.item)}
           submitLabel={t("common.save")}
-          onSubmit={(name) => renameItem(ctx, dialog.item, name)}
+          onSubmit={(newName) => renameItem(ctx, dialog.item, newName)}
         />
       )}
       <MoveDialog item={dialog?.type === "move" ? dialog.item : null} onClose={close} ctx={ctx} />
@@ -357,6 +422,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       <ShareDialog item={dialog?.type === "share" ? dialog.item : null} onClose={close} ctx={ctx} />
       <LinksDialog open={dialog?.type === "links"} onClose={close} ctx={ctx} />
       <ChangePassphraseDialog open={dialog?.type === "passphrase"} onClose={close} ctx={ctx} etag={unlocked.etag} />
+      {dialog?.type === "settings" && <DriveSettingsDialog open onClose={close} token={token} info={info} />}
       <ResetDialog open={dialog?.type === "reset"} onClose={close} token={token} tokenId={tokenId} />
     </div>
   );

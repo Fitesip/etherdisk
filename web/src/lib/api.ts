@@ -57,7 +57,13 @@ export interface VaultInfo {
   capacity_bytes: number;
   used_bytes: number;
   initialized: boolean;
+  /** Owner-chosen look; null = defaults. Plaintext on the server. */
+  name: string | null;
+  stroke: string | null;
+  fill: string | null;
 }
+
+export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill">;
 
 export interface ObjectRow {
   id: string;
@@ -97,11 +103,15 @@ export const api = {
     json<{ key_blob: string; etag: string }>(
       request(`/vaults/${id}/key`, { method: "PUT", token, json: { key_blob: keyBlob, previous_etag: previousEtag } }),
     ),
+  setProfile: (token: string, id: string, profile: VaultProfile) =>
+    json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),
   reset: (token: string, id: string) =>
     empty(request(`/vaults/${id}/reset`, { method: "POST", token, json: { confirm: "DELETE" } })),
 
   list: (token: string, vault: string, parent: string | null) =>
     json<ObjectRow[]>(request(`/vaults/${vault}/objects${parent ? `?parent=${parent}` : ""}`, { token })),
+  /** The folder and its ancestors, root first. */
+  path: (token: string, vault: string, id: string) => json<ObjectRow[]>(request(`/vaults/${vault}/objects/${id}/path`, { token })),
   createFolder: (token: string, vault: string, body: { id: string; parent_id: string | null; metadata: string }) =>
     empty(request(`/vaults/${vault}/folders`, { method: "POST", token, json: body })),
   createFile: (
