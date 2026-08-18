@@ -1,6 +1,6 @@
 import { CONTRACT_ADDRESS } from "./config";
 
-/** The parts of VaultNFT the frontend uses. Ownership/capacity reads go through the backend. */
+/** The parts of VaultNFT (ERC-721) the frontend uses. Ownership/capacity reads go through the backend. */
 export const vaultNftAbi = [
   {
     type: "function",
@@ -24,6 +24,17 @@ export const vaultNftAbi = [
         ],
       },
     ],
+  },
+  {
+    type: "function",
+    name: "safeTransferFrom",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "tokenId", type: "uint256" },
+    ],
+    outputs: [],
   },
   {
     type: "function",

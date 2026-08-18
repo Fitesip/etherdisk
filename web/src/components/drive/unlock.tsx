@@ -11,7 +11,7 @@ import { passphraseValid } from "@/lib/passphrase";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { PassphraseRules } from "../passphrase-rules";
-import { Button, Card, Input, Notice } from "../ui";
+import { Button, Card, Notice, PasswordInput } from "../ui";
 import { ResetDialog } from "./dialogs";
 
 function Shell({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
@@ -67,9 +67,9 @@ export function SetupForm({ token, tokenId, name }: { token: string; tokenId: st
   return (
     <Shell title={t("vault.setupTitle", { name })} text={t("vault.setupText")}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <Input type="password" autoComplete="new-password" placeholder={t("vault.passphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
+        <PasswordInput autoComplete="new-password" placeholder={t("vault.passphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
         <PassphraseRules value={pass} />
-        <Input type="password" autoComplete="new-password" placeholder={t("vault.passphraseRepeat")} value={repeat} onChange={(e) => setRepeat(e.target.value)} />
+        <PasswordInput autoComplete="new-password" placeholder={t("vault.passphraseRepeat")} value={repeat} onChange={(e) => setRepeat(e.target.value)} />
         {mismatch && <p className="text-xs text-danger">{t("vault.passphraseMismatch")}</p>}
         <div className="flex gap-2 rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
           <ShieldAlert className="h-4 w-4 shrink-0" />
@@ -126,7 +126,7 @@ export function UnlockForm({
   return (
     <Shell title={t("vault.unlockTitle", { name })} text={t("vault.unlockText")}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <Input type="password" autoFocus autoComplete="current-password" placeholder={t("vault.passphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
+        <PasswordInput autoFocus autoComplete="current-password" placeholder={t("vault.passphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
         {wrong && <p className="text-xs text-danger">{t("vault.wrongPassphrase")}</p>}
         <Button type="submit" variant="primary" loading={busy} disabled={!pass}>
           {busy ? t("vault.unlocking") : t("vault.unlock")}

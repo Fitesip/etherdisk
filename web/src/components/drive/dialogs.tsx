@@ -8,7 +8,7 @@ import { useT } from "@/i18n";
 import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { MAX_DRIVE_NAME } from "@/lib/config";
 import { fromB64, nextFrame, toB64, type WasmVault } from "@/lib/crypto";
-import { contrastText, driveName, driveVars, PRESET_COLORS } from "@/lib/drive-style";
+import { driveName, driveVars, PRESET_COLORS } from "@/lib/drive-style";
 import { formatDate } from "@/lib/format";
 import { itemName, openItem, sealMeta, type Item } from "@/lib/meta";
 import { passphraseValid } from "@/lib/passphrase";
@@ -16,7 +16,7 @@ import { createShare, openOwnerShareMeta, shareLink } from "@/lib/share";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { PassphraseRules } from "../passphrase-rules";
-import { Button, cn, Dialog, Input, Notice, Progress, Spinner } from "../ui";
+import { Button, cn, Dialog, Input, Notice, PasswordInput, Progress, Spinner } from "../ui";
 
 export interface DriveCtx {
   token: string;
@@ -90,7 +90,7 @@ export function ResetDialog({ open, onClose, token, tokenId }: { open: boolean; 
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title={t("vault.resetTitle")}>
+    <Dialog open={open} onClose={onClose} title={t("vault.resetTitle")} tone="danger">
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Notice tone="danger">{t("vault.resetText")}</Notice>
         <label className="text-sm">
@@ -106,7 +106,8 @@ export function ResetDialog({ open, onClose, token, tokenId }: { open: boolean; 
   );
 }
 
-export function ChangePassphraseDialog({ open, onClose, ctx, etag }: { open: boolean; onClose: () => void; ctx: DriveCtx; etag: string }) {
+/** New passphrase for an unlocked drive. Only the key wrapping changes; files are untouched. */
+export function ChangePassphraseForm({ ctx, etag }: { ctx: DriveCtx; etag: string }) {
   const t = useT();
   const unlocked = useUnlocked();
   const [pass, setPass] = useState("");
@@ -121,6 +122,7 @@ export function ChangePassphraseDialog({ open, onClose, ctx, etag }: { open: boo
     if (!valid) return;
     setBusy(true);
     setError(null);
+    setDone(false);
     try {
       await nextFrame();
       const blob = ctx.vault.changePassphrase(pass);
@@ -137,27 +139,17 @@ export function ChangePassphraseDialog({ open, onClose, ctx, etag }: { open: boo
   }
 
   return (
-    <Dialog
-      open={open}
-      onClose={() => {
-        setDone(false);
-        onClose();
-      }}
-      title={t("vault.changePassphrase")}
-    >
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <p className="text-sm text-muted">{t("vault.changePassphraseText")}</p>
-        <Input type="password" autoComplete="new-password" placeholder={t("vault.newPassphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
-        <PassphraseRules value={pass} />
-        <Input type="password" autoComplete="new-password" placeholder={t("vault.passphraseRepeat")} value={repeat} onChange={(e) => setRepeat(e.target.value)} />
-        {repeat && pass !== repeat && <p className="text-xs text-danger">{t("vault.passphraseMismatch")}</p>}
-        {error && <Notice tone="danger">{error}</Notice>}
-        {done && <p className="text-sm text-success">{t("vault.passphraseChanged")}</p>}
-        <Button type="submit" variant="primary" loading={busy} disabled={!valid}>
-          {t("common.save")}
-        </Button>
-      </form>
-    </Dialog>
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <PasswordInput autoComplete="new-password" placeholder={t("vault.newPassphrase")} value={pass} onChange={(e) => setPass(e.target.value)} />
+      <PassphraseRules value={pass} />
+      <PasswordInput autoComplete="new-password" placeholder={t("vault.passphraseRepeat")} value={repeat} onChange={(e) => setRepeat(e.target.value)} />
+      {repeat && pass !== repeat && <p className="text-xs text-danger">{t("vault.passphraseMismatch")}</p>}
+      {error && <Notice tone="danger">{error}</Notice>}
+      {done && <p className="text-sm text-success">{t("vault.passphraseChanged")}</p>}
+      <Button type="submit" variant="primary" loading={busy} disabled={!valid} className="self-start">
+        {t("vault.changePassphrase")}
+      </Button>
+    </form>
   );
 }
 
@@ -393,13 +385,14 @@ export function ShareDialog({ item, onClose, ctx }: { item: Item | null; onClose
   );
 }
 
-export function LinksDialog({ open, onClose, ctx }: { open: boolean; onClose: () => void; ctx: DriveCtx }) {
+/** The drive's share links, with copy and revoke. */
+export function LinksList({ ctx, enabled = true }: { ctx: DriveCtx; enabled?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const shares = useQuery({
     queryKey: ["shares", ctx.token, ctx.tokenId],
     queryFn: () => api.shares(ctx.token, ctx.tokenId),
-    enabled: open,
+    enabled,
   });
 
   async function revoke(id: string) {
@@ -409,36 +402,39 @@ export function LinksDialog({ open, onClose, ctx }: { open: boolean; onClose: ()
     await qc.invalidateQueries({ queryKey: ["shares", ctx.token, ctx.tokenId] });
   }
 
+  if (shares.isLoading) return <Spinner />;
+  if (!shares.data?.length) return <p className="text-sm text-muted">{t("share.noLinks")}</p>;
+  return (
+    <ul className="divide-y divide-border rounded-lg border border-border">
+      {shares.data.map((s) => {
+        const meta = openOwnerShareMeta(ctx.vault, s.owner_metadata);
+        const link = meta ? shareLink(s.id, fromB64(meta.key)) : null;
+        return (
+          <li key={s.id} className="flex flex-wrap items-center gap-3 p-3">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{meta?.name ?? "⚠"}</div>
+              <div className="text-xs text-muted">
+                {t("share.files", { n: s.file_count })} · {formatDate(s.created_at)}
+              </div>
+            </div>
+            {link && <CopyButton text={link} />}
+            <Button size="sm" variant="ghost" className="text-danger" onClick={() => revoke(s.id)}>
+              {t("share.revoke")}
+            </Button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export function LinksDialog({ open, onClose, ctx }: { open: boolean; onClose: () => void; ctx: DriveCtx }) {
+  const t = useT();
   return (
     <Dialog open={open} onClose={onClose} title={t("share.linksTitle", { name: ctx.name })} wide>
       <div className="flex flex-col gap-3">
         <p className="text-sm text-muted">{t("share.revokedOnTransfer")}</p>
-        {shares.isLoading ? (
-          <Spinner />
-        ) : !shares.data?.length ? (
-          <p className="text-sm text-muted">{t("share.noLinks")}</p>
-        ) : (
-          <ul className="divide-y divide-border rounded-lg border border-border">
-            {shares.data.map((s) => {
-              const meta = openOwnerShareMeta(ctx.vault, s.owner_metadata);
-              const link = meta ? shareLink(s.id, fromB64(meta.key)) : null;
-              return (
-                <li key={s.id} className="flex flex-wrap items-center gap-3 p-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{meta?.name ?? "⚠"}</div>
-                    <div className="text-xs text-muted">
-                      {t("share.files", { n: s.file_count })} · {formatDate(s.created_at)}
-                    </div>
-                  </div>
-                  {link && <CopyButton text={link} />}
-                  <Button size="sm" variant="ghost" className="text-danger" onClick={() => revoke(s.id)}>
-                    {t("share.revoke")}
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <LinksList ctx={ctx} enabled={open} />
       </div>
     </Dialog>
   );
@@ -516,8 +512,8 @@ export function DriveTile({ info, status, footer }: { info: VaultInfo; status?: 
   );
 }
 
-/** Rename the drive and pick its outline and fill colors. */
-export function DriveSettingsDialog({ open, onClose, token, info }: { open: boolean; onClose: () => void; token: string; info: VaultInfo }) {
+/** Rename the drive and pick its outline and fill colors, with a live preview. */
+export function DriveLookForm({ token, info }: { token: string; info: VaultInfo }) {
   const t = useT();
   const qc = useQueryClient();
   const [name, setName] = useState(info.name ?? "");
@@ -525,18 +521,20 @@ export function DriveSettingsDialog({ open, onClose, token, info }: { open: bool
   const [fill, setFill] = useState(info.fill);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const preview: VaultInfo = { ...info, name: name.trim() || null, stroke, fill };
-  const accent = fill ?? stroke;
+  const dirty = (info.name ?? "") !== name.trim() || info.stroke !== stroke || info.fill !== fill;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const saved = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill });
-      qc.setQueryData(["vault", token, info.token_id], saved);
+      const updated = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill });
+      qc.setQueryData(["vault", token, info.token_id], updated);
       await qc.invalidateQueries({ queryKey: ["vaults", token] });
-      onClose();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       setError(errorText(err, t("common.error")));
     } finally {
@@ -545,9 +543,8 @@ export function DriveSettingsDialog({ open, onClose, token, info }: { open: bool
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title={t("vault.settingsTitle")}>
-      <form onSubmit={submit} className="flex flex-col gap-5">
-        <p className="text-sm text-muted">{t("vault.settingsText")}</p>
+    <form onSubmit={submit} className="grid gap-6 lg:grid-cols-[1fr_18rem]">
+      <div className="flex flex-col gap-5">
         <label className="text-sm font-medium">
           {t("vault.name")}
           <Input
@@ -560,23 +557,26 @@ export function DriveSettingsDialog({ open, onClose, token, info }: { open: bool
         </label>
         <ColorField label={t("vault.stroke")} value={stroke} onChange={setStroke} />
         <ColorField label={t("vault.fill")} value={fill} onChange={setFill} />
-        <div>
-          <p className="text-sm font-medium">{t("vault.preview")}</p>
-          <div style={driveVars(preview)} className="mt-2 flex flex-col gap-3">
-            <DriveTile info={preview} />
-            <div className="flex items-center gap-3">
-              <span className="inline-flex h-8 shrink-0 items-center rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg">
-                {t("files.upload")}
-              </span>
-              <span className="text-xs text-muted">{t("vault.accentHint")}</span>
-            </div>
+        {error && <Notice tone="danger">{error}</Notice>}
+        <div className="flex items-center gap-3">
+          <Button type="submit" variant="primary" loading={busy} disabled={!dirty}>
+            {t("common.save")}
+          </Button>
+          {saved && <span className="animate-fade-up text-sm text-success">{t("common.saved")}</span>}
+        </div>
+      </div>
+      <div>
+        <p className="text-sm font-medium">{t("vault.preview")}</p>
+        <div style={driveVars(preview)} className="mt-2 flex flex-col gap-3">
+          <DriveTile info={preview} />
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-8 shrink-0 items-center rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg transition-colors">
+              {t("files.upload")}
+            </span>
+            <span className="text-xs text-muted">{t("vault.accentHint")}</span>
           </div>
         </div>
-        {error && <Notice tone="danger">{error}</Notice>}
-        <Button type="submit" variant="primary" loading={busy} style={accent ? { background: accent, color: contrastText(accent) } : undefined}>
-          {t("common.save")}
-        </Button>
-      </form>
-    </Dialog>
+      </div>
+    </form>
   );
 }

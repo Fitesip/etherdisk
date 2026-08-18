@@ -49,11 +49,206 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   background: var(--bg);
   color: var(--fg);
 }
 
+/* Our PasswordInput has its own toggle; hide Edge's built-in reveal button. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
+/* ------------------------------------------------------------ motion */
+
+@theme {
+  --animate-pop-in: pop-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  --animate-fade-up: fade-up 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-slide-in: slide-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.97);
+    }
+  }
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+  }
+}
+
+/* Dialogs fade and rise in, and back out on close (Chromium; others just appear). */
+dialog {
+  opacity: 0;
+  transform: translateY(12px) scale(0.97);
+  transition:
+    opacity 0.2s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 0.22s allow-discrete,
+    display 0.22s allow-discrete;
+}
+dialog[open] {
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  dialog[open] {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+}
 dialog::backdrop {
+  background: rgb(0 0 0 / 0);
+  backdrop-filter: blur(0);
+  transition:
+    background 0.2s ease,
+    backdrop-filter 0.2s ease,
+    overlay 0.22s allow-discrete,
+    display 0.22s allow-discrete;
+}
+dialog[open]::backdrop {
   background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(3px);
+}
+@starting-style {
+  dialog[open]::backdrop {
+    background: rgb(0 0 0 / 0);
+    backdrop-filter: blur(0);
+  }
+}
+
+/* ------------------------------------------------------------ landing */
+
+@keyframes aurora {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -6%, 0) scale(1.08);
+  }
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--tilt, 0deg));
+  }
+  50% {
+    transform: translateY(-10px) rotate(var(--tilt, 0deg));
+  }
+}
+@keyframes shimmer-text {
+  to {
+    background-position: 200% center;
+  }
+}
+@keyframes progress-loop {
+  0% {
+    width: 8%;
+  }
+  70%,
+  100% {
+    width: 92%;
+  }
+}
+@keyframes ping-soft {
+  75%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+@keyframes draw-line {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+.aurora {
+  animation: aurora 18s ease-in-out infinite;
+  will-change: transform;
+}
+.float {
+  animation: float 6s ease-in-out infinite;
+}
+.text-shimmer {
+  background: linear-gradient(90deg, var(--accent), #ec4899, #f59e0b, var(--accent)) 0 center / 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 6s linear infinite;
+}
+.dot-grid {
+  background-image: radial-gradient(color-mix(in srgb, var(--fg) 14%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent);
+}
+
+/* Sections slide in once when scrolled into view (see <Reveal>). */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.6s ease,
+    transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition-delay: var(--delay, 0ms);
+}
+.reveal[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+.reveal[data-shown] .draw-line {
+  animation: draw-line 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--delay, 0ms) + 200ms);
+  transform-origin: left;
+}
+
+/* Cursor-following glow on feature cards (--x/--y set on pointermove). */
+.spotlight {
+  position: relative;
+  isolation: isolate;
+}
+.spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(320px circle at var(--x, 50%) var(--y, 50%), color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%);
+  transition: opacity 0.3s ease;
+}
+.spotlight:hover::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after,
+  dialog,
+  dialog::backdrop {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
 }

@@ -33,6 +33,19 @@ impl WasmVault {
         Ok(WasmVault { inner, key_blob: key_blob.to_vec() })
     }
 
+    /// Raw key for keeping the vault unlocked across reloads. Must be stored encrypted.
+    #[wasm_bindgen(js_name = exportKey)]
+    pub fn export_key(&self) -> Vec<u8> {
+        self.inner.export_dek().to_vec()
+    }
+
+    /// Restores a vault from `exportKey` output and its key blob.
+    #[wasm_bindgen(js_name = fromExportedKey)]
+    pub fn from_exported_key(key: &[u8], key_blob: &[u8]) -> Result<WasmVault, JsError> {
+        let inner = vc::Vault::from_exported_dek(key, key_blob).map_err(err)?;
+        Ok(WasmVault { inner, key_blob: key_blob.to_vec() })
+    }
+
     /// The wrapped DEK blob as stored on the server.
     #[wasm_bindgen(getter, js_name = keyBlob)]
     pub fn key_blob(&self) -> Vec<u8> {

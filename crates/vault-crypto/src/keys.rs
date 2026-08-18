@@ -62,6 +62,20 @@ pub struct Vault {
     params: KdfParams,
 }
 
+/// Validates a key blob header and returns its KDF parameters.
+fn blob_params(blob: &[u8]) -> Result<KdfParams> {
+    if blob.len() != KEY_BLOB_LEN || &blob[..4] != BLOB_MAGIC {
+        return Err(Error::Format("bad key blob"));
+    }
+    if blob[4] != BLOB_VERSION {
+        return Err(Error::Format("unsupported key blob version"));
+    }
+    let u32_at = |i: usize| u32::from_le_bytes(blob[i..i + 4].try_into().unwrap());
+    let params = KdfParams { m_cost_kib: u32_at(5), t_cost: u32_at(9), parallelism: u32_at(13) };
+    params.validate()?;
+    Ok(params)
+}
+
 impl Vault {
     /// Creates a new vault. Returns the unlocked vault and the key blob to store on the server.
     pub fn create(passphrase: &str) -> Result<(Vault, Vec<u8>)> {
@@ -78,15 +92,7 @@ impl Vault {
         if passphrase.is_empty() {
             return Err(Error::Argument("empty passphrase"));
         }
-        if blob.len() != KEY_BLOB_LEN || &blob[..4] != BLOB_MAGIC {
-            return Err(Error::Format("bad key blob"));
-        }
-        if blob[4] != BLOB_VERSION {
-            return Err(Error::Format("unsupported key blob version"));
-        }
-        let u32_at = |i: usize| u32::from_le_bytes(blob[i..i + 4].try_into().unwrap());
-        let params = KdfParams { m_cost_kib: u32_at(5), t_cost: u32_at(9), parallelism: u32_at(13) };
-        params.validate()?;
+        let params = blob_params(blob)?;
 
         let (header, rest) = blob.split_at(HEADER_LEN);
         let salt = &header[HEADER_LEN - SALT_LEN..];
@@ -99,6 +105,21 @@ impl Vault {
             .map_err(|_| Error::Unlock)?;
         let plain = Zeroizing::new(plain);
         let dek: [u8; 32] = plain[..].try_into().map_err(|_| Error::Format("bad DEK length"))?;
+        Ok(Vault { dek: Dek(dek), params })
+    }
+
+    /// The raw data-encryption key, to keep a vault unlocked across page reloads.
+    /// Whoever holds it can read the whole vault: keep it encrypted at rest (the web app
+    /// wraps it with a non-extractable WebCrypto key) and never send it anywhere.
+    pub fn export_dek(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.dek.0)
+    }
+
+    /// Restores a vault from `export_dek` output. The key blob supplies the KDF
+    /// parameters that `rewrap` reuses.
+    pub fn from_exported_dek(dek: &[u8], blob: &[u8]) -> Result<Vault> {
+        let params = blob_params(blob)?;
+        let dek: [u8; 32] = dek.try_into().map_err(|_| Error::Argument("DEK must be 32 bytes"))?;
         Ok(Vault { dek: Dek(dek), params })
     }
 
