@@ -1,7 +1,9 @@
 "use client";
 
-import { Loader2, X } from "lucide-react";
-import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { Eye, EyeOff, Loader2, X } from "lucide-react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+
+import { useT } from "@/i18n";
 
 export const cn = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
 
@@ -83,21 +85,62 @@ export function Notice({ tone = "info", children }: { tone?: "info" | "danger"; 
   );
 }
 
-/** Native modal <dialog>: focus trap, Esc and backdrop handled by the browser. */
+/** Password field with its own show/hide toggle (the browser's built-in one is unreliable). */
+export function PasswordInput({ className, ...rest }: Omit<InputHTMLAttributes<HTMLInputElement>, "type">) {
+  const t = useT();
+  const [shown, setShown] = useState(false);
+  const Icon = shown ? EyeOff : Eye;
+  return (
+    <div className="relative">
+      <Input type={shown ? "text" : "password"} spellCheck={false} className={cn("pr-10", className)} {...rest} />
+      <button
+        type="button"
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? t("common.hidePassword") : t("common.showPassword")}
+        aria-pressed={shown}
+        className="absolute inset-y-0 right-0 grid w-10 place-items-center rounded-r-lg text-muted transition hover:text-fg"
+      >
+        <Icon className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+/** Longest close animation (globals.css); after it the content unmounts. */
+const CLOSE_MS = 220;
+
+/**
+ * Native modal <dialog>: focus trap, Esc and backdrop handled by the browser.
+ * Opening and closing are animated in CSS; while closing, the last content stays
+ * rendered so it fades out instead of disappearing (and media stops after).
+ */
 export function Dialog({
   open,
   onClose,
   title,
   children,
   wide,
+  tone,
 }: {
   open: boolean;
   onClose: () => void;
   title: ReactNode;
   children: ReactNode;
   wide?: boolean;
+  tone?: "danger";
 }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
+  // Snapshot of the content while open, shown during the close animation.
+  const [snapshot, setSnapshot] = useState<{ title: ReactNode; children: ReactNode } | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (!open) setClosing(true);
+  }
+  if (open && (snapshot?.title !== title || snapshot?.children !== children)) setSnapshot({ title, children });
+
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -105,25 +148,33 @@ export function Dialog({
     if (!open && d.open) d.close();
   }, [open]);
 
+  useEffect(() => {
+    if (!closing) return;
+    const timer = setTimeout(() => setClosing(false), CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [closing]);
+
+  const content = open ? { title, children } : closing ? snapshot : null;
   return (
     <dialog
       ref={ref}
       onClose={onClose}
       onClick={(e) => e.target === ref.current && onClose()}
       className={cn(
-        "m-auto w-[calc(100%-2rem)] rounded-2xl border border-border bg-card p-0 text-fg shadow-2xl",
+        "m-auto w-[calc(100%-2rem)] rounded-2xl border bg-card p-0 text-fg shadow-2xl",
+        tone === "danger" ? "border-danger/50" : "border-border",
         wide ? "max-w-4xl" : "max-w-md",
       )}
     >
-      {open && (
+      {content && (
         <div className="flex max-h-[85vh] flex-col">
-          <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
-            <h2 className="truncate font-semibold">{title}</h2>
-            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+          <div className={cn("flex items-center justify-between gap-4 border-b px-5 py-3", tone === "danger" ? "border-danger/30" : "border-border")}>
+            <h2 className={cn("truncate font-semibold", tone === "danger" && "text-danger")}>{content.title}</h2>
+            <Button variant="ghost" size="icon" onClick={onClose} aria-label={t("common.close")}>
               <X className="h-4 w-4" />
             </Button>
           </div>
-          <div className="overflow-auto p-5">{children}</div>
+          <div className="overflow-auto p-5">{content.children}</div>
         </div>
       )}
     </dialog>

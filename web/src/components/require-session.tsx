@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useConnection, useSwitchChain } from "wagmi";
 
 import { useT } from "@/i18n";
+import { useHydrated } from "@/lib/hydrated";
 import { useSession } from "@/lib/session";
 import { CHAIN } from "@/lib/wagmi";
 
@@ -25,11 +26,12 @@ function Panel({ icon, title, text, children }: { icon: ReactNode; title: string
 /** Renders children only for a connected wallet on Sepolia with a backend session. */
 export function RequireSession({ children }: { children: (token: string) => ReactNode }) {
   const t = useT();
+  const hydrated = useHydrated();
   const { status, chainId } = useConnection();
   const switchChain = useSwitchChain();
   const { token, signIn, signingIn } = useSession();
 
-  if (status === "connecting" || status === "reconnecting") return <Spinner className="mx-auto mt-24" />;
+  if (!hydrated || status === "connecting" || status === "reconnecting") return <Spinner className="mx-auto mt-24" />;
   if (status !== "connected") {
     return (
       <Panel icon={<Wallet className="h-6 w-6" />} title={t("wallet.connectTitle")} text={t("wallet.connectText")}>

@@ -4,6 +4,7 @@ import { Download } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useT } from "@/i18n";
+import { touchActivity } from "@/lib/activity";
 import { formatBytes, viewKind } from "@/lib/format";
 import { downloadFile, openUrl, type StreamSource } from "@/lib/stream";
 
@@ -70,9 +71,9 @@ function Preview({ source, onFailed }: { source: StreamSource; onFailed: () => v
       // eslint-disable-next-line @next/next/no-img-element -- decrypted on the fly, not optimizable
       return <img src={url} alt={source.name} className="max-h-[70vh] max-w-full rounded-lg object-contain" onError={onFailed} />;
     case "video":
-      return <video src={url} controls autoPlay className="max-h-[70vh] w-full rounded-lg bg-black" onError={onFailed} />;
+      return <video src={url} controls autoPlay className="max-h-[70vh] w-full rounded-lg bg-black" onError={onFailed} onTimeUpdate={touchActivity} />;
     case "audio":
-      return <audio src={url} controls autoPlay className="w-full" onError={onFailed} />;
+      return <audio src={url} controls autoPlay className="w-full" onError={onFailed} onTimeUpdate={touchActivity} />;
     case "pdf":
       return <iframe src={url} title={source.name} className="h-[70vh] w-full rounded-lg border border-border" />;
     case "text":

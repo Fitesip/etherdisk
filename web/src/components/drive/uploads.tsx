@@ -4,6 +4,7 @@ import { CheckCircle2, CircleAlert, Clock, Folder } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useT, type Translate } from "@/i18n";
+import { touchActivity } from "@/lib/activity";
 import { ApiError } from "@/lib/api";
 import { entryLabel, type TreeEntry } from "@/lib/folder-upload";
 import { uploadFile } from "@/lib/upload";
@@ -87,7 +88,11 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
               ...ctx,
               parentId,
               file: item.entry.file,
-              onProgress: (progress) => update(item.key, { progress }),
+              onProgress: (progress) => {
+                // An upload in progress keeps the drive from auto-locking.
+                touchActivity();
+                update(item.key, { progress });
+              },
               signal: abort.current.signal,
             });
           }
@@ -134,7 +139,7 @@ export function UploadPanel({ items, onClear }: { items: UploadItem[]; onClear: 
   const finished = items.some((i) => i.status === "done" || i.status === "error");
   const done = items.filter((i) => i.status === "done").length;
   return (
-    <Card className="fixed right-4 bottom-4 z-20 w-80 shadow-xl">
+    <Card className="fixed right-4 bottom-4 z-20 w-80 animate-slide-in shadow-xl">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <span className="text-sm font-medium">
           {t("files.uploads")} <span className="font-normal text-muted tabular-nums">{done}/{items.length}</span>

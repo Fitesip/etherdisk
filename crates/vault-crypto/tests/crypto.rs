@@ -98,6 +98,22 @@ fn passphrase_change_keeps_all_files_readable() {
 }
 
 #[test]
+fn exported_key_restores_vault() {
+    let (v, blob) = vault("pass");
+    let enc = encrypt(&v, b"kept across reloads");
+    let restored = Vault::from_exported_dek(&v.export_dek()[..], &blob).unwrap();
+    assert_eq!(decrypt(&restored, &enc).unwrap(), b"kept across reloads");
+    // Rewrap reuses the blob's KDF params; the new blob unlocks the same vault.
+    let blob2 = restored.rewrap("new").unwrap();
+    assert_eq!(decrypt(&Vault::unlock(&blob2, "new").unwrap(), &enc).unwrap(), b"kept across reloads");
+
+    assert!(Vault::from_exported_dek(&[0u8; 31], &blob).is_err());
+    assert!(Vault::from_exported_dek(&v.export_dek()[..], &blob[..10]).is_err());
+    let (other, _) = vault("pass");
+    assert!(decrypt(&Vault::from_exported_dek(&other.export_dek()[..], &blob).unwrap(), &enc).is_err());
+}
+
+#[test]
 fn reset_creates_independent_vault() {
     let (old, _) = vault("lost");
     let enc = encrypt(&old, b"secret");

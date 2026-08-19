@@ -2,8 +2,10 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowRightLeft,
   ChevronRight,
   Download,
+  Eraser,
   File as FileIcon,
   FileText,
   Film,
@@ -11,20 +13,19 @@ import {
   FolderPlus,
   FolderUp,
   Image as ImageIcon,
-  KeyRound,
   Link2,
   Lock,
   MoreHorizontal,
   Move,
   Music,
-  Palette,
   Pencil,
+  Settings,
   Share2,
   Trash2,
   TriangleAlert,
   Upload,
 } from "lucide-react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 
 import { useT } from "@/i18n";
@@ -35,16 +36,15 @@ import { entriesFromDrop, entriesFromInput } from "@/lib/folder-upload";
 import { formatBytes, formatDate, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
 import { downloadFile, ownerSource, type StreamSource } from "@/lib/stream";
+import { writeStored } from "@/lib/storage";
 import { useThumbnail } from "@/lib/thumbs";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 
 import { Button, cn, Notice, Progress, Spinner } from "../ui";
 import { Viewer } from "../viewer";
 import {
-  ChangePassphraseDialog,
   createFolder,
   DeleteDialog,
-  DriveSettingsDialog,
   LinksDialog,
   MoveDialog,
   NameDialog,
@@ -53,6 +53,7 @@ import {
   ShareDialog,
   type DriveCtx,
 } from "./dialogs";
+import { TransferDialog } from "./settings";
 import { UploadPanel, useUploads } from "./uploads";
 
 // ------------------------------------------------------------------ small pieces
@@ -70,7 +71,7 @@ function Menu({ trigger, children }: { trigger: ReactNode; children: (close: () 
     <div ref={ref} className="relative">
       <div onClick={() => setOpen((o) => !o)}>{trigger}</div>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-border bg-card p-1 shadow-lg">
+        <div className="absolute right-0 z-20 mt-1 w-52 origin-top-right animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg">
           {children(() => setOpen(false))}
         </div>
       )}
@@ -121,6 +122,9 @@ const sortItems = (items: Item[]) =>
 
 // ------------------------------------------------------------------ browser
 
+/** Last open folder of a drive, so the Files tab returns to it. */
+export const lastFolderKey = (tokenId: string) => `nftvault.folder.${tokenId}`;
+
 type Dialogs =
   | { type: "newFolder" }
   | { type: "rename"; item: Item }
@@ -128,9 +132,8 @@ type Dialogs =
   | { type: "delete"; item: Item }
   | { type: "share"; item: Item }
   | { type: "links" }
-  | { type: "passphrase" }
-  | { type: "reset" }
-  | { type: "settings" }
+  | { type: "format" }
+  | { type: "transfer" }
   | null;
 
 export function FileBrowser({ token, info, unlocked }: { token: string; info: VaultInfo; unlocked: Unlocked }) {
@@ -144,6 +147,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   // The open folder lives in the URL (?folder=id): reload and back/forward keep the place.
   const pathname = usePathname();
   const current = useSearchParams().get("folder");
+  const router = useRouter();
+  useEffect(() => writeStored(lastFolderKey(tokenId), current), [tokenId, current]);
   const go = useCallback(
     (folderId: string | null) => window.history.pushState(null, "", folderId ? `${pathname}?folder=${folderId}` : pathname),
     [pathname],
@@ -221,7 +226,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       <div className="flex flex-wrap items-center gap-3">
         <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-lg font-semibold tracking-tight">
           <button type="button" className={cn("truncate", current && "text-muted hover:text-fg")} onClick={() => go(null)}>
-            {name}
+            {t("files.allFiles")}
           </button>
           {current && pathQuery.isLoading && <Spinner className="ml-2 h-4 w-4" />}
           {path.map((p, i) => (
@@ -293,10 +298,11 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
           >
             {(closeMenu) => (
               <>
-                <MenuItem icon={Palette} label={t("vault.editDrive")} onClick={() => (closeMenu(), setDialog({ type: "settings" }))} />
-                <MenuItem icon={KeyRound} label={t("vault.changePassphrase")} onClick={() => (closeMenu(), setDialog({ type: "passphrase" }))} />
                 <MenuItem icon={Lock} label={t("vault.lock")} onClick={() => store.lock(tokenId)} />
-                <MenuItem icon={Trash2} label={t("vault.resetTitle")} danger onClick={() => (closeMenu(), setDialog({ type: "reset" }))} />
+                <MenuItem icon={Settings} label={t("driveMenu.settings")} onClick={() => (closeMenu(), router.push(`/drive/${tokenId}/settings`))} />
+                <div className="my-1 border-t border-border" role="separator" />
+                <MenuItem icon={ArrowRightLeft} label={t("driveMenu.transfer")} danger onClick={() => (closeMenu(), setDialog({ type: "transfer" }))} />
+                <MenuItem icon={Eraser} label={t("driveMenu.format")} danger onClick={() => (closeMenu(), setDialog({ type: "format" }))} />
               </>
             )}
           </Menu>
@@ -421,9 +427,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       <DeleteDialog item={dialog?.type === "delete" ? dialog.item : null} onClose={close} ctx={ctx} />
       <ShareDialog item={dialog?.type === "share" ? dialog.item : null} onClose={close} ctx={ctx} />
       <LinksDialog open={dialog?.type === "links"} onClose={close} ctx={ctx} />
-      <ChangePassphraseDialog open={dialog?.type === "passphrase"} onClose={close} ctx={ctx} etag={unlocked.etag} />
-      {dialog?.type === "settings" && <DriveSettingsDialog open onClose={close} token={token} info={info} />}
-      <ResetDialog open={dialog?.type === "reset"} onClose={close} token={token} tokenId={tokenId} />
+      <TransferDialog open={dialog?.type === "transfer"} onClose={close} token={token} info={info} />
+      <ResetDialog open={dialog?.type === "format"} onClose={close} token={token} tokenId={tokenId} />
     </div>
   );
 }

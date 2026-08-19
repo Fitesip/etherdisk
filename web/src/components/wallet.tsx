@@ -7,6 +7,7 @@ import { useConnect, useConnection, useConnectors, useDisconnect, type Connector
 import { useT } from "@/i18n";
 import { WC_PROJECT_ID } from "@/lib/config";
 import { shortAddress } from "@/lib/format";
+import { useHydrated } from "@/lib/hydrated";
 import { useSession } from "@/lib/session";
 
 import { Button, Dialog, Notice } from "./ui";
@@ -68,9 +69,10 @@ export function ConnectButton({ className }: { className?: string }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const { status } = useConnection();
+  const hydrated = useHydrated();
   return (
     <>
-      <Button variant="primary" className={className} loading={status === "connecting" || status === "reconnecting"} onClick={() => setOpen(true)}>
+      <Button variant="primary" className={className} loading={hydrated && (status === "connecting" || status === "reconnecting")} onClick={() => setOpen(true)}>
         <Wallet className="h-4 w-4" />
         {t("wallet.connect")}
       </Button>
@@ -86,7 +88,9 @@ export function WalletButton() {
   const disconnect = useDisconnect();
   const { signOut } = useSession();
 
-  if (!isConnected || !address) return <ConnectButton />;
+  const hydrated = useHydrated();
+
+  if (!hydrated || !isConnected || !address) return <ConnectButton />;
   return (
     <details className="group relative">
       <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg border border-border px-3 font-mono text-sm hover:bg-bg-subtle">
@@ -94,7 +98,7 @@ export function WalletButton() {
         {shortAddress(address)}
         <ChevronDown className="h-4 w-4 text-muted transition group-open:rotate-180" />
       </summary>
-      <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-border bg-card p-1 shadow-lg">
+      <div className="absolute right-0 z-20 mt-1 w-48 origin-top-right animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg">
         <button
           type="button"
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-bg-subtle"
