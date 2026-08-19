@@ -73,45 +73,186 @@ function Ciphertext({ length, seed, className }: { length: number; seed: string;
 
 // ------------------------------------------------------------------ hero
 
-const DEMO_DRIVES = [
-  { id: 7, gb: 4, used: 0.64, color: "#6366f1", tilt: "-4deg", x: "0%", y: "0%", delay: "0s" },
-  { id: 12, gb: 2, used: 0.31, color: "#10b981", tilt: "3deg", x: "18%", y: "34%", delay: "-2s" },
-  { id: 3, gb: 1, used: 0.88, color: "#f59e0b", tilt: "-2deg", x: "6%", y: "68%", delay: "-4s" },
-];
+/** Deterministic pseudo-random hex (same on server and client, no hydration mismatch). */
+function seededHex(seed: number, n: number): string {
+  let s = seed * 2654435761;
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    s = (s ^ (s >>> 15)) * 2246822507;
+    s = (s ^ (s >>> 13)) * 3266489909;
+    s ^= s >>> 16;
+    out += HEX[(s >>> 0) % 16];
+  }
+  return out;
+}
 
-function DemoDrive({ d, uploading }: { d: (typeof DEMO_DRIVES)[number]; uploading?: boolean }) {
+const COLS = 4;
+const ROWS = 2;
+const CHUNKS = COLS * ROWS;
+
+/** How the plaintext of each demo file looks, sliced into chunk tiles. */
+const DEMO_FILES = [
+  {
+    name: "beach-sunset.jpg",
+    size: "6.8 MB",
+    icon: ImageIcon,
+    // One picture across all tiles: each tile shows its own slice.
+    tile: (i: number): CSSProperties => ({
+      backgroundImage:
+        "radial-gradient(circle at 70% 38%, #fde68a 0 7%, transparent 8%), linear-gradient(180deg, #f97316 0%, #fb7185 30%, #a855f7 52%, #1e3a8a 53%, #0ea5e9 72%, #fcd34d 73%, #f59e0b 100%)",
+      backgroundSize: `${COLS * 100}% ${ROWS * 100}%`,
+      backgroundPosition: `${((i % COLS) * 100) / (COLS - 1)}% ${(Math.floor(i / COLS) * 100) / (ROWS - 1)}%`,
+    }),
+  },
+  {
+    name: "taxes-2026.pdf",
+    size: "812 KB",
+    icon: FileText,
+    tile: (): CSSProperties => ({
+      backgroundColor: "#f8fafc",
+      backgroundImage: "repeating-linear-gradient(180deg, transparent 0 7px, #cbd5e1 7px 9px)",
+      backgroundSize: "70% 100%",
+      backgroundPosition: "center 6px",
+      backgroundRepeat: "no-repeat",
+    }),
+  },
+  {
+    name: "wedding-film.mp4",
+    size: "1.3 GB",
+    icon: Film,
+    // Film frames: dark strip with sprocket holes and a colored frame.
+    tile: (i: number): CSSProperties => ({
+      backgroundColor: "#111827",
+      backgroundImage: `repeating-linear-gradient(90deg, #f8fafc 0 4px, transparent 4px 9px), repeating-linear-gradient(90deg, #f8fafc 0 4px, transparent 4px 9px), linear-gradient(135deg, hsl(${(i * 37) % 360} 70% 55%), hsl(${(i * 37 + 60) % 360} 70% 40%))`,
+      backgroundSize: "100% 4px, 100% 4px, 76% 56%",
+      backgroundPosition: "0 3px, 0 calc(100% - 3px), center",
+      backgroundRepeat: "repeat-x, repeat-x, no-repeat",
+    }),
+  },
+] as const;
+
+type Phase = "ready" | "encrypting" | "uploading" | "stored";
+const STEP_MS = 280;
+
+/**
+ * The real upload pipeline, animated: the file is cut into chunks, each chunk is
+ * encrypted in turn (tile flips to ciphertext, the name follows), then the ciphertext
+ * drops into the drive. Cycles through a photo, a PDF and a video.
+ */
+function EncryptionDemo() {
   const t = useT();
+  const [state, setState] = useState<{ file: number; phase: Phase; step: number }>({ file: 0, phase: "ready", step: 0 });
+  const [stored, setStored] = useState(0);
+
+  useEffect(() => {
+    if (prefersReducedMotion()) return;
+    const { phase, step } = state;
+    const next = (ms: number, s: Partial<typeof state>) => setTimeout(() => setState((p) => ({ ...p, ...s })), ms);
+    let timer: ReturnType<typeof setTimeout>;
+    if (phase === "ready") timer = next(900, { phase: "encrypting", step: 0 });
+    else if (phase === "encrypting") timer = step < CHUNKS ? next(STEP_MS, { step: step + 1 }) : next(350, { phase: "uploading" });
+    else if (phase === "uploading")
+      timer = setTimeout(() => {
+        setStored((n) => n + 1);
+        setState((p) => ({ ...p, phase: "stored" }));
+      }, 750);
+    else timer = setTimeout(() => setState((p) => ({ file: (p.file + 1) % DEMO_FILES.length, phase: "ready", step: 0 })), 1600);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  const file = DEMO_FILES[state.file];
+  const Icon = file.icon;
+  const encrypted = (i: number) => state.phase !== "ready" && (state.phase !== "encrypting" || i < state.step);
+  const shown = state.phase === "encrypting" ? Math.round((file.name.length * state.step) / CHUNKS) : state.phase === "ready" ? 0 : file.name.length;
+  const name = seededHex(state.file + 7, shown) + file.name.slice(shown);
+  const usage = 0.22 + ((stored % 6) * 0.11);
+
+  let status: string;
+  if (state.phase === "ready") status = t("landing.demo.ready");
+  else if (state.phase === "encrypting") status = t("landing.demo.encrypting", { n: Math.min(state.step + 1, CHUNKS), total: CHUNKS });
+  else if (state.phase === "uploading") status = t("landing.demo.uploading");
+  else status = t("landing.demo.stored");
+
   return (
-    <div
-      className="float absolute w-[min(100%,20rem)] rounded-2xl border border-border bg-card/90 p-4 shadow-xl backdrop-blur"
-      style={{ left: d.x, top: d.y, "--tilt": d.tilt, "--accent": d.color, animationDelay: d.delay } as CSSProperties}
-    >
-      <div className="flex items-center gap-3">
-        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-white shadow-md" style={{ background: d.color }}>
-          <HardDrive className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between text-sm">
-            <span className="font-medium">{t("landing.demoDrive", { id: d.id })}</span>
-            <span className="font-mono text-xs text-muted">{d.gb} GB</span>
+    <div className="relative mx-auto flex w-full max-w-sm flex-col gap-4">
+      {/* The file being uploaded */}
+      <div className="float rounded-2xl border border-border bg-card/90 p-4 shadow-2xl shadow-accent/10 backdrop-blur" style={{ "--tilt": "-1.5deg" } as CSSProperties}>
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
+            <Icon className="h-5 w-5" />
           </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-subtle">
-            <div className="h-full rounded-full" style={{ width: `${d.used * 100}%`, background: d.color }} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-mono text-sm">
+              <span className="text-accent">{name.slice(0, shown)}</span>
+              {name.slice(shown)}
+            </p>
+            <p className="text-xs text-muted">{file.size}</p>
+          </div>
+          <Lock className={cn("h-4 w-4 shrink-0 transition-colors duration-500", state.phase === "ready" ? "text-muted" : "text-accent")} />
+        </div>
+
+        <div className="mt-4 grid grid-cols-4 gap-1.5 [perspective:600px]">
+          {Array.from({ length: CHUNKS }, (_, i) => (
+            <div
+              key={i}
+              className={cn(
+                "aspect-square transition-all duration-500 ease-out",
+                state.phase === "uploading" && "translate-y-24 opacity-0",
+                state.phase === "stored" && "opacity-0",
+              )}
+              style={{ transitionDelay: state.phase === "uploading" ? `${i * 45}ms` : "0ms" }}
+            >
+              <div
+                className="relative h-full w-full transition-transform duration-500 [transform-style:preserve-3d]"
+                style={{ transform: encrypted(i) ? "rotateY(180deg)" : "none" }}
+              >
+                <div className="absolute inset-0 rounded-md [backface-visibility:hidden]" style={file.tile(i)} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center rounded-md bg-[#11111a] font-mono text-[9px] leading-tight text-[#a5b4fc] [backface-visibility:hidden] [transform:rotateY(180deg)]">
+                  <span>{seededHex(state.file * 31 + i, 4)}</span>
+                  <span className="opacity-60">{seededHex(state.file * 31 + i + 99, 4)}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3 text-xs">
+          <span className={cn("flex items-center gap-1.5 truncate", state.phase === "stored" ? "text-success" : "text-muted")}>
+            {state.phase === "stored" && <Check className="h-3.5 w-3.5 shrink-0" />}
+            {status}
+          </span>
+          <span className="shrink-0 font-mono text-[10px] text-muted">{t("landing.demo.cipher")}</span>
+        </div>
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300"
+            style={{ width: `${state.phase === "ready" ? 0 : state.phase === "encrypting" ? (state.step / CHUNKS) * 100 : 100}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Where the ciphertext lands */}
+      <div className="float rounded-2xl border border-border bg-card/90 p-4 shadow-xl backdrop-blur [animation-delay:-3s]" style={{ "--tilt": "1deg" } as CSSProperties}>
+        <div className="flex items-center gap-3">
+          <div
+            className={cn(
+              "grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg shadow-md transition-transform duration-300",
+              state.phase === "stored" && "scale-110",
+            )}
+          >
+            <HardDrive className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between text-sm">
+              <span className="font-medium">{t("landing.demoDrive", { id: 7 })}</span>
+              <span className="font-mono text-xs text-muted">4 GB</span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-subtle">
+              <div className="h-full rounded-full bg-accent transition-[width] duration-700 ease-out" style={{ width: `${usage * 100}%` }} />
+            </div>
           </div>
         </div>
       </div>
-      {uploading && (
-        <div className="mt-4 rounded-xl border border-border bg-bg-subtle/80 p-3">
-          <div className="flex items-center gap-2 text-xs">
-            <Lock className="h-3.5 w-3.5" style={{ color: d.color }} />
-            <span className="truncate">{t("landing.demoUploading", { name: "vacation-2026.mp4" })}</span>
-          </div>
-          <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
-            <div className="h-full rounded-full [animation:progress-loop_3.2s_ease-in-out_infinite]" style={{ background: d.color }} />
-          </div>
-          <Ciphertext length={36} seed="9f3ac0e27b14d85f" className="mt-2 block truncate text-[10px] text-muted" />
-        </div>
-      )}
     </div>
   );
 }
@@ -131,10 +272,7 @@ function Hero() {
       <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 pt-14 pb-20 md:grid-cols-[1.15fr_1fr] md:pt-24 md:pb-28">
         <div>
           <p className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-3 py-1 text-xs text-muted backdrop-blur">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-success [animation:ping-soft_2s_cubic-bezier(0,0,0.2,1)_infinite]" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-            </span>
+            <ShieldCheck className="h-3.5 w-3.5 text-accent" />
             {t("landing.eyebrow")}
           </p>
           <h1 className="animate-fade-up mt-6 text-4xl font-semibold tracking-tight text-balance [animation-delay:80ms] sm:text-6xl">
@@ -159,10 +297,8 @@ function Hero() {
           <p className="animate-fade-up mt-6 text-xs text-muted [animation-delay:320ms]">{t("landing.testnet")}</p>
         </div>
 
-        <div aria-hidden className="animate-fade-up relative mx-auto h-[26rem] w-full max-w-md [animation-delay:200ms]">
-          {DEMO_DRIVES.map((d, i) => (
-            <DemoDrive key={d.id} d={d} uploading={i === 0} />
-          ))}
+        <div aria-hidden className="animate-fade-up [animation-delay:200ms]">
+          <EncryptionDemo />
         </div>
       </div>
     </section>

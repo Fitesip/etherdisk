@@ -156,22 +156,6 @@ dialog[open]::backdrop {
     background-position: 200% center;
   }
 }
-@keyframes progress-loop {
-  0% {
-    width: 8%;
-  }
-  70%,
-  100% {
-    width: 92%;
-  }
-}
-@keyframes ping-soft {
-  75%,
-  100% {
-    transform: scale(2.2);
-    opacity: 0;
-  }
-}
 @keyframes draw-line {
   from {
     transform: scaleX(0);
