@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let db = connect_db(&config.database_url).await?;
+    vault_server::bind_deployment(&db, config.contract_address, config.chain_id).await?;
     let store = Arc::new(LocalStore::new(&config.data_dir)?);
     let rpc = Arc::new(RpcChain::new(&config.rpc_url, config.contract_address)?);
     let chain = Ownership::new(rpc.clone(), OWNER_CACHE_TTL);

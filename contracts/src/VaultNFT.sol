@@ -5,6 +5,8 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
+import {VaultArt} from "./VaultArt.sol";
+
 /// @title VaultNFT
 /// @notice Each token is a storage vault. The token's tier defines its capacity in GB.
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
@@ -79,6 +81,13 @@ contract VaultNFT is ERC721Enumerable, Ownable {
         for (uint256 i; i < n; ++i) {
             ids[i] = tokenOfOwnerByIndex(account, i);
         }
+    }
+
+    /// @notice Fully on-chain metadata: name, capacity attributes and an SVG image.
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        _requireOwned(tokenId);
+        uint256 tierId = _tokenTier[tokenId];
+        return VaultArt.tokenURI(tokenId, _tiers[tierId].capacityGb, tierId);
     }
 
     // ---------------------------------------------------------------- admin

@@ -21,7 +21,7 @@ use uuid::Uuid;
 use vault_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
 use vault_server::chain::{Chain, Ownership};
 use vault_server::storage::LocalStore;
-use vault_server::{connect_db, indexer, AppState, Config};
+use vault_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
 // ------------------------------------------------------------ fixtures
 
@@ -470,6 +470,18 @@ b" })).await.status, StatusCode::BAD_REQUEST);
 
     let tb = app.login(&bob).await;
     assert_eq!(app.json(Method::PUT, "/api/vaults/1/profile", Some(&tb), json!({ "name": "mine" })).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn database_is_bound_to_one_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
+    let (a, b) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
+    bind_deployment(&db, a, 1).await.unwrap();
+    bind_deployment(&db, a, 1).await.unwrap(); // restart: fine
+    let err = bind_deployment(&db, b, 1).await.unwrap_err().to_string();
+    assert!(err.contains("DATABASE_URL"), "{err}");
+    assert!(bind_deployment(&db, a, 2).await.is_err(), "other chain");
 }
 
 // ------------------------------------------------------------ shares & transfer

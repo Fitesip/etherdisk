@@ -3,6 +3,14 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {VaultNFT} from "../src/VaultNFT.sol";
+import {VaultArt} from "../src/VaultArt.sol";
+
+/// Exposes the library's internal functions to tests.
+contract ArtHarness {
+    function svg(uint256 id, uint32 gb) external pure returns (string memory) {
+        return VaultArt.svg(id, gb);
+    }
+}
 
 contract VaultNFTTest is Test {
     VaultNFT vault;
@@ -140,5 +148,35 @@ contract VaultNFTTest is Test {
         vm.prank(alice);
         uint256 id = vault.mint{value: price}(tierId);
         assertEq(vault.tierOf(id), tierId);
+    }
+
+    // ---------------------------------------------------------------- metadata
+
+    function _has(string memory haystack, string memory needle) internal pure returns (bool) {
+        return vm.indexOf(haystack, needle) != type(uint256).max;
+    }
+
+    function test_tokenURIIsOnChainJson() public {
+        vm.prank(alice);
+        uint256 id = vault.mint{value: 0.001 ether}(2);
+        string memory uri = vault.tokenURI(id);
+        assertTrue(_has(uri, "data:application/json;base64,"));
+        assertEq(vm.indexOf(uri, "data:application/json;base64,"), 0);
+    }
+
+    function test_tokenURINonexistentReverts() public {
+        vm.expectRevert();
+        vault.tokenURI(42);
+    }
+
+    function test_svgShowsDriveAndCapacity() public {
+        ArtHarness art = new ArtHarness();
+        string memory s = art.svg(7, 4);
+        assertTrue(_has(s, "<svg"));
+        assertTrue(_has(s, "Drive #7"));
+        assertTrue(_has(s, ">4 GB<"));
+        assertTrue(_has(s, "#f59e0b"));
+        assertTrue(_has(art.svg(1, 2048), ">2 TB<"));
+        assertTrue(_has(art.svg(1, 1536), ">1536 GB<"));
     }
 }

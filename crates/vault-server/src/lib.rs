@@ -80,6 +80,23 @@ pub async fn connect_db(url: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Ties the database to one deployment; the first start adopts the configured contract.
+pub async fn bind_deployment(db: &SqlitePool, contract: alloy::primitives::Address, chain_id: u64) -> anyhow::Result<()> {
+    let contract = format!("{contract:#x}");
+    sqlx::query("INSERT OR IGNORE INTO deployment (id, contract, chain_id) VALUES (1, ?, ?)")
+        .bind(&contract)
+        .bind(chain_id as i64)
+        .execute(db)
+        .await?;
+    let (bound, bound_chain): (String, i64) = sqlx::query_as("SELECT contract, chain_id FROM deployment WHERE id = 1").fetch_one(db).await?;
+    if bound != contract || bound_chain != chain_id as i64 {
+        anyhow::bail!(
+            "this database belongs to contract {bound} on chain {bound_chain}, but CONTRACT_ADDRESS is {contract} on chain {chain_id}.              Token ids restart on a new contract, so its drives must not see the old files:              point DATABASE_URL and DATA_DIR to a new location (or delete the old data)."
+        );
+    }
+    Ok(())
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .nest(
