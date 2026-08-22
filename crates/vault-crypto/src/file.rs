@@ -122,6 +122,16 @@ impl FileEncryptor {
         }
     }
 
+    /// Continues an interrupted upload at chunk `next_index`, with the original header.
+    ///
+    /// The caller must feed exactly the same plaintext as the first attempt from this
+    /// chunk on: the nonce is derived from the chunk index, so different data under a
+    /// reused index would break confidentiality. Verify by re-encrypting the last stored
+    /// chunk and comparing it with the stored ciphertext before resuming.
+    pub fn resume(key: &FileKey, header: FileHeader, next_index: u64) -> Self {
+        Self { next_index, ..Self::new(key, header) }
+    }
+
     /// Bytes to write at the start of the encrypted file.
     pub fn header_bytes(&self) -> [u8; HEADER_LEN] {
         self.header_bytes

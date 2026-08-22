@@ -416,6 +416,9 @@ async fn folders_move_and_recursive_delete() {
     let blob_path = app.data_dir.path().join("blobs").join("1").join(f.to_string());
     assert!(blob_path.exists());
     assert_eq!(app.req(Method::DELETE, &format!("/api/vaults/1/objects/{a}"), Some(t), Body::empty(), "", &[]).await.status, StatusCode::NO_CONTENT);
+    assert!(blob_path.exists(), "trashed, not deleted");
+    let del = |uri: String| async move { app.req(Method::DELETE, &uri, Some(t), Body::empty(), "", &[]).await.status };
+    assert_eq!(del(format!("/api/vaults/1/objects/{a}/permanent")).await, StatusCode::NO_CONTENT);
     assert!(!blob_path.exists());
     assert_eq!(app.get("/api/vaults/1/objects", Some(t)).await.json().as_array().unwrap().len(), 0);
     assert_eq!(app.get("/api/vaults/1", Some(t)).await.json()["used_bytes"], 0);
@@ -482,6 +485,138 @@ async fn database_is_bound_to_one_contract() {
     let err = bind_deployment(&db, b, 1).await.unwrap_err().to_string();
     assert!(err.contains("DATABASE_URL"), "{err}");
     assert!(bind_deployment(&db, a, 2).await.is_err(), "other chain");
+}
+
+#[tokio::test]
+async fn trash_restore_and_purge() {
+    let app = app().await;
+    let alice = PrivateKeySigner::random();
+    app.chain.mint(1, alice.address(), 1);
+    let t = app.login(&alice).await;
+    let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
+
+    let folder = |id: Uuid, parent: Option<Uuid>| json!({ "id": id, "parent_id": parent, "metadata": "AA==" });
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    app.json(Method::POST, "/api/vaults/1/folders", Some(&t), folder(a, None)).await;
+    app.json(Method::POST, "/api/vaults/1/folders", Some(&t), folder(b, None)).await;
+    let (inner, _) = upload(&app, &t, &vault, Some(a), b"inside a").await;
+    let (loose, _) = upload(&app, &t, &vault, None, b"loose").await;
+
+    let (app, t) = (&app, &t);
+    let call = |m: Method, uri: String| async move { app.req(m, &uri, Some(t), Body::empty(), "application/json", &[]).await };
+    let ids = |v: Value| {
+        let mut ids = v.as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+
+    // Trash folder `a` (with its file) and the loose file.
+    assert_eq!(call(Method::DELETE, format!("/api/vaults/1/objects/{a}")).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(call(Method::DELETE, format!("/api/vaults/1/objects/{loose}")).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(ids(app.get("/api/vaults/1/objects", Some(t)).await.json()), [b.to_string()]);
+    assert_eq!(ids(app.get("/api/vaults/1/trash", Some(t)).await.json()), sorted(vec![a.to_string(), loose.to_string()]));
+    // Search index and paths skip trashed subtrees; nothing can be created inside them.
+    assert_eq!(ids(app.get("/api/vaults/1/objects/all", Some(t)).await.json()), [b.to_string()]);
+    assert_eq!(app.get(&format!("/api/vaults/1/objects/{a}/path"), Some(t)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.json(Method::POST, "/api/vaults/1/folders", Some(t), folder(Uuid::new_v4(), Some(a))).await.status, StatusCode::BAD_REQUEST);
+    let r = app.json(Method::POST, &format!("/api/vaults/1/objects/{inner}/move"), Some(t), json!({ "parent_id": b })).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "objects in the trash are restored, not moved");
+    // Quota still counts the trash.
+    assert!(app.get("/api/vaults/1", Some(t)).await.json()["used_bytes"].as_u64().unwrap() > 0);
+
+    // Restore the folder: its file comes back with it.
+    assert_eq!(call(Method::POST, format!("/api/vaults/1/objects/{a}/restore")).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(ids(app.get(&format!("/api/vaults/1/objects?parent={a}"), Some(t)).await.json()), [inner.to_string()]);
+    assert_eq!(call(Method::POST, format!("/api/vaults/1/objects/{a}/restore")).await.status, StatusCode::BAD_REQUEST);
+
+    // A file restored while its folder is trashed lands in the root.
+    call(Method::DELETE, format!("/api/vaults/1/objects/{inner}")).await;
+    call(Method::DELETE, format!("/api/vaults/1/objects/{a}")).await;
+    call(Method::POST, format!("/api/vaults/1/objects/{inner}/restore")).await;
+    let root = app.get("/api/vaults/1/objects", Some(t)).await.json();
+    assert!(root.as_array().unwrap().iter().any(|o| o["id"] == inner.to_string() && o["parent_id"].is_null()));
+
+    // Empty the trash: gone for good, blobs deleted, quota freed.
+    let loose_blob = app.data_dir.path().join("blobs").join("1").join(loose.to_string());
+    assert!(loose_blob.exists());
+    assert_eq!(call(Method::POST, "/api/vaults/1/trash/empty".into()).await.status, StatusCode::NO_CONTENT);
+    assert!(!loose_blob.exists());
+    assert_eq!(app.get("/api/vaults/1/trash", Some(t)).await.json().as_array().unwrap().len(), 0);
+    assert_eq!(ids(app.get("/api/vaults/1/objects/all", Some(t)).await.json()), sorted(vec![b.to_string(), inner.to_string()]));
+}
+
+#[tokio::test]
+async fn unfinished_uploads_can_be_listed_and_resumed() {
+    let app = app().await;
+    let alice = PrivateKeySigner::random();
+    app.chain.mint(1, alice.address(), 1);
+    let t = app.login(&alice).await;
+    let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
+    let ct = encrypt(&vault, &[7u8; 5000], 1024);
+
+    let id = Uuid::new_v4();
+    let r = app
+        .json(Method::POST, "/api/vaults/1/files", Some(&t), json!({ "id": id, "parent_id": null, "metadata": "AA==", "size": ct.len(), "thumb_size": null }))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let half = ct.len() / 2;
+    app.bytes(Method::PUT, &format!("/api/vaults/1/files/{id}/content?offset=0"), &t, ct[..half].to_vec()).await;
+
+    let pending = app.get("/api/vaults/1/uploads", Some(&t)).await.json();
+    assert_eq!(pending[0]["id"], id.to_string());
+    assert_eq!(pending[0]["received"], half as u64);
+    assert_eq!(pending[0]["size"], ct.len() as u64);
+
+    // The owner can read back what was stored, to verify before resuming.
+    let r = app.req(Method::GET, &format!("/api/vaults/1/files/{id}/content"), Some(&t), Body::empty(), "", &[("range", "bytes=0-9")]).await;
+    assert_eq!(r.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(r.body, ct[..10]);
+
+    // Resume from `received`.
+    let r = app.bytes(Method::PUT, &format!("/api/vaults/1/files/{id}/content?offset={half}"), &t, ct[half..].to_vec()).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(app.json(Method::POST, &format!("/api/vaults/1/files/{id}/complete"), Some(&t), json!({})).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/vaults/1/uploads", Some(&t)).await.json().as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn share_expiry_and_trashed_files() {
+    let app = app().await;
+    let alice = PrivateKeySigner::random();
+    app.chain.mint(1, alice.address(), 1);
+    let t = app.login(&alice).await;
+    let (_vault, file, _) = setup_vault_with_file(&app, &t, b"shared").await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    let share = |expires: Option<i64>| {
+        app.json(Method::POST, "/api/vaults/1/shares", Some(&t), json!({
+            "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==", "expires_at": expires
+        }))
+    };
+    assert_eq!(share(Some(now - 10)).await.status, StatusCode::BAD_REQUEST, "past");
+    assert_eq!(share(Some(now + 400 * 86400)).await.status, StatusCode::BAD_REQUEST, "over a year");
+    let r = share(Some(now + 3600)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["id"].as_str().unwrap().to_owned();
+    assert_eq!(app.get("/api/vaults/1/shares", Some(&t)).await.json()[0]["expires_at"], now + 3600);
+    assert_eq!(app.get(&format!("/api/shares/{id}"), None).await.status, StatusCode::OK);
+
+    // Trashed files are not served; restored ones are again.
+    let content = format!("/api/shares/{id}/files/{file}/content");
+    assert_eq!(app.get(&content, None).await.status, StatusCode::OK);
+    app.req(Method::DELETE, &format!("/api/vaults/1/objects/{file}"), Some(&t), Body::empty(), "", &[]).await;
+    assert_eq!(app.get(&content, None).await.status, StatusCode::NOT_FOUND);
+    app.req(Method::POST, &format!("/api/vaults/1/objects/{file}/restore"), Some(&t), Body::empty(), "", &[]).await;
+    assert_eq!(app.get(&content, None).await.status, StatusCode::OK);
+
+    // Expired links behave as revoked.
+    sqlx::query("UPDATE shares SET expires_at = ? WHERE id = ?").bind(now - 1).bind(&id).execute(&app.state.db).await.unwrap();
+    assert_eq!(app.get(&format!("/api/shares/{id}"), None).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.get(&content, None).await.status, StatusCode::NOT_FOUND);
 }
 
 // ------------------------------------------------------------ shares & transfer

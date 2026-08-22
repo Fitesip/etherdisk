@@ -8,6 +8,9 @@
 //!   4. `POST /files/{id}/complete` checks sizes and headers, the file becomes `ready`.
 //!
 //! Pending files that are never completed are removed by the cleanup task.
+//!
+//! Deleting moves an object to the trash (`trashed_at`); everything inside a trashed
+//! folder is hidden with it. The trash is purged after `TRASH_TTL_SECS`.
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -29,10 +32,18 @@ pub const MAX_METADATA: usize = 4 * 1024;
 pub const MAX_THUMBNAIL: u64 = 2 * 1024 * 1024;
 /// Pending uploads older than this are deleted.
 pub const PENDING_TTL_SECS: i64 = 24 * 3600;
+/// Trashed objects older than this are deleted for good.
+pub const TRASH_TTL_SECS: i64 = 30 * 24 * 3600;
+
+const COLUMNS: &str = "id, parent_id, kind, metadata, size, thumb_size, created_at, updated_at, trashed_at";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/vaults/{token_id}/objects", get(list))
+        .route("/vaults/{token_id}/objects/all", get(list_all))
+        .route("/vaults/{token_id}/trash", get(list_trash))
+        .route("/vaults/{token_id}/trash/empty", post(empty_trash))
+        .route("/vaults/{token_id}/uploads", get(list_uploads))
         .route("/vaults/{token_id}/folders", post(create_folder))
         .route("/vaults/{token_id}/files", post(create_file))
         .route(
@@ -48,6 +59,8 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}/objects/{id}/metadata", put(set_metadata))
         .route("/vaults/{token_id}/objects/{id}/move", post(move_object))
         .route("/vaults/{token_id}/objects/{id}/path", get(path))
+        .route("/vaults/{token_id}/objects/{id}/restore", post(restore))
+        .route("/vaults/{token_id}/objects/{id}/permanent", delete(remove_permanent))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -64,6 +77,8 @@ pub struct Object {
     thumb_size: Option<i64>,
     created_at: i64,
     updated_at: i64,
+    /// Set while in the trash.
+    trashed_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -83,10 +98,10 @@ async fn list(
     if let Some(p) = &q.parent {
         ensure_folder(&st, &token, p).await?;
     }
-    let rows = sqlx::query_as::<_, Object>(
-        "SELECT id, parent_id, kind, metadata, size, thumb_size, created_at, updated_at FROM objects
-         WHERE token_id = ? AND parent_id IS ? AND status = 'ready' ORDER BY kind DESC, created_at",
-    )
+    let rows = sqlx::query_as::<_, Object>(&format!(
+        "SELECT {COLUMNS} FROM objects
+         WHERE token_id = ? AND parent_id IS ? AND status = 'ready' AND trashed_at IS NULL ORDER BY kind DESC, created_at"
+    ))
     .bind(&token)
     .bind(parent)
     .fetch_all(&st.db)
@@ -101,17 +116,48 @@ async fn path(State(st): State<AppState>, user: AuthUser, Path((token_id, id)): 
         "WITH RECURSIVE up(id, depth) AS (
             SELECT id, 0 FROM objects WHERE id = ? AND token_id = ?
             UNION ALL SELECT o.parent_id, up.depth + 1 FROM objects o JOIN up ON o.id = up.id WHERE o.parent_id IS NOT NULL
-         ) SELECT o.id, o.parent_id, o.kind, o.metadata, o.size, o.thumb_size, o.created_at, o.updated_at
+         ) SELECT o.id, o.parent_id, o.kind, o.metadata, o.size, o.thumb_size, o.created_at, o.updated_at, o.trashed_at
            FROM objects o JOIN up USING (id) ORDER BY up.depth DESC",
     )
     .bind(id.to_string())
     .bind(&token)
     .fetch_all(&st.db)
     .await?;
-    if rows.is_empty() {
+    if rows.is_empty() || rows.iter().any(|r| r.trashed_at.is_some()) {
         return Err(AppError::NotFound);
     }
     Ok(Json(rows))
+}
+
+/// Every live (ready, not trashed) object of the vault, for client-side search:
+/// names are encrypted, so the browser decrypts and filters them.
+async fn list_all(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Vec<Object>>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let rows = sqlx::query_as::<_, Object>(
+        "WITH RECURSIVE live(id) AS (
+            SELECT id FROM objects WHERE token_id = ? AND parent_id IS NULL AND status = 'ready' AND trashed_at IS NULL
+            UNION ALL SELECT o.id FROM objects o JOIN live ON o.parent_id = live.id
+                      WHERE o.status = 'ready' AND o.trashed_at IS NULL
+         ) SELECT o.id, o.parent_id, o.kind, o.metadata, o.size, o.thumb_size, o.created_at, o.updated_at, o.trashed_at
+           FROM objects o JOIN live USING (id)",
+    )
+    .bind(&token)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+/// Whether the object or any folder above it is in the trash.
+pub(crate) async fn in_trash(st: &AppState, id: &Uuid) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "WITH RECURSIVE up(id, parent_id, trashed_at) AS (
+            SELECT id, parent_id, trashed_at FROM objects WHERE id = ?
+            UNION ALL SELECT o.id, o.parent_id, o.trashed_at FROM objects o JOIN up ON o.id = up.parent_id
+         ) SELECT EXISTS (SELECT 1 FROM up WHERE trashed_at IS NOT NULL)",
+    )
+    .bind(id.to_string())
+    .fetch_one(&st.db)
+    .await?)
 }
 
 async fn ensure_folder(st: &AppState, token: &str, id: &Uuid) -> AppResult<()> {
@@ -121,6 +167,7 @@ async fn ensure_folder(st: &AppState, token: &str, id: &Uuid) -> AppResult<()> {
         .fetch_optional(&st.db)
         .await?;
     match found.as_deref() {
+        Some("folder") if in_trash(st, id).await? => Err(AppError::bad("parent folder not found")),
         Some("folder") => Ok(()),
         Some(_) => Err(AppError::bad("parent is not a folder")),
         None => Err(AppError::bad("parent folder not found")),
@@ -353,8 +400,18 @@ async fn get_content(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let (_, token) = owned(&st, &user, &token_id).await?;
-    let file = file_row(&st, &token, &id, "ready").await?;
-    serve_blob(st.store.as_ref(), &content_key(&token, &id), file.size, &headers).await
+    // Pending files too: resuming an upload re-checks the last stored chunk. Only the
+    // bytes received so far are served.
+    let key = content_key(&token, &id);
+    let size = match file_row(&st, &token, &id, "ready").await {
+        Ok(file) => file.size,
+        Err(AppError::NotFound) => {
+            file_row(&st, &token, &id, "pending").await?;
+            st.store.size(&key).await?.unwrap_or(0)
+        }
+        Err(e) => return Err(e),
+    };
+    serve_blob(st.store.as_ref(), &key, size, &headers).await
 }
 
 async fn get_thumbnail(
@@ -411,6 +468,9 @@ async fn move_object(
     Json(req): Json<MoveRequest>,
 ) -> AppResult<StatusCode> {
     let (_, token) = owned(&st, &user, &token_id).await?;
+    if in_trash(&st, &id).await? {
+        return Err(AppError::bad("restore the object from the trash first"));
+    }
     if let Some(p) = &req.parent_id {
         ensure_folder(&st, &token, p).await?;
         // The target must not be the object itself or anything inside it.
@@ -442,8 +502,38 @@ async fn move_object(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Deletes a file, or a folder with everything inside it. Also cancels pending uploads.
+/// Moves a file or folder to the trash. A pending upload is cancelled (deleted) instead.
 async fn remove(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path((token_id, id)): Path<(String, Uuid)>,
+) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM objects WHERE id = ? AND token_id = ?")
+        .bind(id.to_string())
+        .bind(&token)
+        .fetch_optional(&st.db)
+        .await?;
+    match status.as_deref() {
+        None => Err(AppError::NotFound),
+        Some("pending") => {
+            delete_subtree(&st, &token, &id).await?;
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Some(_) => {
+            sqlx::query("UPDATE objects SET trashed_at = ? WHERE id = ? AND token_id = ? AND trashed_at IS NULL")
+                .bind(now())
+                .bind(id.to_string())
+                .bind(&token)
+                .execute(&st.db)
+                .await?;
+            Ok(StatusCode::NO_CONTENT)
+        }
+    }
+}
+
+/// Deletes for good: the object and, for a folder, everything inside it.
+async fn remove_permanent(
     State(st): State<AppState>,
     user: AuthUser,
     Path((token_id, id)): Path<(String, Uuid)>,
@@ -451,6 +541,96 @@ async fn remove(
     let (_, token) = owned(&st, &user, &token_id).await?;
     delete_subtree(&st, &token, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Takes an object out of the trash. If its folder is (still) trashed, it goes to the root.
+async fn restore(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path((token_id, id)): Path<(String, Uuid)>,
+) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let row: Option<(Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT parent_id, trashed_at FROM objects WHERE id = ? AND token_id = ?")
+            .bind(id.to_string())
+            .bind(&token)
+            .fetch_optional(&st.db)
+            .await?;
+    let (parent, trashed) = row.ok_or(AppError::NotFound)?;
+    if trashed.is_none() {
+        return Err(AppError::bad("the object is not in the trash"));
+    }
+    let parent_gone = match &parent {
+        Some(p) => in_trash(&st, &p.parse().map_err(anyhow::Error::from)?).await?,
+        None => false,
+    };
+    sqlx::query("UPDATE objects SET trashed_at = NULL, parent_id = ?, updated_at = ? WHERE id = ?")
+        .bind(if parent_gone { None } else { parent })
+        .bind(now())
+        .bind(id.to_string())
+        .execute(&st.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Objects in the trash, most recently deleted first.
+async fn list_trash(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Vec<Object>>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let rows = sqlx::query_as::<_, Object>(&format!(
+        "SELECT {COLUMNS} FROM objects WHERE token_id = ? AND trashed_at IS NOT NULL ORDER BY trashed_at DESC"
+    ))
+    .bind(&token)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+async fn empty_trash(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM objects WHERE token_id = ? AND trashed_at IS NOT NULL")
+        .bind(&token)
+        .fetch_all(&st.db)
+        .await?;
+    purge(&st, &token, ids).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes subtrees; ones already gone (inside another purged folder) are skipped.
+async fn purge(st: &AppState, token: &str, ids: Vec<String>) -> AppResult<()> {
+    for id in ids {
+        let id: Uuid = id.parse().map_err(anyhow::Error::from)?;
+        match delete_subtree(st, token, &id).await {
+            Ok(()) | Err(AppError::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct PendingUpload {
+    #[serde(flatten)]
+    object: Object,
+    /// Encrypted bytes already stored: resume with `PUT content?offset=received`.
+    received: u64,
+}
+
+/// Unfinished uploads, so the client can resume them after a reload.
+async fn list_uploads(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Vec<PendingUpload>>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let rows = sqlx::query_as::<_, Object>(&format!(
+        "SELECT {COLUMNS} FROM objects WHERE token_id = ? AND status = 'pending' ORDER BY created_at"
+    ))
+    .bind(&token)
+    .fetch_all(&st.db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for object in rows {
+        let id: Uuid = object.id.parse().map_err(anyhow::Error::from)?;
+        let received = st.store.size(&content_key(&token, &id)).await?.unwrap_or(0);
+        out.push(PendingUpload { object, received });
+    }
+    Ok(Json(out))
 }
 
 pub(crate) async fn delete_subtree(st: &AppState, token: &str, id: &Uuid) -> AppResult<()> {
@@ -490,6 +670,20 @@ pub(crate) async fn delete_subtree(st: &AppState, token: &str, id: &Uuid) -> App
         }
     }
     Ok(())
+}
+
+/// Empties trash entries older than `TRASH_TTL_SECS`. Returns how many.
+pub async fn cleanup_trash(st: &AppState) -> AppResult<usize> {
+    let old: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, token_id FROM objects WHERE trashed_at IS NOT NULL AND trashed_at < ?")
+            .bind(now() - TRASH_TTL_SECS)
+            .fetch_all(&st.db)
+            .await?;
+    let n = old.len();
+    for (id, token) in old {
+        purge(st, &token, vec![id]).await?;
+    }
+    Ok(n)
 }
 
 /// Removes uploads that were started but never completed. Returns how many.

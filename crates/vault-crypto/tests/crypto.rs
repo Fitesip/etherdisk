@@ -114,6 +114,32 @@ fn exported_key_restores_vault() {
 }
 
 #[test]
+fn resumed_encryption_matches_uninterrupted() {
+    use vault_crypto::{FileEncryptor, FileHeader};
+    let (v, _) = vault("p");
+    let plain = data(5 * 64 + 10);
+    let header = FileHeader::generate(64).unwrap();
+    let key = v.file_key(&header.file_salt);
+
+    let whole = encrypt_file(&key, header.clone(), &plain).unwrap();
+
+    // First attempt: header + 2 chunks, then "the tab is reloaded".
+    let mut first = FileEncryptor::new(&key, header.clone());
+    let mut out = first.header_bytes().to_vec();
+    for c in plain.chunks(64).take(2) {
+        out.extend(first.encrypt_chunk(c, false).unwrap());
+    }
+    // Resume at chunk 2 with the same header.
+    let mut rest = FileEncryptor::resume(&key, FileHeader::parse(&out[..HEADER_LEN]).unwrap(), 2);
+    let tail: Vec<&[u8]> = plain.chunks(64).skip(2).collect();
+    for (i, c) in tail.iter().enumerate() {
+        out.extend(rest.encrypt_chunk(c, i == tail.len() - 1).unwrap());
+    }
+    assert_eq!(out, whole);
+    assert_eq!(decrypt_file(&key, &out).unwrap(), plain);
+}
+
+#[test]
 fn reset_creates_independent_vault() {
     let (old, _) = vault("lost");
     let enc = encrypt(&old, b"secret");

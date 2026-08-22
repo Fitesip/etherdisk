@@ -6,7 +6,8 @@
 //! A folder link is a snapshot: files added to the folder later are not included.
 //!
 //! Links die when the token changes owner: the indexer deletes them on `Transfer`, and
-//! every access re-checks the current owner in case the indexer is behind.
+//! every access re-checks the current owner in case the indexer is behind. They also
+//! stop working after their optional `expires_at`, and serve nothing that is in the trash.
 
 use std::collections::BTreeSet;
 
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
-use crate::objects::MAX_METADATA;
+use crate::objects::{in_trash, MAX_METADATA};
 use crate::range::serve_blob;
 use crate::storage::{content_key, thumb_key};
 use crate::vaults::{owned, parse_token};
@@ -28,6 +29,8 @@ use crate::{b64, now, random_hex, AppError, AppResult, AppState};
 
 pub const MAX_MANIFEST: usize = 8 * 1024 * 1024;
 pub const MAX_SHARE_FILES: usize = 10_000;
+/// Longest allowed link lifetime.
+pub const MAX_SHARE_TTL_SECS: i64 = 366 * 24 * 3600;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -51,6 +54,9 @@ struct CreateShare {
     /// Sealed with the vault metadata key: lets the owner list links and copy them again.
     #[serde(with = "b64")]
     owner_metadata: Vec<u8>,
+    /// Unix seconds; absent = no expiry.
+    #[serde(default)]
+    expires_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -75,22 +81,30 @@ async fn create(
     if req.owner_metadata.is_empty() || req.owner_metadata.len() > MAX_METADATA {
         return Err(AppError::bad("invalid owner_metadata size"));
     }
+    if let Some(e) = req.expires_at {
+        if e <= now() || e > now() + MAX_SHARE_TTL_SECS {
+            return Err(AppError::bad("expires_at must be in the future and within a year"));
+        }
+    }
 
     let id = random_hex(16);
     let mut tx = st.db.begin().await?;
-    sqlx::query("INSERT INTO shares (id, token_id, owner, manifest, owner_metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&id)
-        .bind(&token)
-        .bind(user.0.to_string().to_lowercase())
-        .bind(&req.manifest)
-        .bind(&req.owner_metadata)
-        .bind(now())
+    sqlx::query(
+        "INSERT INTO shares (id, token_id, owner, manifest, owner_metadata, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&token)
+    .bind(user.0.to_string().to_lowercase())
+    .bind(&req.manifest)
+    .bind(&req.owner_metadata)
+    .bind(now())
+    .bind(req.expires_at)
         .execute(&mut *tx)
         .await?;
     for object_id in ids {
         let n = sqlx::query(
             "INSERT INTO share_objects (share_id, object_id)
-             SELECT ?, id FROM objects WHERE id = ? AND token_id = ? AND kind = 'file' AND status = 'ready'",
+             SELECT ?, id FROM objects WHERE id = ? AND token_id = ? AND kind = 'file' AND status = 'ready' AND trashed_at IS NULL",
         )
         .bind(&id)
         .bind(object_id.to_string())
@@ -113,12 +127,13 @@ struct ShareInfo {
     owner_metadata: Vec<u8>,
     file_count: i64,
     created_at: i64,
+    expires_at: Option<i64>,
 }
 
 async fn list(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Vec<ShareInfo>>> {
     let (_, token) = owned(&st, &user, &token_id).await?;
     let rows = sqlx::query_as::<_, ShareInfo>(
-        "SELECT s.id, s.owner_metadata, s.created_at,
+        "SELECT s.id, s.owner_metadata, s.created_at, s.expires_at,
                 (SELECT COUNT(*) FROM share_objects so WHERE so.share_id = s.id) AS file_count
          FROM shares s WHERE s.token_id = ? ORDER BY s.created_at DESC",
     )
@@ -153,11 +168,15 @@ pub async fn revoke_all(st: &AppState, token: &str) -> AppResult<u64> {
 
 /// Returns the share's token if the link is still valid.
 async fn live_share(st: &AppState, share_id: &str) -> AppResult<String> {
-    let row: Option<(String, String)> = sqlx::query_as("SELECT token_id, owner FROM shares WHERE id = ?")
-        .bind(share_id)
-        .fetch_optional(&st.db)
-        .await?;
-    let (token, owner) = row.ok_or(AppError::NotFound)?;
+    let row: Option<(String, String, Option<i64>)> =
+        sqlx::query_as("SELECT token_id, owner, expires_at FROM shares WHERE id = ?")
+            .bind(share_id)
+            .fetch_optional(&st.db)
+            .await?;
+    let (token, owner, expires) = row.ok_or(AppError::NotFound)?;
+    if expires.is_some_and(|e| e <= now()) {
+        return Err(AppError::NotFound);
+    }
     let creator: Address = owner.parse().map_err(|e| anyhow::anyhow!("bad stored address: {e}"))?;
     if st.chain.owner_of(parse_token(&token)?).await? != Some(creator) {
         revoke_all(st, &token).await?;
@@ -194,6 +213,9 @@ async fn shared_file(st: &AppState, share_id: &str, id: &Uuid) -> AppResult<(Str
     .fetch_optional(&st.db)
     .await?;
     let (size, thumb) = row.ok_or(AppError::NotFound)?;
+    if in_trash(st, id).await? {
+        return Err(AppError::NotFound);
+    }
     Ok((token, size, thumb))
 }
 

@@ -51,14 +51,21 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Drops abandoned uploads, expired sessions and nonces.
+/// Drops abandoned uploads, old trash, expired links, sessions and nonces.
 async fn cleanup(st: AppState) {
     loop {
         if let Err(e) = objects::cleanup_pending(&st).await {
             tracing::warn!("cleanup: {e}");
         }
+        if let Err(e) = objects::cleanup_trash(&st).await {
+            tracing::warn!("cleanup: {e}");
+        }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        for q in ["DELETE FROM sessions WHERE expires_at < ?", "DELETE FROM auth_nonces WHERE expires_at < ?"] {
+        for q in [
+            "DELETE FROM sessions WHERE expires_at < ?",
+            "DELETE FROM auth_nonces WHERE expires_at < ?",
+            "DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < ?",
+        ] {
             if let Err(e) = sqlx::query(q).bind(now).execute(&st.db).await {
                 tracing::warn!("cleanup: {e}");
             }

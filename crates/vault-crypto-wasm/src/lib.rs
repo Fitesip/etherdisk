@@ -95,6 +95,14 @@ impl WasmFileEncryptor {
         Ok(WasmFileEncryptor { inner: vc::FileEncryptor::new(&key, header), key })
     }
 
+    /// Continues an interrupted upload at chunk `next_index` with the file's original
+    /// header. Only feed the same plaintext as before (see `FileEncryptor::resume`).
+    pub fn resume(vault: &WasmVault, header: &[u8], next_index: u32) -> Result<WasmFileEncryptor, JsError> {
+        let header = vc::FileHeader::parse(header).map_err(err)?;
+        let key = vault.inner.file_key(&header.file_salt);
+        Ok(WasmFileEncryptor { inner: vc::FileEncryptor::resume(&key, header, next_index.into()), key })
+    }
+
     #[wasm_bindgen(getter)]
     pub fn header(&self) -> Vec<u8> {
         self.inner.header_bytes().to_vec()
