@@ -576,6 +576,15 @@ async fn unfinished_uploads_can_be_listed_and_resumed() {
     assert_eq!(r.status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(r.body, ct[..10]);
 
+    // A fresh thumbnail of another size is accepted (quota re-reserved), or dropped.
+    let thumb = encrypt(&vault, b"thumbnail bytes", 64);
+    let r = app.bytes(Method::PUT, &format!("/api/vaults/1/files/{id}/thumbnail"), &t, thumb.clone()).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/vaults/1/uploads", Some(&t)).await.json()[0]["thumb_size"], thumb.len() as u64);
+    let r = app.req(Method::DELETE, &format!("/api/vaults/1/files/{id}/thumbnail"), Some(&t), Body::empty(), "", &[]).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert!(app.get("/api/vaults/1/uploads", Some(&t)).await.json()[0]["thumb_size"].is_null());
+
     // Resume from `received`.
     let r = app.bytes(Method::PUT, &format!("/api/vaults/1/files/{id}/content?offset={half}"), &t, ct[half..].to_vec()).await;
     assert_eq!(r.status, StatusCode::OK);

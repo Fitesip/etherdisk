@@ -76,6 +76,13 @@ export interface ObjectRow {
   thumb_size: number | null;
   created_at: number;
   updated_at: number;
+  /** Set while in the trash (unix seconds). */
+  trashed_at: number | null;
+}
+
+export interface PendingUpload extends ObjectRow {
+  /** Encrypted bytes the server already has. */
+  received: number;
 }
 
 export interface ShareRow {
@@ -83,6 +90,7 @@ export interface ShareRow {
   owner_metadata: string;
   file_count: number;
   created_at: number;
+  expires_at: number | null;
 }
 
 // ------------------------------------------------------------------ endpoints
@@ -110,6 +118,20 @@ export const api = {
 
   list: (token: string, vault: string, parent: string | null) =>
     json<ObjectRow[]>(request(`/vaults/${vault}/objects${parent ? `?parent=${parent}` : ""}`, { token })),
+  /** Every live object of the drive (for search). */
+  all: (token: string, vault: string) => json<ObjectRow[]>(request(`/vaults/${vault}/objects/all`, { token })),
+  trash: (token: string, vault: string) => json<ObjectRow[]>(request(`/vaults/${vault}/trash`, { token })),
+  emptyTrash: (token: string, vault: string) => empty(request(`/vaults/${vault}/trash/empty`, { method: "POST", token })),
+  restore: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/objects/${id}/restore`, { method: "POST", token })),
+  removePermanent: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/objects/${id}/permanent`, { method: "DELETE", token })),
+  uploads: (token: string, vault: string) => json<PendingUpload[]>(request(`/vaults/${vault}/uploads`, { token })),
+  /** Encrypted bytes `from..=to` of a file (also of a pending upload, for resuming). */
+  contentRange: async (token: string, vault: string, id: string, from: number, to: number) =>
+    new Uint8Array(
+      await (await request(`/vaults/${vault}/files/${id}/content`, { token, headers: { Range: `bytes=${from}-${to}` } })).arrayBuffer(),
+    ),
   /** The folder and its ancestors, root first. */
   path: (token: string, vault: string, id: string) => json<ObjectRow[]>(request(`/vaults/${vault}/objects/${id}/path`, { token })),
   createFolder: (token: string, vault: string, body: { id: string; parent_id: string | null; metadata: string }) =>
@@ -137,6 +159,8 @@ export const api = {
         headers: { "Content-Type": "application/octet-stream" },
       }),
     ),
+  dropThumbnail: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/files/${id}/thumbnail`, { method: "DELETE", token })),
   complete: (token: string, vault: string, id: string) =>
     empty(request(`/vaults/${vault}/files/${id}/complete`, { method: "POST", token, json: {} })),
   thumbnail: async (token: string, vault: string, id: string) =>
@@ -151,7 +175,7 @@ export const api = {
   createShare: (
     token: string,
     vault: string,
-    body: { object_ids: string[]; manifest: string; owner_metadata: string },
+    body: { object_ids: string[]; manifest: string; owner_metadata: string; expires_at: number | null },
   ) => json<{ id: string }>(request(`/vaults/${vault}/shares`, { method: "POST", token, json: body })),
   shares: (token: string, vault: string) => json<ShareRow[]>(request(`/vaults/${vault}/shares`, { token })),
   revokeShare: (token: string, vault: string, id: string) =>

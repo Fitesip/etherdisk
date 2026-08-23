@@ -7,7 +7,7 @@ import { useT, type Translate } from "@/i18n";
 import { touchActivity } from "@/lib/activity";
 import { ApiError } from "@/lib/api";
 import { entryLabel, type TreeEntry } from "@/lib/folder-upload";
-import { uploadFile } from "@/lib/upload";
+import { resumeUpload, uploadFile, type ResumeTarget } from "@/lib/upload";
 
 import { Button, Card, Progress } from "../ui";
 import { createFolder, type DriveCtx } from "./dialogs";
@@ -18,6 +18,8 @@ interface UploadItem {
   batch: string;
   parentId: string | null;
   entry: TreeEntry;
+  /** Continue this interrupted upload instead of starting a new one. */
+  resume?: ResumeTarget;
   label: string;
   progress: number;
   status: "queued" | "uploading" | "done" | "error";
@@ -30,6 +32,7 @@ function describe(e: unknown, t: Translate): string {
     if (e.status === 0) return t("errors.network");
     return e.message;
   }
+  if (e instanceof Error && e.message === "mismatch") return t("files.resumeMismatchShort");
   return e instanceof Error ? e.message : t("common.error");
 }
 
@@ -37,6 +40,8 @@ function describe(e: unknown, t: Translate): string {
 export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
   const t = useT();
   const [items, setItems] = useState<UploadItem[]>([]);
+  /** Server ids of uploads this tab started, so they aren't offered for resuming. */
+  const [started, setStarted] = useState<ReadonlySet<string>>(new Set());
   const queue = useRef<UploadItem[]>([]);
   const running = useRef(false);
   const abort = useRef<AbortController | null>(null);
@@ -84,17 +89,19 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
         try {
           const parentId = await ensureFolders(ctx, item);
           if (item.entry.file) {
-            await uploadFile({
+            const args = {
               ...ctx,
               parentId,
               file: item.entry.file,
-              onProgress: (progress) => {
+              onProgress: (progress: number) => {
                 // An upload in progress keeps the drive from auto-locking.
                 touchActivity();
                 update(item.key, { progress });
               },
+              onStart: (id: string) => setStarted((s) => new Set(s).add(id)),
               signal: abort.current.signal,
-            });
+            };
+            await (item.resume ? resumeUpload(args, item.resume) : uploadFile(args));
           }
           update(item.key, { status: "done", progress: 1 });
           onUploaded();
@@ -128,9 +135,30 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
     [pump],
   );
 
+  /** Continues an interrupted upload with the re-selected file. */
+  const resume = useCallback(
+    (file: File, target: ResumeTarget, parentId: string | null) => {
+      const item: UploadItem = {
+        key: crypto.randomUUID(),
+        batch: crypto.randomUUID(),
+        parentId,
+        entry: { file, dirs: [] },
+        resume: target,
+        label: file.name,
+        progress: target.received / target.encSize,
+        status: "queued",
+      };
+      queue.current.push(item);
+      setItems((xs) => [...xs, item]);
+      setStarted((s) => new Set(s).add(target.id));
+      void pump();
+    },
+    [pump],
+  );
+
   const clearFinished = useCallback(() => setItems((xs) => xs.filter((x) => x.status === "queued" || x.status === "uploading")), []);
 
-  return { items, enqueue, clearFinished };
+  return { items, enqueue, resume, started, clearFinished };
 }
 
 export function UploadPanel({ items, onClear }: { items: UploadItem[]; onClear: () => void }) {

@@ -52,7 +52,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/vaults/{token_id}/files/{id}/thumbnail",
-            put(put_thumbnail).get(get_thumbnail).layer(DefaultBodyLimit::max(MAX_THUMBNAIL as usize)),
+            put(put_thumbnail).get(get_thumbnail).delete(drop_thumbnail).layer(DefaultBodyLimit::max(MAX_THUMBNAIL as usize)),
         )
         .route("/vaults/{token_id}/files/{id}/complete", post(complete))
         .route("/vaults/{token_id}/objects/{id}", delete(remove))
@@ -351,12 +351,51 @@ async fn put_thumbnail(
     Path((token_id, id)): Path<(String, Uuid)>,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    let (_, token) = owned(&st, &user, &token_id).await?;
+    let (vault, token) = owned(&st, &user, &token_id).await?;
     let file = file_row(&st, &token, &id, "pending").await?;
-    if file.thumb_size != Some(body.len() as u64) {
-        return Err(AppError::bad("thumbnail size does not match the declared size"));
+    let size = body.len() as u64;
+    let min = (vault_crypto::HEADER_LEN + vault_crypto::TAG_LEN) as u64;
+    if size < min || size > MAX_THUMBNAIL {
+        return Err(AppError::bad(format!("thumbnail must be {min}..={MAX_THUMBNAIL} bytes")));
+    }
+    // A resumed upload makes a fresh thumbnail, whose size may differ: re-reserve quota.
+    if file.thumb_size != Some(size) {
+        let capacity = st.chain.capacity_bytes(vault).await?;
+        let n = sqlx::query(
+            "UPDATE objects SET thumb_size = ? WHERE id = ? AND status = 'pending'
+               AND (SELECT COALESCE(SUM(size + COALESCE(thumb_size, 0)), 0) FROM objects WHERE token_id = ? AND id != ?)
+                   + size + ? <= ?",
+        )
+        .bind(size as i64)
+        .bind(id.to_string())
+        .bind(&token)
+        .bind(id.to_string())
+        .bind(size as i64)
+        .bind(capacity as i64)
+        .execute(&st.db)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::QuotaExceeded);
+        }
     }
     st.store.put(&thumb_key(&token, &id), body).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A pending upload gives up its thumbnail (e.g. it can't be regenerated on resume).
+async fn drop_thumbnail(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path((token_id, id)): Path<(String, Uuid)>,
+) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    file_row(&st, &token, &id, "pending").await?;
+    sqlx::query("UPDATE objects SET thumb_size = NULL WHERE id = ? AND status = 'pending'")
+        .bind(id.to_string())
+        .execute(&st.db)
+        .await?;
+    st.store.delete(&thumb_key(&token, &id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

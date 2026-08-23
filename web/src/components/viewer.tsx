@@ -1,6 +1,6 @@
 "use client";
 
-import { Download } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useT } from "@/i18n";
@@ -85,36 +85,89 @@ function Preview({ source, onFailed }: { source: StreamSource; onFailed: () => v
   }
 }
 
-/** Preview of an image, video, audio, PDF or text file, decrypted on the fly. */
-export function Viewer({ source, onClose }: { source: StreamSource | null; onClose: () => void }) {
+export interface Gallery {
+  /** Files to step through; `index` is the one shown. */
+  sources: StreamSource[];
+  index: number;
+}
+
+/**
+ * Preview of an image, video, audio, PDF or text file, decrypted on the fly.
+ * With several sources it is a gallery: arrows (and ←/→) move between them.
+ */
+export function Viewer({
+  gallery,
+  onIndex,
+  onClose,
+  viewOnly,
+}: {
+  gallery: Gallery | null;
+  onIndex: (index: number) => void;
+  onClose: () => void;
+  /** Hide the download button (shared "preview only" links). */
+  viewOnly?: boolean;
+}) {
   const t = useT();
+  const source = gallery ? gallery.sources[gallery.index] : null;
+  const count = gallery?.sources.length ?? 0;
+  const index = gallery?.index ?? 0;
   // A media error is usually the browser having restarted the worker (streams live in
   // memory): remount the preview once, which registers the stream again.
-  const [attempt, setAttempt] = useState(0);
-  const [failed, setFailed] = useState(false);
-  const onFailed = () => (attempt === 0 ? setAttempt(1) : setFailed(true));
-  const close = () => {
-    setAttempt(0);
-    setFailed(false);
-    onClose();
-  };
+  const [retry, setRetry] = useState<{ index: number; attempt: number; failed: boolean }>({ index: -1, attempt: 0, failed: false });
+  const state = retry.index === index ? retry : { index, attempt: 0, failed: false };
+  const onFailed = () => setRetry(state.attempt === 0 ? { index, attempt: 1, failed: false } : { ...state, failed: true });
+  const go = (delta: number) => count > 1 && onIndex((index + delta + count) % count);
+
+  useEffect(() => {
+    if (!gallery || count < 2) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "ArrowRight") onIndex((gallery.index + 1) % count);
+      if (e.key === "ArrowLeft") onIndex((gallery.index - 1 + count) % count);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [gallery, count, onIndex]);
 
   return (
-    <Dialog open={!!source} onClose={close} title={source?.name ?? ""} wide>
+    <Dialog open={!!source} onClose={onClose} title={source?.name ?? ""} wide>
       <div className="flex flex-col gap-4">
-        <div className="grid min-h-48 place-items-center">
+        <div className="relative grid min-h-48 place-items-center">
           {source &&
-            (failed ? (
+            (state.failed ? (
               <Notice tone="danger">{t("files.decryptFailed")}</Notice>
             ) : (
-              <Preview key={attempt} source={source} onFailed={onFailed} />
+              <Preview key={`${index}:${state.attempt}`} source={source} onFailed={onFailed} />
             ))}
+          {count > 1 && (
+            <>
+              <button
+                type="button"
+                aria-label={t("files.previous")}
+                onClick={() => go(-1)}
+                className="absolute top-1/2 left-0 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-border bg-card/80 shadow backdrop-blur transition hover:bg-card"
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                aria-label={t("files.next")}
+                onClick={() => go(1)}
+                className="absolute top-1/2 right-0 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-border bg-card/80 shadow backdrop-blur transition hover:bg-card"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            </>
+          )}
         </div>
-        <div className="flex justify-end">
-          <Button variant="primary" onClick={() => source && downloadFile(source)}>
-            <Download className="h-4 w-4" />
-            {t("files.download")}
-          </Button>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-muted tabular-nums">{count > 1 && t("files.position", { i: index + 1, n: count })}</span>
+          {!viewOnly && (
+            <Button variant="primary" onClick={() => source && downloadFile(source)}>
+              <Download className="h-4 w-4" />
+              {t("files.download")}
+            </Button>
+          )}
         </div>
       </div>
     </Dialog>

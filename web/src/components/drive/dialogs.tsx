@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, Copy, Folder, HardDrive, Trash2 } from "lucide-react";
+import { Check, ChevronRight, Copy, Folder, HardDrive } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { useT } from "@/i18n";
@@ -220,58 +220,22 @@ export async function renameItem(ctx: DriveCtx, item: Item, name: string) {
   await api.setMetadata(ctx.token, ctx.tokenId, item.row.id, sealMeta(ctx.vault, item.row.id, { ...item.meta, name }));
 }
 
-export function DeleteDialog({ item, onClose, ctx }: { item: Item | null; onClose: () => void; ctx: DriveCtx }) {
-  const t = useT();
-  const invalidate = useInvalidate(ctx.token, ctx.tokenId);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function confirm() {
-    if (!item) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.remove(ctx.token, ctx.tokenId, item.row.id);
-      await invalidate();
-      onClose();
-    } catch (err) {
-      setError(errorText(err, t("common.error")));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog open={!!item} onClose={onClose} title={item ? t("files.deleteTitle", { name: itemName(item) }) : ""}>
-      <div className="flex flex-col gap-4">
-        <p className="text-sm text-muted">{item?.row.kind === "folder" ? t("files.deleteFolderText") : t("files.deleteFileText")}</p>
-        {error && <Notice tone="danger">{error}</Notice>}
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>{t("common.cancel")}</Button>
-          <Button variant="danger" loading={busy} onClick={confirm}>
-            <Trash2 className="h-4 w-4" />
-            {t("files.delete")}
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-/** Folder picker: browse folders, then move the item into the one shown. */
-export function MoveDialog({ item, onClose, ctx }: { item: Item | null; onClose: () => void; ctx: DriveCtx }) {
+/** Folder picker: browse folders, then move the items into the one shown. */
+export function MoveDialog({ items, onClose, ctx }: { items: Item[] | null; onClose: () => void; ctx: DriveCtx }) {
   const t = useT();
   const invalidate = useInvalidate(ctx.token, ctx.tokenId);
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const current = path.at(-1)?.id ?? null;
+  const moving = new Set(items?.map((i) => i.row.id));
 
   const folders = useQuery({
     queryKey: ["objects", ctx.token, ctx.tokenId, current],
     queryFn: () => api.list(ctx.token, ctx.tokenId, current),
-    enabled: !!item,
-    select: (rows) => rows.filter((r) => r.kind === "folder" && r.id !== item?.row.id).map((r) => openItem(ctx.vault, r)),
+    enabled: !!items,
+    // A folder can't go into itself, so the moved folders aren't offered as targets.
+    select: (rows) => rows.filter((r) => r.kind === "folder" && !moving.has(r.id)).map((r) => openItem(ctx.vault, r)),
   });
 
   const close = () => {
@@ -281,11 +245,13 @@ export function MoveDialog({ item, onClose, ctx }: { item: Item | null; onClose:
   };
 
   async function move() {
-    if (!item) return;
+    if (!items) return;
     setBusy(true);
     setError(null);
     try {
-      await api.move(ctx.token, ctx.tokenId, item.row.id, current);
+      for (const item of items) {
+        if ((item.row.parent_id ?? null) !== current) await api.move(ctx.token, ctx.tokenId, item.row.id, current);
+      }
       await invalidate();
       close();
     } catch (err) {
@@ -295,8 +261,10 @@ export function MoveDialog({ item, onClose, ctx }: { item: Item | null; onClose:
     }
   }
 
+  const title = !items ? "" : items.length === 1 ? t("files.moveTitle", { name: itemName(items[0]) }) : t("files.moveTitleMany", { n: items.length });
+  const nothingToDo = !!items && items.every((i) => (i.row.parent_id ?? null) === current);
   return (
-    <Dialog open={!!item} onClose={close} title={item ? t("files.moveTitle", { name: itemName(item) }) : ""}>
+    <Dialog open={!!items} onClose={close} title={title}>
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-1 text-sm">
           <button type="button" className="text-accent hover:underline" onClick={() => setPath([])}>
@@ -329,7 +297,7 @@ export function MoveDialog({ item, onClose, ctx }: { item: Item | null; onClose:
           )}
         </div>
         {error && <Notice tone="danger">{error}</Notice>}
-        <Button variant="primary" loading={busy} disabled={current === (item?.row.parent_id ?? null)} onClick={move}>
+        <Button variant="primary" loading={busy} disabled={nothingToDo} onClick={move}>
           {t("files.moveHere")}
         </Button>
       </div>
@@ -337,25 +305,40 @@ export function MoveDialog({ item, onClose, ctx }: { item: Item | null; onClose:
   );
 }
 
+const EXPIRY_CHOICES = [
+  { key: "share.expiryNever", days: 0 },
+  { key: "share.expiryDay", days: 1 },
+  { key: "share.expiryWeek", days: 7 },
+  { key: "share.expiryMonth", days: 30 },
+] as const;
+
 export function ShareDialog({ item, onClose, ctx }: { item: Item | null; onClose: () => void; ctx: DriveCtx }) {
   const t = useT();
   const qc = useQueryClient();
   const [link, setLink] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [days, setDays] = useState(0);
+  const [password, setPassword] = useState("");
+  const [viewOnly, setViewOnly] = useState(false);
 
   const close = () => {
     setLink(null);
     setError(null);
+    setDays(0);
+    setPassword("");
+    setViewOnly(false);
     onClose();
   };
 
-  async function create() {
+  async function create(e: FormEvent) {
+    e.preventDefault();
     if (!item) return;
     setBusy(true);
     setError(null);
     try {
-      setLink(await createShare(ctx.token, ctx.tokenId, ctx.vault, item));
+      const expiresAt = days ? Math.floor(Date.now() / 1000) + days * 86400 : null;
+      setLink(await createShare(ctx.token, ctx.tokenId, ctx.vault, item, { expiresAt, password, viewOnly }));
       await qc.invalidateQueries({ queryKey: ["shares", ctx.token, ctx.tokenId] });
     } catch (err) {
       setError(err instanceof Error && err.message === "empty" ? t("share.emptyFolder") : errorText(err, t("common.error")));
@@ -366,7 +349,7 @@ export function ShareDialog({ item, onClose, ctx }: { item: Item | null; onClose
 
   return (
     <Dialog open={!!item} onClose={close} title={item ? t("share.createTitle", { name: itemName(item) }) : ""}>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         <p className="text-sm text-muted">{t("share.createText")}</p>
         {item?.row.kind === "folder" && <p className="text-sm text-muted">{t("share.folderSnapshot")}</p>}
         {link ? (
@@ -375,13 +358,54 @@ export function ShareDialog({ item, onClose, ctx }: { item: Item | null; onClose
             <CopyButton text={link} />
           </div>
         ) : (
-          <Button variant="primary" loading={busy} onClick={create}>
-            {busy ? t("share.creating") : t("share.create")}
-          </Button>
+          <form onSubmit={create} className="flex flex-col gap-4">
+            <fieldset>
+              <legend className="text-sm font-medium">{t("share.expiry")}</legend>
+              <div className="mt-2 flex flex-wrap gap-1 rounded-lg border border-border p-0.5">
+                {EXPIRY_CHOICES.map((c) => (
+                  <button
+                    key={c.days}
+                    type="button"
+                    aria-pressed={days === c.days}
+                    onClick={() => setDays(c.days)}
+                    className={cn(
+                      "h-8 flex-1 rounded-md px-2 text-sm whitespace-nowrap transition-colors",
+                      days === c.days ? "bg-accent text-accent-fg" : "text-muted hover:text-fg",
+                    )}
+                  >
+                    {t(c.key)}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <label className="text-sm font-medium">
+              {t("share.password")}
+              <PasswordInput className="mt-2 font-normal" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+              {password && <span className="mt-1 block text-xs font-normal text-muted">{t("share.passwordHint")}</span>}
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-0.5" checked={viewOnly} onChange={(e) => setViewOnly(e.target.checked)} />
+              <span>
+                {t("share.viewOnly")}
+                <span className="block text-xs text-muted">{t("share.viewOnlyHint")}</span>
+              </span>
+            </label>
+            <Button type="submit" variant="primary" loading={busy}>
+              {busy ? t("share.creating") : t("share.create")}
+            </Button>
+          </form>
         )}
         {error && <Notice tone="danger">{error}</Notice>}
       </div>
     </Dialog>
+  );
+}
+
+function Badge({ children, tone }: { children: ReactNode; tone?: "danger" }) {
+  return (
+    <span className={cn("rounded-full border px-2 py-0.5 text-[11px]", tone === "danger" ? "border-danger/40 text-danger" : "border-border text-muted")}>
+      {children}
+    </span>
   );
 }
 
@@ -394,6 +418,8 @@ export function LinksList({ ctx, enabled = true }: { ctx: DriveCtx; enabled?: bo
     queryFn: () => api.shares(ctx.token, ctx.tokenId),
     enabled,
   });
+  // "Now" for marking expired links; fixed per mount, which is precise enough here.
+  const [now] = useState(() => Date.now() / 1000);
 
   async function revoke(id: string) {
     await api.revokeShare(ctx.token, ctx.tokenId, id).catch((e) => {
@@ -404,17 +430,24 @@ export function LinksList({ ctx, enabled = true }: { ctx: DriveCtx; enabled?: bo
 
   if (shares.isLoading) return <Spinner />;
   if (!shares.data?.length) return <p className="text-sm text-muted">{t("share.noLinks")}</p>;
+
   return (
     <ul className="divide-y divide-border rounded-lg border border-border">
       {shares.data.map((s) => {
         const meta = openOwnerShareMeta(ctx.vault, s.owner_metadata);
-        const link = meta ? shareLink(s.id, fromB64(meta.key)) : null;
+        const expired = !!s.expires_at && s.expires_at <= now;
+        const link = meta && !expired ? shareLink(s.id, fromB64(meta.key), meta.password) : null;
         return (
           <li key={s.id} className="flex flex-wrap items-center gap-3 p-3">
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">{meta?.name ?? "⚠"}</div>
-              <div className="text-xs text-muted">
-                {t("share.files", { n: s.file_count })} · {formatDate(s.created_at)}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                <span>
+                  {t("share.files", { n: s.file_count })} · {formatDate(s.created_at)}
+                </span>
+                {s.expires_at && <Badge tone={expired ? "danger" : undefined}>{t("share.expiresOn", { date: formatDate(s.expires_at) })}</Badge>}
+                {meta?.password && <Badge>{t("share.withPassword")}</Badge>}
+                {meta?.viewOnly && <Badge>{t("share.previewOnly")}</Badge>}
               </div>
             </div>
             {link && <CopyButton text={link} />}
