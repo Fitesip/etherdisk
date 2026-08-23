@@ -334,7 +334,7 @@ async fn upload_validation_and_rollback() {
     assert_eq!(r.status, StatusCode::CREATED);
     let base = format!("/api/vaults/1/files/{id}");
 
-    // Pending files are invisible and not downloadable.
+    // Pending files are invisible, and have nothing to download before data arrives.
     assert_eq!(app.get("/api/vaults/1/objects", Some(&t)).await.json().as_array().unwrap().len(), 0);
     assert_eq!(app.get(&format!("{base}/content"), Some(&t)).await.status, StatusCode::NOT_FOUND);
 

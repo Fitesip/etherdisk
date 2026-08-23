@@ -407,7 +407,10 @@ async fn get_content(
         Ok(file) => file.size,
         Err(AppError::NotFound) => {
             file_row(&st, &token, &id, "pending").await?;
-            st.store.size(&key).await?.unwrap_or(0)
+            match st.store.size(&key).await? {
+                Some(n) if n > 0 => n,
+                _ => return Err(AppError::NotFound),
+            }
         }
         Err(e) => return Err(e),
     };
