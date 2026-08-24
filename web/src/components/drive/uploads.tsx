@@ -1,7 +1,8 @@
 "use client";
 
-import { CheckCircle2, CircleAlert, Clock, Folder } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, ChevronDown, CircleAlert, Clock, Folder, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 
 import { useT, type Translate } from "@/i18n";
 import { touchActivity } from "@/lib/activity";
@@ -9,7 +10,7 @@ import { ApiError } from "@/lib/api";
 import { entryLabel, type TreeEntry } from "@/lib/folder-upload";
 import { resumeUpload, uploadFile, type ResumeTarget } from "@/lib/upload";
 
-import { Button, Card, Progress } from "../ui";
+import { Button, Card, cn, Progress } from "../ui";
 import { createFolder, type DriveCtx } from "./dialogs";
 
 interface UploadItem {
@@ -161,40 +162,77 @@ export function useUploads(ctx: DriveCtx, onUploaded: () => void) {
   return { items, enqueue, resume, started, clearFinished };
 }
 
-export function UploadPanel({ items, onClear }: { items: UploadItem[]; onClear: () => void }) {
+/**
+ * Upload progress, pinned to the bottom-right of the window. Rendered into <body> so no
+ * transformed ancestor (e.g. a page animation) can turn `fixed` into "fixed to that box".
+ * `style` carries the drive's colors, which a portal would otherwise lose.
+ */
+export function UploadPanel({ items, onClear, style }: { items: UploadItem[]; onClear: () => void; style?: CSSProperties }) {
   const t = useT();
-  if (!items.length) return null;
+  const [collapsed, setCollapsed] = useState(false);
+  if (!items.length || typeof document === "undefined") return null;
   const finished = items.some((i) => i.status === "done" || i.status === "error");
   const done = items.filter((i) => i.status === "done").length;
-  return (
-    <Card className="fixed right-4 bottom-4 z-20 w-80 animate-slide-in shadow-xl">
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <span className="text-sm font-medium">
-          {t("files.uploads")} <span className="font-normal text-muted tabular-nums">{done}/{items.length}</span>
-        </span>
-        {finished && (
-          <Button size="sm" variant="ghost" onClick={onClear}>
-            {t("files.clearDone")}
+  const failed = items.filter((i) => i.status === "error").length;
+  const active = items.some((i) => i.status === "uploading" || i.status === "queued");
+  // Overall progress: finished files count fully, the running one by its fraction.
+  const overall = items.reduce((n, i) => n + (i.status === "done" || i.status === "error" ? 1 : i.status === "uploading" ? i.progress : 0), 0) / items.length;
+
+  return createPortal(
+    <div style={style} className="fixed right-4 bottom-4 z-40 w-[min(22rem,calc(100vw-2rem))] animate-slide-in">
+      <Card className="overflow-hidden shadow-2xl">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+          {active ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+          ) : failed ? (
+            <CircleAlert className="h-4 w-4 shrink-0 text-danger" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {t("files.uploads")}{" "}
+            <span className="font-normal text-muted tabular-nums">
+              {done}/{items.length}
+            </span>
+          </span>
+          {finished && !active && (
+            <Button size="sm" variant="ghost" onClick={onClear}>
+              {t("files.clearDone")}
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label={collapsed ? t("files.expand") : t("files.collapse")}
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            <ChevronDown className={cn("h-4 w-4 transition-transform", collapsed && "rotate-180")} />
           </Button>
+        </div>
+        {active && <Progress value={overall} className="h-1 rounded-none" />}
+        {!collapsed && (
+          <ul className="max-h-72 divide-y divide-border overflow-auto">
+            {items.map((i) => (
+              <li key={i.key} className="px-4 py-2.5">
+                <div className="flex items-center gap-2 text-sm">
+                  {!i.entry.file && <Folder className="h-4 w-4 shrink-0 text-accent" />}
+                  <span className="min-w-0 flex-1 truncate" title={i.label}>
+                    {i.label}
+                  </span>
+                  {i.status === "uploading" && <span className="shrink-0 text-xs text-muted tabular-nums">{Math.round(i.progress * 100)}%</span>}
+                  {i.status === "done" && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
+                  {i.status === "error" && <CircleAlert className="h-4 w-4 shrink-0 text-danger" />}
+                  {i.status === "queued" && <Clock className="h-4 w-4 shrink-0 text-muted" />}
+                </div>
+                {i.status === "uploading" && i.entry.file && <Progress value={i.progress} className="mt-2" />}
+                {i.status === "error" && <p className="mt-1 text-xs text-danger">{i.error}</p>}
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
-      <ul className="max-h-72 divide-y divide-border overflow-auto">
-        {items.map((i) => (
-          <li key={i.key} className="px-4 py-2.5">
-            <div className="flex items-center gap-2 text-sm">
-              {!i.entry.file && <Folder className="h-4 w-4 shrink-0 text-accent" />}
-              <span className="min-w-0 flex-1 truncate" title={i.label}>
-                {i.label}
-              </span>
-              {i.status === "done" && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
-              {i.status === "error" && <CircleAlert className="h-4 w-4 shrink-0 text-danger" />}
-              {i.status === "queued" && <Clock className="h-4 w-4 shrink-0 text-muted" />}
-            </div>
-            {i.status === "uploading" && i.entry.file && <Progress value={i.progress} className="mt-2" />}
-            {i.status === "error" && <p className="mt-1 text-xs text-danger">{i.error}</p>}
-          </li>
-        ))}
-      </ul>
-    </Card>
+      </Card>
+    </div>,
+    document.body,
   );
 }

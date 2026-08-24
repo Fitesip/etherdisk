@@ -26,7 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import { useT } from "@/i18n";
 import { api, ApiError, type ObjectRow, type VaultInfo } from "@/lib/api";
 import { downloadItemsZip } from "@/lib/download";
-import { driveName } from "@/lib/drive-style";
+import { driveName, driveVars } from "@/lib/drive-style";
 import { entriesFromDrop, entriesFromInput } from "@/lib/folder-upload";
 import { formatBytes, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
@@ -426,7 +426,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         </div>
       )}
 
-      <UploadPanel items={uploads.items} onClear={uploads.clearFinished} />
+      <UploadPanel items={uploads.items} onClear={uploads.clearFinished} style={driveVars(info)} />
       <Viewer gallery={gallery} onIndex={(index) => setGallery((g) => g && { ...g, index })} onClose={() => setGallery(null)} />
 
       {dialog?.type === "newFolder" && (

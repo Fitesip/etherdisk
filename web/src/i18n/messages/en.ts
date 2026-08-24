@@ -203,6 +203,8 @@ export const en = {
     uploadFailed: "Failed",
     uploadQueued: "Waiting",
     clearDone: "Clear finished",
+    collapse: "Collapse",
+    expand: "Expand",
     preview: "Preview",
     noPreview: "No preview for this file type.",
     textTruncated: "Showing the first {size}.",
