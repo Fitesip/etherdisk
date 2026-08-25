@@ -166,6 +166,24 @@ pub fn decrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>, JsError> {
     vc::decrypt_file(&key32(key)?, data).map_err(err)
 }
 
+/// Inbox public key derived from a wallet signature over the inbox message.
+#[wasm_bindgen(js_name = inboxPublicKey)]
+pub fn inbox_public_key(signature: &[u8]) -> Result<Vec<u8>, JsError> {
+    Ok(vc::inbox::InboxSecret::from_signature(signature).map_err(err)?.public().to_vec())
+}
+
+/// Seals data (a drive key) to a recipient's inbox public key.
+#[wasm_bindgen(js_name = inboxSeal)]
+pub fn inbox_seal(recipient: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, JsError> {
+    vc::inbox::seal(recipient, plaintext, aad).map_err(err)
+}
+
+/// Opens data sealed to the inbox derived from `signature`.
+#[wasm_bindgen(js_name = inboxOpen)]
+pub fn inbox_open(signature: &[u8], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, JsError> {
+    vc::inbox::InboxSecret::from_signature(signature).map_err(err)?.open(sealed, aad).map_err(err)
+}
+
 #[wasm_bindgen(js_name = defaultChunkSize)]
 pub fn default_chunk_size() -> u32 {
     vc::DEFAULT_CHUNK_SIZE

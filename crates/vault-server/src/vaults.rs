@@ -145,7 +145,7 @@ struct KeyResponse {
     etag: String,
 }
 
-fn etag(blob: &[u8]) -> String {
+pub(crate) fn etag(blob: &[u8]) -> String {
     alloy::hex::encode(Sha256::digest(blob))
 }
 
@@ -232,6 +232,7 @@ async fn wipe(st: &AppState, token: &str) -> AppResult<()> {
     sqlx::query("DELETE FROM shares WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM objects WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM vault_keys WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     tx.commit().await?;
     st.store.delete_vault(token).await?;
     Ok(())

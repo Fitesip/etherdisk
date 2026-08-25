@@ -628,6 +628,110 @@ async fn share_expiry_and_trashed_files() {
     assert_eq!(app.get(&content, None).await.status, StatusCode::NOT_FOUND);
 }
 
+// ------------------------------------------------------------ key handover
+
+/// Publishes `signer`'s inbox key the way the browser does; returns the key.
+async fn publish_inbox(app: &App, token: &str, signer: &PrivateKeySigner, seed: u8) -> Vec<u8> {
+    let key = vault_crypto::inbox::InboxSecret::from_signature(&[seed; 65]).unwrap().public().to_vec();
+    let msg = vault_server::handover::inbox_message(&signer.address(), &key);
+    let sig = signer.sign_message(msg.as_bytes()).await.unwrap();
+    let r = app
+        .json(Method::PUT, "/api/inbox", Some(token), json!({ "pubkey": b64(&key), "signature": format!("0x{}", alloy::hex::encode(sig.as_bytes())) }))
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", String::from_utf8_lossy(&r.body));
+    key
+}
+
+#[tokio::test]
+async fn inbox_keys_are_bound_to_the_wallet() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    let tb = app.login(&bob).await;
+    let key = publish_inbox(&app, &tb, &bob, 1).await;
+    let r = app.get(&format!("/api/inbox/{}", bob.address()), None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["pubkey"], b64(&key));
+
+    // A signature by someone else over bob's message is refused.
+    let msg = vault_server::handover::inbox_message(&bob.address(), &key);
+    let forged = alice.sign_message(msg.as_bytes()).await.unwrap();
+    let r = app
+        .json(Method::PUT, "/api/inbox", Some(&tb), json!({ "pubkey": b64(&key), "signature": format!("0x{}", alloy::hex::encode(forged.as_bytes())) }))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(app.get(&format!("/api/inbox/{}", alice.address()), None).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn drive_key_handover() {
+    let app = app().await;
+    let (alice, bob, carol, dave) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    setup_vault_with_file(&app, &ta, b"x").await;
+    let sealed = b64(&[9u8; vault_server::handover::SEALED_LEN]);
+    let seal = |t: String, to: Address| {
+        let sealed = sealed.clone();
+        let app = &app;
+        async move { app.json(Method::POST, "/api/vaults/1/handover", Some(&t), json!({ "to": to, "sealed": sealed })).await.status }
+    };
+
+    // 1. In-app transfer: alice seals the key for bob before transferring.
+    assert_eq!(seal(ta.clone(), alice.address()).await, StatusCode::BAD_REQUEST, "to yourself");
+    let bad = app.json(Method::POST, "/api/vaults/1/handover", Some(&ta), json!({ "to": bob.address(), "sealed": "AAAA" })).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "wrong size");
+    assert_eq!(seal(ta.clone(), bob.address()).await, StatusCode::NO_CONTENT);
+    app.chain.transfer(1, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    let tb = app.login(&bob).await;
+    let h = app.get("/api/vaults/1/handover", Some(&tb)).await.json();
+    assert_eq!(h["from"], format!("{:#x}", alice.address()));
+    assert_eq!(h["sealed"], sealed, "the indexer keeps a key sealed for this exact recipient");
+    // Alice no longer owns it: she can't read it, and nothing is outgoing for her.
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&ta)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.get("/api/handovers/outgoing", Some(&ta)).await.json().as_array().unwrap().len(), 0);
+    assert_eq!(app.req(Method::DELETE, "/api/vaults/1/handover", Some(&tb), Body::empty(), "", &[]).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&tb)).await.status, StatusCode::NOT_FOUND);
+
+    // 2. Transfer outside the app: bob is asked for the key, carol waits for it.
+    app.chain.transfer(1, carol.address());
+    indexer::on_transfer(&app.state, bob.address(), carol.address(), U256::from(1)).await.unwrap();
+    let tc = app.login(&carol).await;
+    assert!(app.get("/api/vaults/1/handover", Some(&tc)).await.json()["sealed"].is_null());
+    let out = app.get("/api/handovers/outgoing", Some(&tb)).await.json();
+    assert_eq!(out[0]["token_id"], "1");
+    assert_eq!(out[0]["to"], format!("{:#x}", carol.address()));
+    assert!(out[0]["key_blob"].is_string(), "bob may unlock the unchanged blob with his passphrase");
+    assert!(out[0]["recipient"].is_null(), "carol has no inbox yet");
+    let key = publish_inbox(&app, &tc, &carol, 2).await;
+    assert_eq!(app.get("/api/handovers/outgoing", Some(&tb)).await.json()[0]["recipient"]["pubkey"], b64(&key));
+    // Only the previous owner, only for the current owner.
+    assert_eq!(seal(ta.clone(), carol.address()).await, StatusCode::FORBIDDEN);
+    assert_eq!(seal(tb.clone(), dave.address()).await, StatusCode::FORBIDDEN);
+    assert_eq!(seal(tb.clone(), carol.address()).await, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&tc)).await.json()["sealed"], sealed);
+    assert_eq!(app.get("/api/handovers/outgoing", Some(&tb)).await.json().as_array().unwrap().len(), 0);
+
+    // 3. Once the new owner sets their own passphrase, the old owner no longer gets the blob
+    //    (it is now protected by the new owner's passphrase).
+    app.chain.transfer(1, dave.address());
+    indexer::on_transfer(&app.state, carol.address(), dave.address(), U256::from(1)).await.unwrap();
+    let td = app.login(&dave).await;
+    let k = app.get("/api/vaults/1/key", Some(&td)).await.json();
+    let (_, blob) = Vault::create_with_params("dave's", FAST).unwrap();
+    let r = app.json(Method::PUT, "/api/vaults/1/key", Some(&td), json!({ "key_blob": b64(&blob), "previous_etag": k["etag"] })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(app.get("/api/handovers/outgoing", Some(&tc)).await.json()[0]["key_blob"].is_null());
+
+    // Declining removes the request; formatting the drive removes any handover.
+    assert_eq!(app.req(Method::DELETE, "/api/handovers/outgoing/1", Some(&tc), Body::empty(), "", &[]).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&td)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(seal(td.clone(), carol.address()).await, StatusCode::NO_CONTENT);
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&td), json!({ "confirm": "DELETE" })).await;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM handovers").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0);
+}
+
 // ------------------------------------------------------------ shares & transfer
 
 #[tokio::test]
@@ -687,11 +791,11 @@ async fn indexer_revokes_links_on_transfer_event() {
     let sid = app.json(Method::POST, "/api/vaults/1/shares", Some(&t), body).await.json()["id"].as_str().unwrap().to_owned();
 
     // Mint events (from = 0) leave links alone.
-    indexer::on_transfer(&app.state, Address::ZERO, U256::from(1)).await.unwrap();
+    indexer::on_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
     assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::OK);
 
     // A -> B -> A before anyone opened the link: the owner check alone would let it live again.
-    indexer::on_transfer(&app.state, alice.address(), U256::from(1)).await.unwrap();
+    indexer::on_transfer(&app.state, alice.address(), Address::repeat_byte(0xbb), U256::from(1)).await.unwrap();
     assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::NOT_FOUND);
 }
 

@@ -8,6 +8,7 @@ pub mod auth;
 pub mod chain;
 pub mod config;
 pub mod error;
+pub mod handover;
 pub mod indexer;
 pub mod objects;
 pub mod range;
@@ -105,7 +106,8 @@ pub fn router(state: AppState) -> Router {
                 .merge(auth::routes())
                 .merge(vaults::routes())
                 .merge(objects::routes())
-                .merge(shares::routes()),
+                .merge(shares::routes())
+                .merge(handover::routes()),
         )
         .with_state(state)
 }
@@ -132,5 +134,18 @@ pub(crate) mod b64 {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let s = String::deserialize(d)?;
         STANDARD.decode(s).map_err(serde::de::Error::custom)
+    }
+
+    /// Same, for optional fields (null when absent).
+    pub mod option {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use serde::Serializer;
+
+        pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+            match v {
+                Some(b) => s.serialize_str(&STANDARD.encode(b)),
+                None => s.serialize_none(),
+            }
+        }
     }
 }

@@ -11,6 +11,7 @@ use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 
 use crate::chain::{RpcChain, Transfer};
+use crate::handover;
 use crate::shares::revoke_all;
 use crate::{AppResult, AppState};
 
@@ -47,7 +48,7 @@ async fn poll(st: &AppState, chain: &RpcChain) -> anyhow::Result<bool> {
         .to_block(to);
     for log in chain.provider.get_logs(&filter).await? {
         let ev = log.log_decode::<Transfer>()?.inner.data;
-        on_transfer(st, ev.from, ev.tokenId).await?;
+        on_transfer(st, ev.from, ev.to, ev.tokenId).await?;
     }
 
     sqlx::query(
@@ -60,10 +61,12 @@ async fn poll(st: &AppState, chain: &RpcChain) -> anyhow::Result<bool> {
     Ok(to < head)
 }
 
-pub async fn on_transfer(st: &AppState, from: Address, token_id: U256) -> AppResult<()> {
+pub async fn on_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
     st.chain.invalidate(token_id);
     if from != Address::ZERO {
-        let n = revoke_all(st, &token_id.to_string()).await?;
+        let token = token_id.to_string();
+        let n = revoke_all(st, &token).await?;
+        handover::on_transfer(st, from, to, &token).await?;
         tracing::info!(%token_id, revoked_links = n, "vault transferred");
     }
     Ok(())

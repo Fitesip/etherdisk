@@ -140,6 +140,36 @@ fn resumed_encryption_matches_uninterrupted() {
 }
 
 #[test]
+fn inbox_seal_and_open() {
+    use vault_crypto::inbox::{seal, InboxSecret, SEALED_OVERHEAD};
+    let sig = [7u8; 65];
+    let bob = InboxSecret::from_signature(&sig).unwrap();
+    // Same signature, same key (the recipient re-derives it later).
+    assert_eq!(InboxSecret::from_signature(&sig).unwrap().public(), bob.public());
+
+    let (v, blob) = vault("p");
+    let dek = v.export_dek();
+    let sealed = seal(&bob.public(), &dek[..], b"handover/1").unwrap();
+    assert_eq!(sealed.len(), SEALED_OVERHEAD + 32);
+    let opened = bob.open(&sealed, b"handover/1").unwrap();
+    let restored = Vault::from_exported_dek(&opened, &blob).unwrap();
+    let enc = encrypt(&v, b"for bob");
+    assert_eq!(decrypt(&restored, &enc).unwrap(), b"for bob");
+
+    // Other inbox, other token (AAD), tampering: all fail.
+    let eve = InboxSecret::from_signature(&[8u8; 65]).unwrap();
+    assert!(eve.open(&sealed, b"handover/1").is_err());
+    assert!(bob.open(&sealed, b"handover/2").is_err());
+    let mut bad = sealed.clone();
+    bad[40] ^= 1;
+    assert!(bob.open(&bad, b"handover/1").is_err());
+    // Low-order public key is refused, and short inputs are rejected.
+    assert!(seal(&[0u8; 32], b"x", b"").is_err());
+    assert!(InboxSecret::from_signature(&[1u8; 10]).is_err());
+    assert!(bob.open(&sealed[..20], b"handover/1").is_err());
+}
+
+#[test]
 fn reset_creates_independent_vault() {
     let (old, _) = vault("lost");
     let enc = encrypt(&old, b"secret");

@@ -5,11 +5,15 @@
 //! DEK --HKDF(file_salt)--> per-file key  --> chunked XChaCha20-Poly1305
 //! DEK --HKDF--> metadata key             --> sealed manifests (names, types, ...)
 //!
+//! Handing a drive to its next owner: the DEK is sealed to the recipient's inbox key
+//! (X25519, derived from a wallet signature), see `inbox`.
+//!
 //! The server stores only the wrapped DEK (`Vault::create` / `rewrap` output) and
 //! ciphertext. Changing the passphrase re-wraps the DEK; files are never touched.
 
 mod error;
 mod file;
+pub mod inbox;
 mod keys;
 
 pub use error::{Error, Result};
