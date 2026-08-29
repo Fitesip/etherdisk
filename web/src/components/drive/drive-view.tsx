@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Settings } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useState } from "react";
 
 import { useT } from "@/i18n";
 import { api, ApiError, type VaultInfo } from "@/lib/api";
@@ -16,7 +17,7 @@ import { useUnlocked } from "@/lib/unlocked";
 
 import { IncomingHandover } from "../handover";
 import { RequireSession } from "../require-session";
-import { cn, Notice, Spinner } from "../ui";
+import { Button, cn, Notice, Spinner } from "../ui";
 import { FileBrowser, lastFolderKey } from "./browser";
 import { DriveSettingsPanel } from "./settings";
 import { SetupForm, UnlockForm } from "./unlock";
@@ -67,6 +68,13 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
   });
   // "Stay unlocked on reload": bring the kept key back instead of asking for the passphrase.
   const kept = !!address && !unlocked && !!key.data && hasKept(address, tokenId);
+  // A key sent by the previous owner replaces the passphrase form (kept behind a button).
+  const handover = useQuery({
+    queryKey: ["handover", token, tokenId],
+    queryFn: () => api.incomingHandover(token, tokenId),
+    enabled: !!info.data?.initialized && !unlocked,
+  });
+  const [usePassphrase, setUsePassphrase] = useState(false);
   const restore = useQuery({
     queryKey: ["restore", address, tokenId, key.data?.etag],
     queryFn: () => store.restore(tokenId, key.data!.etag),
@@ -92,7 +100,15 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
     body = (
       <>
         <IncomingHandover token={token} tokenId={tokenId} keyBlob={key.data.key_blob} etag={key.data.etag} />
-        <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+        {handover.data?.sealed && !usePassphrase ? (
+          <div className="mt-4 text-center">
+            <Button variant="ghost" size="sm" onClick={() => setUsePassphrase(true)}>
+              {t("handover.usePassphrase")}
+            </Button>
+          </div>
+        ) : (
+          <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+        )}
       </>
     );
   else if (key.error) body = <Notice tone="danger">{t("errors.network")}</Notice>;

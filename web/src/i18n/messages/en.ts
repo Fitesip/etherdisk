@@ -325,6 +325,7 @@ export const en = {
     incomingTitle: "The previous owner sent you this drive's key",
     incomingText: "Open it with your wallet, then choose your own passphrase. The old one stops working.",
     receive: "Receive key",
+    usePassphrase: "Enter passphrase instead",
     receiving: "Confirm in wallet…",
     choosePassphrase: "Choose your passphrase",
     saveAndOpen: "Save and open drive",
