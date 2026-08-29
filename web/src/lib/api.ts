@@ -85,6 +85,37 @@ export interface PendingUpload extends ObjectRow {
   received: number;
 }
 
+export interface InboxKey {
+  /** base64 X25519 public key */
+  pubkey: string;
+  /** 0x-hex wallet signature over the inbox message */
+  signature: string;
+}
+
+export interface IncomingHandover {
+  from: string;
+  /** base64 drive key sealed to the caller's inbox; null while the previous owner hasn't sent it */
+  sealed: string | null;
+  created_at: number;
+}
+
+export interface OutgoingHandover {
+  token_id: string;
+  to: string;
+  /** base64 wrapped key, while unchanged since the transfer */
+  key_blob: string | null;
+  recipient: InboxKey | null;
+  name: string | null;
+  created_at: number;
+}
+
+/** null for 404, the value otherwise. */
+const orNull = <T>(p: Promise<T>): Promise<T | null> =>
+  p.catch((e) => {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  });
+
 export interface ShareRow {
   id: string;
   owner_metadata: string;
@@ -180,6 +211,15 @@ export const api = {
   shares: (token: string, vault: string) => json<ShareRow[]>(request(`/vaults/${vault}/shares`, { token })),
   revokeShare: (token: string, vault: string, id: string) =>
     empty(request(`/vaults/${vault}/shares/${id}`, { method: "DELETE", token })),
+
+  putInbox: (token: string, key: InboxKey) => empty(request("/inbox", { method: "PUT", token, json: key })),
+  getInbox: (address: string) => orNull(json<InboxKey>(request(`/inbox/${address}`))),
+  incomingHandover: (token: string, vault: string) => orNull(json<IncomingHandover>(request(`/vaults/${vault}/handover`, { token }))),
+  sealHandover: (token: string, vault: string, to: string, sealed: string) =>
+    empty(request(`/vaults/${vault}/handover`, { method: "POST", token, json: { to, sealed } })),
+  dismissHandover: (token: string, vault: string) => empty(request(`/vaults/${vault}/handover`, { method: "DELETE", token })),
+  outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
+  declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),
 
   openShare: (id: string) => json<{ manifest: string }>(request(`/shares/${id}`)),
   shareThumbnail: async (share: string, id: string) =>

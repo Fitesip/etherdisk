@@ -12,6 +12,9 @@ export {
   encryptWithKey,
   encryptedLen,
   headerLen,
+  inboxOpen,
+  inboxPublicKey,
+  inboxSeal,
   plaintextLen,
 } from "@/wasm/vault_crypto_wasm";
 

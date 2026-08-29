@@ -9,14 +9,16 @@ import { isAddress, isAddressEqual, zeroAddress, type Address } from "viem";
 import { useConnection, usePublicClient, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 
 import { useT } from "@/i18n";
-import type { VaultInfo } from "@/lib/api";
+import { api, type VaultInfo } from "@/lib/api";
 import { CONTRACT_ADDRESS } from "@/lib/config";
 import { vaultNft } from "@/lib/contract";
+import { sealDriveKey, verifiedInbox } from "@/lib/inbox";
 import { driveName } from "@/lib/drive-style";
 import { formatBytes, shortAddress } from "@/lib/format";
 import { IDLE_CHOICES, useLockSettings } from "@/lib/lock-settings";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { useToast } from "../toast";
 import { Button, cn, Dialog, Input, Notice } from "../ui";
 import { ChangePassphraseForm, DriveLookForm, LinksList, ResetDialog, type DriveCtx } from "./dialogs";
 
@@ -30,8 +32,14 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
   const store = useUnlocked();
   const client = usePublicClient();
   const { address } = useConnection();
+  const toast = useToast();
   const [to, setTo] = useState("");
   const [word, setWord] = useState("");
+  const unlocked = store.get(info.token_id);
+  const [sendKey, setSendKey] = useState(true);
+  const [sealing, setSealing] = useState(false);
+  const [sealError, setSealError] = useState<string | null>(null);
+  const [noInbox, setNoInbox] = useState(false);
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash: write.data });
 
@@ -48,18 +56,34 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
   // Once mined, the drive is no longer ours: forget its key and leave.
   useEffect(() => {
     if (!receipt.isSuccess) return;
+    if (noInbox) toast({ text: t("handover.recipientNoInbox") });
     store.lock(info.token_id);
     qc.invalidateQueries({ queryKey: ["vaults", token] });
     router.push("/drive");
-  }, [receipt.isSuccess, store, info.token_id, qc, token, router]);
+  }, [receipt.isSuccess, store, info.token_id, qc, token, router, noInbox, toast, t]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     if (!valid || self || word !== CONFIRM_WORD || !address) return;
+    setSealError(null);
+    // Seal the drive key to the recipient first, while this wallet still owns the drive.
+    if (sendKey && unlocked) {
+      setSealing(true);
+      try {
+        const inbox = await verifiedInbox(recipient as Address);
+        if (inbox) await api.sealHandover(token, info.token_id, recipient, sealDriveKey(unlocked.vault, info.token_id, inbox));
+        setNoInbox(!inbox);
+      } catch (err) {
+        setSealError(err instanceof Error ? err.message : t("common.error"));
+        return;
+      } finally {
+        setSealing(false);
+      }
+    }
     write.mutate({ ...vaultNft, functionName: "safeTransferFrom", args: [address, recipient as Address, BigInt(info.token_id)] });
   }
 
-  const busy = write.isPending || receipt.isLoading;
+  const busy = sealing || write.isPending || receipt.isLoading;
   return (
     <Dialog open={open} onClose={busy ? () => {} : onClose} title={t("transfer.title", { name: driveName(info, t) })} tone="danger">
       <form onSubmit={submit} className="flex flex-col gap-4">
@@ -91,6 +115,14 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
           {t("transfer.confirmLabel", { word: CONFIRM_WORD })}
           <Input className="mt-2 font-mono" value={word} onChange={(e) => setWord(e.target.value)} autoComplete="off" disabled={busy} />
         </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={sendKey && !!unlocked} disabled={!unlocked || busy} onChange={(e) => setSendKey(e.target.checked)} />
+          <span>
+            {t("handover.sendKey")}
+            <span className="block text-xs text-muted">{unlocked ? t("handover.sendKeyHint") : t("handover.sendKeyLocked")}</span>
+          </span>
+        </label>
+        {sealError && <Notice tone="danger">{sealError}</Notice>}
         {write.error && <Notice tone="danger">{write.error.message.split("\n")[0]}</Notice>}
         {receipt.isError && <Notice tone="danger">{t("common.error")}</Notice>}
         <Button type="submit" variant="danger" loading={busy} disabled={!valid || self || word !== CONFIRM_WORD}>

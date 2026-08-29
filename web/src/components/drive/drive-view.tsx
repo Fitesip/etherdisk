@@ -14,6 +14,7 @@ import { useSession } from "@/lib/session";
 import { useStored } from "@/lib/storage";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { IncomingHandover } from "../handover";
 import { RequireSession } from "../require-session";
 import { cn, Notice, Spinner } from "../ui";
 import { FileBrowser, lastFolderKey } from "./browser";
@@ -88,7 +89,12 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
   else if (unlocked) body = <FileBrowser token={token} info={vault} unlocked={unlocked} />;
   else if (!vault.initialized) body = <SetupForm token={token} tokenId={tokenId} name={name} />;
   else if (key.data && !(kept && restore.isPending))
-    body = <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />;
+    body = (
+      <>
+        <IncomingHandover token={token} tokenId={tokenId} keyBlob={key.data.key_blob} etag={key.data.etag} />
+        <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+      </>
+    );
   else if (key.error) body = <Notice tone="danger">{t("errors.network")}</Notice>;
   else body = <Spinner className="mx-auto mt-24" />;
 

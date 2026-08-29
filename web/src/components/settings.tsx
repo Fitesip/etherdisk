@@ -4,13 +4,17 @@ import { Monitor, Moon, Sun } from "lucide-react";
 
 import { useI18n } from "@/i18n";
 import { locales, type Locale } from "@/i18n/locales";
+import { useSession } from "@/lib/session";
 import { useThemePref, type ThemePref } from "@/lib/theme";
+
+import { InboxSettings } from "./handover";
 
 import { Card, cn } from "./ui";
 
 export function SettingsView() {
   const { t, locale, setLocale } = useI18n();
   const [theme, setTheme] = useThemePref();
+  const { token } = useSession();
   const themes: { value: ThemePref; label: string; icon: typeof Sun }[] = [
     { value: "light", label: t("settings.themeLight"), icon: Sun },
     { value: "dark", label: t("settings.themeDark"), icon: Moon },
@@ -60,6 +64,11 @@ export function SettingsView() {
           </select>
           <p className="mt-2 text-xs text-muted">{t("settings.languageHint")}</p>
         </div>
+        {token && (
+          <div className="p-5">
+            <InboxSettings token={token} />
+          </div>
+        )}
       </Card>
     </div>
   );
