@@ -8,9 +8,10 @@ import { useSignMessage } from "wagmi";
 
 import { useT } from "@/i18n";
 import { api, type OutgoingHandover } from "@/lib/api";
-import { fromB64, loadCrypto, nextFrame, toB64, WasmVault } from "@/lib/crypto";
+import { fromB64, toB64, type WasmVault } from "@/lib/crypto";
 import { shortAddress } from "@/lib/format";
 import { enableInbox, openDriveKey, sealDriveKey, verifiedInbox, type Sign } from "@/lib/inbox";
+import { rewrapKey, unlockVault } from "@/lib/kdf";
 import { passphraseValid } from "@/lib/passphrase";
 import { useSession } from "@/lib/session";
 import { useStored, writeStored } from "@/lib/storage";
@@ -127,12 +128,10 @@ function OutgoingRow({ token, h }: { token: string; h: OutgoingHandover }) {
     if (!h.key_blob || !h.recipient || !pass) return;
     setBusy(true);
     setError(null);
-    await loadCrypto();
-    await nextFrame();
     let vault: WasmVault | null = null;
     try {
       try {
-        vault = WasmVault.unlock(fromB64(h.key_blob), pass);
+        vault = await unlockVault(fromB64(h.key_blob), pass);
       } catch {
         throw new Error(t("vault.wrongPassphrase"));
       }
@@ -265,11 +264,10 @@ export function IncomingHandover({ token, tokenId, keyBlob, etag }: { token: str
     if (!dek || !passphraseValid(pass) || pass !== repeat) return;
     setBusy(true);
     setError(null);
-    await nextFrame();
     let vault: WasmVault | null = null;
     try {
-      vault = WasmVault.fromExportedKey(dek, fromB64(keyBlob));
-      const saved = await api.putKey(token, tokenId, toB64(vault.changePassphrase(pass)), etag);
+      vault = await rewrapKey(dek, fromB64(keyBlob), pass);
+      const saved = await api.putKey(token, tokenId, toB64(vault.keyBlob), etag);
       dek.fill(0);
       await api.dismissHandover(token, tokenId).catch(() => {});
       store.set(tokenId, { vault, etag: saved.etag });

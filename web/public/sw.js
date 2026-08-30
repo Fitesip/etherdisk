@@ -134,16 +134,33 @@ function parseRange(header, size) {
 
 const disposition = (kind, name) => `${kind}; filename*=UTF-8''${encodeURIComponent(name)}`;
 
+// Decrypted files come from other people (shared links) and could be HTML or SVG with
+// scripts. Opened directly (e.g. "open image in new tab") they would run on this origin
+// with access to sessions and keys. So inline types are limited to passive media, and
+// every response is sandboxed: no scripts, opaque origin. PDFs are the exception the
+// built-in viewer needs; it doesn't run page scripts.
+const INLINE_TYPES = /^(image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml)|video\/[\w.+-]+|audio\/[\w.+-]+|text\/plain|application\/pdf)$/i;
+const SANDBOX = "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'";
+
+function safeHeaders(type, inline, name) {
+  const t = (type || "").toLowerCase();
+  const shown = inline && INLINE_TYPES.test(t);
+  const headers = {
+    // Text is served as plain text; anything else not on the list only downloads.
+    "Content-Type": shown ? (t.startsWith("text/") ? "text/plain; charset=utf-8" : t) : "application/octet-stream",
+    "Content-Disposition": disposition(shown ? "inline" : "attachment", name),
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
+  };
+  if (t !== "application/pdf") headers["Content-Security-Policy"] = SANDBOX;
+  return headers;
+}
+
 async function handleStream(request, url) {
   const s = streams.get(url.pathname.slice(STREAM.length));
   if (!s) return new Response("stream not registered", { status: 404 });
   const { size, range } = await openStream(s);
-  const headers = {
-    "Content-Type": s.type || "application/octet-stream",
-    "Accept-Ranges": "bytes",
-    "Content-Disposition": disposition(url.searchParams.has("dl") ? "attachment" : "inline", s.name),
-    "Cache-Control": "no-store",
-  };
+  const headers = { ...safeHeaders(s.type, !url.searchParams.has("dl"), s.name), "Accept-Ranges": "bytes" };
   if (size === 0) return new Response(null, { status: 200, headers: { ...headers, "Content-Length": "0" } });
 
   const r = parseRange(request.headers.get("range"), size);
@@ -337,6 +354,8 @@ async function handleZip(url) {
       "Content-Length": String(zipSize(z.entries, zip64)),
       "Content-Disposition": disposition("attachment", z.name),
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": SANDBOX,
     },
   });
 }

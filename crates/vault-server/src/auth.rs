@@ -114,7 +114,20 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The signed-in wallet. Rejects with 401 without a valid session.
+/// As `Option<AuthUser>` it is optional: `None` without a valid session.
 pub struct AuthUser(pub Address);
+
+impl axum::extract::OptionalFromRequestParts<AppState> for AuthUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, st: &AppState) -> AppResult<Option<Self>> {
+        match <AuthUser as FromRequestParts<AppState>>::from_request_parts(parts, st).await {
+            Ok(u) => Ok(Some(u)),
+            Err(AppError::Unauthorized) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
 
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;

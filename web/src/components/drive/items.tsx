@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   Download,
   File as FileIcon,
@@ -109,6 +111,57 @@ export interface ItemActions {
   rename: (item: Item) => void;
   move: (items: Item[]) => void;
   trash: (items: Item[]) => void;
+  /** Drag-and-drop move; omit to disable dragging. */
+  moveTo?: (ids: string[], folderId: string | null) => void;
+}
+
+export type SortKey = "name" | "size" | "modified";
+export interface Sort {
+  key: SortKey;
+  desc: boolean;
+}
+
+/** MIME type marking drags of drive items (as opposed to files from the desktop). */
+export const DRAG_TYPE = "application/x-nftvault-items";
+
+/** Drag source: the dragged item, or all selected items if it is one of them. */
+export function dragProps(item: Item, selected: ReadonlySet<string> | undefined, enabled: boolean) {
+  if (!enabled) return {};
+  return {
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      const ids = selected?.has(item.row.id) ? [...selected] : [item.row.id];
+      e.dataTransfer.setData(DRAG_TYPE, JSON.stringify(ids));
+      e.dataTransfer.effectAllowed = "move";
+    },
+  };
+}
+
+/** Drop target for drive items (folders, breadcrumbs). */
+export function useDropTarget(folderId: string | null, onDrop: ((ids: string[], folderId: string | null) => void) | undefined) {
+  const [over, setOver] = useState(false);
+  if (!onDrop) return { over: false, props: {} };
+  const accepts = (e: React.DragEvent) => e.dataTransfer.types.includes(DRAG_TYPE);
+  return {
+    over,
+    props: {
+      onDragOver: (e: React.DragEvent) => {
+        if (!accepts(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setOver(true);
+      },
+      onDragLeave: () => setOver(false),
+      onDrop: (e: React.DragEvent) => {
+        if (!accepts(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setOver(false);
+        const ids = (JSON.parse(e.dataTransfer.getData(DRAG_TYPE) || "[]") as string[]).filter((id) => id !== folderId);
+        if (ids.length) onDrop(ids, folderId);
+      },
+    },
+  };
 }
 
 interface ViewProps {
@@ -121,6 +174,38 @@ interface ViewProps {
   onToggleAll?: () => void;
   /** Secondary line under the name (e.g. the folder a search hit is in). */
   subtitle?: (item: Item) => string | undefined;
+  sort?: Sort;
+  onSort?: (key: SortKey) => void;
+}
+
+function SortHeader({ k, label, sort, onSort, className }: { k: SortKey; label: string; sort?: Sort; onSort?: (k: SortKey) => void; className?: string }) {
+  if (!onSort) return <span className={className}>{label}</span>;
+  const active = sort?.key === k;
+  return (
+    <button type="button" onClick={() => onSort(k)} className={cn("flex items-center gap-1 hover:text-fg", active && "text-fg", className)}>
+      {label}
+      {active && (sort.desc ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />)}
+    </button>
+  );
+}
+
+/** A list row; folders also accept dropped items. */
+function ListRow({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
+  const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
+  return (
+    <li {...dragProps(item, selected, !!actions.moveTo && !!item.meta)} {...drop.props} className={cn(className, drop.over && "bg-accent-soft ring-2 ring-accent ring-inset")}>
+      {children}
+    </li>
+  );
+}
+
+function GridCard({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
+  const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
+  return (
+    <li {...dragProps(item, selected, !!actions.moveTo && !!item.meta)} {...drop.props} className={cn(className, drop.over && "ring-2 ring-accent")}>
+      {children}
+    </li>
+  );
 }
 
 function ItemMenu({ item, actions }: { item: Item; actions: ItemActions }) {
@@ -177,7 +262,7 @@ function Checkbox({ checked, onChange, label, className }: { checked: boolean; o
   );
 }
 
-export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll, subtitle }: ViewProps) {
+export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll, subtitle, sort, onSort }: ViewProps) {
   const t = useT();
   const selecting = !!selected && selected.size > 0;
   const allSelected = !!selected && items.length > 0 && items.every((i) => selected.has(i.row.id));
@@ -186,9 +271,9 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
     <>
       <div className={cn("hidden items-center gap-4 border-b border-border px-4 py-2 text-xs text-muted sm:grid", cols)}>
         {selected && <Checkbox checked={allSelected} onChange={() => onToggleAll?.()} label={t("files.selectAll")} />}
-        <span>{t("files.name")}</span>
-        <span className="text-right">{t("files.size")}</span>
-        <span>{t("files.modified")}</span>
+        <SortHeader k="name" label={t("files.name")} sort={sort} onSort={onSort} />
+        <SortHeader k="size" label={t("files.size")} sort={sort} onSort={onSort} className="justify-end text-right" />
+        <SortHeader k="modified" label={t("files.modified")} sort={sort} onSort={onSort} />
         <span />
       </div>
       <ul className="divide-y divide-border">
@@ -197,8 +282,11 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
           const isSelected = !!selected?.has(item.row.id);
           const sub = subtitle?.(item);
           return (
-            <li
+            <ListRow
               key={item.row.id}
+              item={item}
+              actions={actions}
+              selected={selected}
               className={cn("group grid items-center gap-4 px-4 py-2 transition-colors", cols, isSelected ? "bg-accent-soft" : "hover:bg-bg-subtle")}
             >
               {selected && (
@@ -224,7 +312,7 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
               <span className="hidden text-right text-sm text-muted tabular-nums sm:block">{isFileMeta(meta) ? formatBytes(meta.size) : "—"}</span>
               <span className="hidden text-sm text-muted sm:block">{formatDate(item.row.updated_at)}</span>
               <ItemMenu item={item} actions={actions} />
-            </li>
+            </ListRow>
           );
         })}
       </ul>
@@ -242,8 +330,11 @@ export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle }: 
         const isSelected = !!selected?.has(item.row.id);
         const sub = subtitle?.(item);
         return (
-          <li
+          <GridCard
             key={item.row.id}
+            item={item}
+            actions={actions}
+            selected={selected}
             className={cn(
               "group relative overflow-hidden rounded-xl border bg-card transition",
               isSelected ? "border-accent ring-2 ring-accent/40" : "border-border hover:-translate-y-0.5 hover:shadow-md",
@@ -272,7 +363,7 @@ export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle }: 
             <div className="absolute top-1.5 right-1.5 rounded-md bg-card/80 backdrop-blur transition sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
               <ItemMenu item={item} actions={actions} />
             </div>
-          </li>
+          </GridCard>
         );
       })}
     </ul>

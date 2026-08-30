@@ -116,6 +116,26 @@ const orNull = <T>(p: Promise<T>): Promise<T | null> =>
     throw e;
   });
 
+export type IdeaStatus = "open" | "planned" | "in_progress" | "done" | "declined";
+
+export interface Idea {
+  id: number;
+  title: string;
+  body: string;
+  author: string;
+  status: IdeaStatus;
+  hidden: boolean;
+  votes: number;
+  created_at: number;
+}
+
+export interface IdeasMe {
+  /** Votes this wallet casts (one per drive). */
+  tokens: number;
+  admin: boolean;
+  voted: number[];
+}
+
 export interface ShareRow {
   id: string;
   owner_metadata: string;
@@ -220,6 +240,15 @@ export const api = {
   dismissHandover: (token: string, vault: string) => empty(request(`/vaults/${vault}/handover`, { method: "DELETE", token })),
   outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
   declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),
+
+  ideas: (token: string | null) => json<Idea[]>(request("/ideas", { token })),
+  ideasMe: (token: string) => json<IdeasMe>(request("/ideas/me", { token })),
+  proposeIdea: (token: string, title: string, body: string) =>
+    json<{ id: number }>(request("/ideas", { method: "POST", token, json: { title, body } })),
+  voteIdea: (token: string, id: number, vote: { choice: "for" | "withdraw"; issued_at: number; signature: string }) =>
+    json<{ votes: number }>(request(`/ideas/${id}/vote`, { method: "POST", token, json: vote })),
+  moderateIdea: (token: string, id: number, patch: { status?: IdeaStatus; hidden?: boolean }) =>
+    empty(request(`/ideas/${id}`, { method: "PATCH", token, json: patch })),
 
   openShare: (id: string) => json<{ manifest: string }>(request(`/shares/${id}`)),
   shareThumbnail: async (share: string, id: string) =>

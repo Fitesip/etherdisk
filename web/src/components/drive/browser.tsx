@@ -2,7 +2,9 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowDownUp,
   ArrowLeft,
+  Camera,
   ArrowRightLeft,
   ChevronRight,
   Download,
@@ -27,7 +29,7 @@ import { useT } from "@/i18n";
 import { api, ApiError, type ObjectRow, type VaultInfo } from "@/lib/api";
 import { downloadItemsZip } from "@/lib/download";
 import { driveName, driveVars } from "@/lib/drive-style";
-import { entriesFromDrop, entriesFromInput } from "@/lib/folder-upload";
+import { entriesFromDrop, entriesFromInput, type TreeEntry } from "@/lib/folder-upload";
 import { formatBytes, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
 import { useStored, writeStored } from "@/lib/storage";
@@ -35,20 +37,58 @@ import { downloadFile, ownerSource } from "@/lib/stream";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 
 import { useToast } from "../toast";
-import { Button, cn, Notice, Progress, Spinner } from "../ui";
+import { Button, cn, Dialog, Notice, Progress, Spinner } from "../ui";
 import { Viewer, type Gallery } from "../viewer";
 import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ResetDialog, ShareDialog, type DriveCtx } from "./dialogs";
-import { ItemGrid, ItemList, Menu, MenuItem, type ItemActions } from "./items";
+import { ItemGrid, ItemList, Menu, MenuItem, useDropTarget, type ItemActions, type Sort, type SortKey } from "./items";
 import { ResumeBanner } from "./resume";
 import { SearchBox, useSearch } from "./search";
 import { TransferDialog } from "./settings";
 import { TrashView } from "./trash";
 import { UploadPanel, useUploads } from "./uploads";
 
-const sortItems = (items: Item[]) =>
-  [...items].sort((a, b) =>
-    a.row.kind !== b.row.kind ? (a.row.kind === "folder" ? -1 : 1) : itemName(a).localeCompare(itemName(b), undefined, { numeric: true }),
+const SORT_KEY = "nftvault.sort";
+const parseSort = (raw: string | null): Sort => {
+  const [key, dir] = (raw ?? "").split(":");
+  return { key: key === "size" || key === "modified" ? key : "name", desc: dir === "desc" };
+};
+const sizeOf = (i: Item) => (isFileMeta(i.meta) ? i.meta.size : -1);
+
+/** Folders first, then by the chosen key (name breaks ties). */
+const sortItems = (items: Item[], sort: Sort) =>
+  [...items].sort((a, b) => {
+    if (a.row.kind !== b.row.kind) return a.row.kind === "folder" ? -1 : 1;
+    const byName = itemName(a).localeCompare(itemName(b), undefined, { numeric: true });
+    const d = sort.key === "size" ? sizeOf(a) - sizeOf(b) : sort.key === "modified" ? a.row.updated_at - b.row.updated_at : byName;
+    return (sort.desc ? -d : d) || byName;
+  });
+
+/** "photo.jpg" -> "photo (2).jpg", first free number. */
+function uniqueName(name: string, taken: Set<string>): string {
+  const dot = name.lastIndexOf(".");
+  const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let n = 2; ; n++) if (!taken.has(`${base} (${n})${ext}`)) return `${base} (${n})${ext}`;
+}
+
+const topName = (e: TreeEntry) => e.dirs[0] ?? e.file?.name ?? "";
+const isTyping = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+
+/** Breadcrumb that also accepts dropped items. */
+function Crumb({ folderId, onDrop, className, onClick, children }: { folderId: string | null; onDrop?: (ids: string[], to: string | null) => void; className?: string; onClick: () => void; children: React.ReactNode }) {
+  const drop = useDropTarget(folderId, onDrop);
+  return (
+    <button type="button" {...drop.props} className={cn(className, "rounded-md px-1 -mx-1", drop.over && "bg-accent-soft text-accent ring-2 ring-accent")} onClick={onClick}>
+      {children}
+    </button>
   );
+}
+
+interface Conflict {
+  entries: TreeEntry[];
+  target: string | null;
+  names: string[];
+}
 
 /** Last open folder of a drive, so the Files tab returns to it. */
 export const lastFolderKey = (tokenId: string) => `nftvault.folder.${tokenId}`;
@@ -84,6 +124,17 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const go = useCallback((folderId: string | null) => navigate(folderId ? `folder=${folderId}` : ""), [navigate]);
 
   const layout = useStored(VIEW_KEY) === "grid" ? "grid" : "list";
+  const sort = parseSort(useStored(SORT_KEY));
+  const setSort = (key: SortKey) => writeStored(SORT_KEY, `${key}:${sort.key === key && !sort.desc ? "desc" : "asc"}`);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
+  const keys = useRef<{ selectedItems: Item[]; shown: Item[]; actions: ItemActions | null; toggleAll: () => void }>({
+    selectedItems: [],
+    shown: [],
+    actions: null,
+    toggleAll: () => {},
+  });
+  const searchBox = useRef<HTMLDivElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [gallery, setGallery] = useState<Gallery | null>(null);
@@ -116,11 +167,15 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     queryKey: ["objects", token, tokenId, current],
     queryFn: () => api.list(token, tokenId, current),
     enabled: !missing && !inTrash,
-    select: (rows) => sortItems(rows.map((r) => openItem(unlocked.vault, r))),
+    select: (rows) => rows.map((r) => openItem(unlocked.vault, r)),
   });
   const searching = query.trim().length > 0 && !inTrash;
   const search = useSearch(ctx, searching ? query : "");
-  const shown = useMemo(() => (searching ? search.hits.map((h) => h.item) : (objects.data ?? [])), [searching, search.hits, objects.data]);
+  const shown = useMemo(
+    () => (searching ? search.hits.map((h) => h.item) : sortItems(objects.data ?? [], sort)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sort is derived from its two fields
+    [searching, search.hits, objects.data, sort.key, sort.desc],
+  );
 
   const refresh = useCallback(() => {
     qc.invalidateQueries({ queryKey: ["objects", token, tokenId] });
@@ -167,6 +222,18 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     share: (item) => setDialog({ type: "share", item }),
     rename: (item) => setDialog({ type: "rename", item }),
     move: (items) => setDialog({ type: "move", items }),
+    moveTo: searching
+      ? undefined
+      : async (ids, folderId) => {
+          try {
+            for (const id of ids) await api.move(token, tokenId, id, folderId);
+          } catch (e) {
+            toast({ text: e instanceof Error ? e.message : t("common.error") });
+          } finally {
+            setSelected(new Set());
+            refresh();
+          }
+        },
     trash: async (items) => {
       try {
         for (const i of items) await api.remove(token, tokenId, i.row.id);
@@ -195,14 +262,93 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     });
   const toggleAll = () => setSelected((s) => (shown.length && shown.every((i) => s.has(i.row.id)) ? new Set() : new Set(shown.map((i) => i.row.id))));
   const selectedItems = shown.filter((i) => selected.has(i.row.id));
+  useEffect(() => {
+    keys.current = { selectedItems, shown, actions, toggleAll };
+  });
 
+  /** Uploads into the open folder, asking first if names are already taken there. */
+  const plan = (entries: TreeEntry[], target: string | null) => {
+    if (!entries.length) return;
+    const taken = new Set((target === current ? (objects.data ?? []) : []).filter((i) => i.meta).map(itemName));
+    const names = [...new Set(entries.map(topName))].filter((n) => taken.has(n));
+    if (names.length) setConflict({ entries, target, names });
+    else uploads.enqueue(entries, target);
+  };
+
+  async function resolveConflict(choice: "replace" | "keep" | "skip") {
+    if (!conflict) return;
+    const { entries, target, names } = conflict;
+    setConflict(null);
+    const clash = new Set(names);
+    const existing = new Map((objects.data ?? []).filter((i) => i.meta).map((i) => [itemName(i), i]));
+    const plain = entries.filter((e) => !clash.has(topName(e)));
+    const clashing = entries.filter((e) => clash.has(topName(e)));
+    if (choice === "skip") return uploads.enqueue(plain, target);
+    if (choice === "keep") {
+      const taken = new Set([...existing.keys(), ...entries.map(topName)]);
+      const renamed = new Map(names.map((n) => [n, uniqueName(n, taken)]));
+      const moved = clashing.map((e) =>
+        e.dirs.length
+          ? { ...e, dirs: [renamed.get(e.dirs[0])!, ...e.dirs.slice(1)] }
+          : { ...e, file: new File([e.file!], renamed.get(e.file!.name)!, { type: e.file!.type, lastModified: e.file!.lastModified }) },
+      );
+      return uploads.enqueue([...plain, ...moved], target);
+    }
+    // Replace: same-name files go to the trash first; same-name folders are merged into.
+    const merged = new Map<string, TreeEntry[]>();
+    const replaced: TreeEntry[] = [];
+    for (const e of clashing) {
+      const old = existing.get(topName(e))!;
+      if (e.dirs.length && old.row.kind === "folder") merged.set(old.row.id, [...(merged.get(old.row.id) ?? []), { ...e, dirs: e.dirs.slice(1) }]);
+      else replaced.push(e);
+    }
+    for (const e of replaced) {
+      const old = existing.get(topName(e));
+      if (old) await api.remove(token, tokenId, old.row.id).catch(() => {});
+    }
+    if (replaced.length) refresh();
+    uploads.enqueue([...plain, ...replaced], target);
+    for (const [folderId, list] of merged) uploads.enqueue(list, folderId);
+  }
+
+  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes("Files");
   const onDrop = (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     setDragging(0);
     if (inTrash) return;
     const target = current;
-    entriesFromDrop(e.dataTransfer).then((entries) => uploads.enqueue(entries, target));
+    entriesFromDrop(e.dataTransfer).then((entries) => plan(entries, target));
   };
+
+  // Keyboard: Delete, Ctrl/Cmd+A, Esc, "/" (search), F2 (rename), Enter (open).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTyping(e.target) || document.querySelector("dialog[open]") || inTrash) return;
+      const { selectedItems: sel, actions: act, toggleAll: all } = keys.current;
+      if (!act) return;
+      if ((e.key === "Delete" || e.key === "Backspace") && sel.length) {
+        e.preventDefault();
+        void act.trash(sel);
+      } else if (e.key.toLowerCase() === "a" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        all();
+      } else if (e.key === "Escape") {
+        setSelected(new Set());
+      } else if (e.key === "/") {
+        e.preventDefault();
+        searchBox.current?.querySelector("input")?.focus();
+      } else if (e.key === "F2" && sel.length === 1 && sel[0].meta) {
+        e.preventDefault();
+        act.rename(sel[0]);
+      } else if (e.key === "Enter" && sel.length === 1) {
+        e.preventDefault();
+        act.open(sel[0]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [inTrash]);
   const close = () => setDialog(null);
 
   const View = layout === "grid" ? ItemGrid : ItemList;
@@ -212,11 +358,12 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     <div
       className="relative flex flex-col gap-4"
       onDragEnter={(e) => {
+        if (!isFileDrag(e)) return;
         e.preventDefault();
         setDragging((n) => n + 1);
       }}
-      onDragLeave={() => setDragging((n) => Math.max(0, n - 1))}
-      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={(e) => isFileDrag(e) && setDragging((n) => Math.max(0, n - 1))}
+      onDragOver={(e) => isFileDrag(e) && e.preventDefault()}
       onDrop={onDrop}
     >
       {/* Where we are + search */}
@@ -235,22 +382,31 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             <span className="truncate">{t("files.searchResults", { q: query.trim() })}</span>
           ) : (
             <>
-              <button type="button" className={cn("truncate", current && "text-muted hover:text-fg")} onClick={() => go(null)}>
+              <Crumb folderId={null} onDrop={current ? actions.moveTo : undefined} className={cn("truncate", current && "text-muted hover:text-fg")} onClick={() => go(null)}>
                 {t("files.allFiles")}
-              </button>
+              </Crumb>
               {current && pathQuery.isLoading && <Spinner className="ml-2 h-4 w-4" />}
               {path.map((p, i) => (
                 <span key={p.id} className="flex min-w-0 items-center gap-1">
                   <ChevronRight className="h-4 w-4 shrink-0 text-muted" />
-                  <button type="button" className={cn("truncate", i < path.length - 1 && "text-muted hover:text-fg")} onClick={() => go(p.id)}>
+                  <Crumb
+                    folderId={p.id}
+                    onDrop={i < path.length - 1 ? actions.moveTo : undefined}
+                    className={cn("truncate", i < path.length - 1 && "text-muted hover:text-fg")}
+                    onClick={() => go(p.id)}
+                  >
                     {p.name}
-                  </button>
+                  </Crumb>
                 </span>
               ))}
             </>
           )}
         </nav>
-        {!inTrash && <SearchBox value={query} onChange={setQuery} loading={search.loading} />}
+        {!inTrash && (
+          <div ref={searchBox} className="w-full sm:w-auto">
+            <SearchBox value={query} onChange={setQuery} loading={search.loading} />
+          </div>
+        )}
       </div>
 
       {/* Toolbar, or the selection bar while items are selected */}
@@ -282,7 +438,18 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
               multiple
               hidden
               onChange={(e) => {
-                uploads.enqueue(Array.from(e.target.files ?? [], (file) => ({ file, dirs: [] })), current);
+                plan(Array.from(e.target.files ?? [], (file) => ({ file, dirs: [] })), current);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={cameraInput}
+              type="file"
+              accept="image/*,video/*"
+              capture="environment"
+              hidden
+              onChange={(e) => {
+                plan(Array.from(e.target.files ?? [], (file) => ({ file, dirs: [] })), current);
                 e.target.value = "";
               }}
             />
@@ -295,7 +462,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
               type="file"
               hidden
               onChange={(e) => {
-                uploads.enqueue(entriesFromInput(e.target.files ?? []), current);
+                plan(entriesFromInput(e.target.files ?? []), current);
                 e.target.value = "";
               }}
             />
@@ -312,6 +479,10 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
                 <>
                   <MenuItem icon={Upload} label={t("files.uploadFiles")} onClick={() => (closeMenu(), fileInput.current?.click())} />
                   <MenuItem icon={FolderUp} label={t("files.uploadFolder")} onClick={() => (closeMenu(), folderInput.current?.click())} />
+                  {/* Phones: straight from the camera. */}
+                  <div className="sm:hidden">
+                    <MenuItem icon={Camera} label={t("files.takePhoto")} onClick={() => (closeMenu(), cameraInput.current?.click())} />
+                  </div>
                 </>
               )}
             </Menu>
@@ -321,6 +492,35 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             </Button>
 
             <div className="ml-auto flex items-center gap-1">
+              <Menu
+                trigger={
+                  <Button size="icon" variant="ghost" aria-label={t("files.sortBy")} title={t("files.sortBy")}>
+                    <ArrowDownUp className="h-4 w-4" />
+                  </Button>
+                }
+              >
+                {(closeMenu) => (
+                  <>
+                    {(
+                      [
+                        ["name", t("files.name")],
+                        ["size", t("files.size")],
+                        ["modified", t("files.modified")],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => (closeMenu(), setSort(key))}
+                        className={cn("flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-bg-subtle", sort.key === key && "font-medium text-accent")}
+                      >
+                        {label}
+                        {sort.key === key && <span className="text-xs">{sort.desc ? "↓" : "↑"}</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </Menu>
               <div role="radiogroup" className="flex rounded-lg border border-border p-0.5">
                 {(
                   [
@@ -415,6 +615,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
               onToggle={toggle}
               onToggleAll={toggleAll}
               subtitle={searching ? (i) => (hitPath.get(i.row.id) ? t("files.inFolder", { path: hitPath.get(i.row.id)! }) : name) : undefined}
+              sort={searching ? undefined : sort}
+              onSort={searching ? undefined : setSort}
             />
           )}
         </div>
@@ -459,6 +661,25 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         ctx={ctx}
       />
       <ShareDialog item={dialog?.type === "share" ? dialog.item : null} onClose={close} ctx={ctx} />
+      <Dialog open={!!conflict} onClose={() => setConflict(null)} title={t("files.conflictTitle", { n: conflict?.names.length ?? 0 })}>
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted">{t("files.conflictText")}</p>
+          <ul className="max-h-40 overflow-auto rounded-lg border border-border px-3 py-2 text-sm">
+            {conflict?.names.map((n) => (
+              <li key={n} className="truncate">
+                {n}
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button onClick={() => resolveConflict("skip")}>{t("files.conflictSkip")}</Button>
+            <Button onClick={() => resolveConflict("keep")}>{t("files.conflictKeep")}</Button>
+            <Button variant="primary" onClick={() => resolveConflict("replace")}>
+              {t("files.conflictReplace")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
       <LinksDialog open={dialog?.type === "links"} onClose={close} ctx={ctx} />
       <TransferDialog open={dialog?.type === "transfer"} onClose={close} token={token} info={info} />
       <ResetDialog open={dialog?.type === "format"} onClose={close} token={token} tokenId={tokenId} />

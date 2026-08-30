@@ -1,7 +1,52 @@
 import type { NextConfig } from "next";
+import { sepolia } from "viem/chains";
+
+const isDev = process.env.NODE_ENV === "development";
+const origin = (url: string | undefined) => {
+  try {
+    return url ? new URL(url).origin : "";
+  } catch {
+    return "";
+  }
+};
+
+// Where the page may connect. Everything else is blocked, so even an injected script
+// can't send decrypted data or keys to a third-party server with fetch/XHR/WebSocket.
+const connect = [
+  "'self'",
+  origin(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"),
+  origin(process.env.NEXT_PUBLIC_RPC_URL || sepolia.rpcUrls.default.http[0]),
+  // WalletConnect relay and verify API.
+  "https://*.walletconnect.com",
+  "wss://*.walletconnect.com",
+  "https://*.walletconnect.org",
+  "wss://*.walletconnect.org",
+  "https://*.reown.com",
+  "wss://*.reown.com",
+  ...(isDev ? ["ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"] : []),
+].filter(Boolean);
+
+// Scripts: 'unsafe-inline' remains because Next.js streams inline scripts and a nonce
+// would force every page to render per request (no partial prerendering). The other
+// directives still cut off most of what an injected script could do.
+const csp = [
+  "default-src 'self'",
+  `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' blob: data:",
+  "media-src 'self' blob:",
+  "font-src 'self'",
+  `connect-src ${connect.join(" ")}`,
+  "frame-src 'self' blob: https://verify.walletconnect.com https://verify.walletconnect.org",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
 
 const nextConfig: NextConfig = {
-  /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
@@ -11,6 +56,25 @@ const nextConfig: NextConfig = {
         as: "*.css",
       },
     },
+  },
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "Content-Security-Policy", value: csp },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=(), payment=()" },
+        ],
+      },
+      {
+        // The service worker must be able to control the whole site.
+        source: "/sw.js",
+        headers: [{ key: "Service-Worker-Allowed", value: "/" }],
+      },
+    ];
   },
 };
 

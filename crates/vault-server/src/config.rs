@@ -21,6 +21,8 @@ pub struct Config {
     pub siwe_domain: String,
     pub cors_origins: Vec<String>,
     pub session_ttl_secs: i64,
+    /// Take the client IP from `X-Forwarded-For` (only behind a trusted reverse proxy).
+    pub trust_proxy: bool,
 }
 
 impl Config {
@@ -42,6 +44,7 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             session_ttl_secs: parse::<i64>("SESSION_TTL_HOURS", &var_or("SESSION_TTL_HOURS", "168"))? * 3600,
+            trust_proxy: var_or("TRUST_PROXY", "false") == "true",
         })
     }
 }

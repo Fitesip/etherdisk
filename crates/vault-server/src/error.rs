@@ -19,6 +19,8 @@ pub enum AppError {
     Conflict(String),
     #[error("vault storage quota exceeded")]
     QuotaExceeded,
+    #[error("too many requests")]
+    RateLimited(u64),
     #[error("requested range not satisfiable")]
     RangeNotSatisfiable { len: u64 },
     #[error(transparent)]
@@ -55,6 +57,7 @@ impl IntoResponse for AppError {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::QuotaExceeded => (StatusCode::INSUFFICIENT_STORAGE, "quota_exceeded"),
+            Self::RateLimited(retry) => return crate::ratelimit::too_many(*retry),
             Self::RangeNotSatisfiable { len } => {
                 return (
                     StatusCode::RANGE_NOT_SATISFIABLE,

@@ -9,9 +9,11 @@ pub mod chain;
 pub mod config;
 pub mod error;
 pub mod handover;
+pub mod ideas;
 pub mod indexer;
 pub mod objects;
 pub mod range;
+pub mod ratelimit;
 pub mod shares;
 pub mod storage;
 pub mod vaults;
@@ -38,6 +40,7 @@ pub struct Inner {
     pub config: Config,
     /// Objects with an upload request in flight (one writer per object).
     uploads: Mutex<HashSet<uuid::Uuid>>,
+    pub limiter: ratelimit::Limiter,
 }
 
 impl std::ops::Deref for AppState {
@@ -49,7 +52,7 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub fn new(db: SqlitePool, store: Arc<dyn BlobStore>, chain: Ownership, config: Config) -> Self {
-        Self(Arc::new(Inner { db, store, chain, config, uploads: Mutex::new(HashSet::new()) }))
+        Self(Arc::new(Inner { db, store, chain, config, uploads: Mutex::new(HashSet::new()), limiter: Default::default() }))
     }
 
     /// Marks `id` as being written to. `None` if another request already holds it.
@@ -99,17 +102,16 @@ pub async fn bind_deployment(db: &SqlitePool, contract: alloy::primitives::Addre
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .nest(
-            "/api",
-            Router::new()
-                .merge(auth::routes())
-                .merge(vaults::routes())
-                .merge(objects::routes())
-                .merge(shares::routes())
-                .merge(handover::routes()),
-        )
-        .with_state(state)
+    use axum::middleware::from_fn_with_state;
+    let auth = auth::routes().route_layer(from_fn_with_state(state.clone(), ratelimit::auth));
+    let public = shares::routes()
+        .merge(handover::routes())
+        .merge(ideas::routes())
+        .route_layer(from_fn_with_state(state.clone(), ratelimit::public));
+    let rest = vaults::routes()
+        .merge(objects::routes())
+        .route_layer(from_fn_with_state(state.clone(), ratelimit::default));
+    Router::new().nest("/api", auth.merge(public).merge(rest)).with_state(state)
 }
 
 pub(crate) fn now() -> i64 {

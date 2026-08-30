@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::http::{header, HeaderValue, Method};
 use tower_http::cors::CorsLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -11,7 +12,7 @@ use vault_server::chain::{Ownership, RpcChain};
 use vault_server::storage::LocalStore;
 use vault_server::{connect_db, indexer, objects, AppState, Config};
 
-const OWNER_CACHE_TTL: Duration = Duration::from_secs(30);
+const OWNER_CACHE_TTL: Duration = Duration::from_secs(10);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
 
 #[tokio::main]
@@ -38,16 +39,25 @@ async fn main() -> anyhow::Result<()> {
     let origins = config.cors_origins.iter().map(|o| o.parse()).collect::<Result<Vec<HeaderValue>, _>>()?;
     let cors = CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE])
         .expose_headers([header::CONTENT_RANGE, header::CONTENT_LENGTH, header::ACCEPT_RANGES]);
 
-    let app = vault_server::router(state).layer(cors).layer(TraceLayer::new_for_http());
+    // The API serves JSON and ciphertext only: never let a browser render it as a page.
+    let app = vault_server::router(state)
+        .layer(SetResponseHeaderLayer::overriding(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")))
+        .layer(cors)
+        .layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await
         .with_context(|| format!("cannot listen on {} (port busy or reserved? change BIND_ADDR)", config.bind_addr))?;
     tracing::info!("listening on {}", config.bind_addr);
-    axum::serve(listener, app).with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); }).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); }).await?;
     Ok(())
 }
 

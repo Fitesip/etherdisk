@@ -179,7 +179,7 @@ export function UploadPanel({ items, onClear, style }: { items: UploadItem[]; on
   const overall = items.reduce((n, i) => n + (i.status === "done" || i.status === "error" ? 1 : i.status === "uploading" ? i.progress : 0), 0) / items.length;
 
   return createPortal(
-    <div style={style} className="fixed right-4 bottom-4 z-40 w-[min(22rem,calc(100vw-2rem))] animate-slide-in">
+    <div style={style} className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 w-[min(22rem,calc(100vw-2rem))] animate-slide-in">
       <Card className="overflow-hidden shadow-2xl">
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
           {active ? (

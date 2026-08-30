@@ -93,7 +93,7 @@ export function WalletButton() {
   if (!hydrated || !isConnected || !address) return <ConnectButton />;
   return (
     <details className="group relative">
-      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg border border-border px-3 font-mono text-sm hover:bg-bg-subtle">
+      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg border border-border px-3 font-mono text-sm whitespace-nowrap hover:bg-bg-subtle">
         <span className="h-2 w-2 rounded-full bg-success" />
         {shortAddress(address)}
         <ChevronDown className="h-4 w-4 text-muted transition group-open:rotate-180" />

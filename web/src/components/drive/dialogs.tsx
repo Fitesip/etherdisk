@@ -7,7 +7,8 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { useT } from "@/i18n";
 import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { MAX_DRIVE_NAME } from "@/lib/config";
-import { fromB64, nextFrame, toB64, type WasmVault } from "@/lib/crypto";
+import { fromB64, toB64, type WasmVault } from "@/lib/crypto";
+import { rewrapVault } from "@/lib/kdf";
 import { driveName, driveVars, PRESET_COLORS } from "@/lib/drive-style";
 import { formatDate } from "@/lib/format";
 import { itemName, openItem, sealMeta, type Item } from "@/lib/meta";
@@ -124,10 +125,14 @@ export function ChangePassphraseForm({ ctx, etag }: { ctx: DriveCtx; etag: strin
     setError(null);
     setDone(false);
     try {
-      await nextFrame();
-      const blob = ctx.vault.changePassphrase(pass);
-      const saved = await api.putKey(ctx.token, ctx.tokenId, toB64(blob), etag);
-      unlocked.set(ctx.tokenId, { vault: ctx.vault, etag: saved.etag });
+      const next = await rewrapVault(ctx.vault, pass);
+      try {
+        const saved = await api.putKey(ctx.token, ctx.tokenId, toB64(next.keyBlob), etag);
+        unlocked.set(ctx.tokenId, { vault: next, etag: saved.etag });
+      } catch (err) {
+        next.free();
+        throw err;
+      }
       setDone(true);
       setPass("");
       setRepeat("");

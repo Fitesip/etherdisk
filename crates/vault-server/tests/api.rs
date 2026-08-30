@@ -28,6 +28,7 @@ use vault_server::{bind_deployment, connect_db, indexer, AppState, Config};
 #[derive(Default)]
 struct FakeChain {
     tokens: Mutex<HashMap<U256, (Address, u32)>>,
+    admin: Mutex<Address>,
 }
 
 impl FakeChain {
@@ -52,6 +53,9 @@ impl Chain for FakeChain {
             self.tokens.lock().unwrap().iter().filter(|(_, t)| t.0 == owner).map(|(id, _)| *id).collect();
         ids.sort();
         Ok(ids)
+    }
+    async fn contract_owner(&self) -> anyhow::Result<Address> {
+        Ok(*self.admin.lock().unwrap())
     }
 }
 
@@ -80,6 +84,7 @@ async fn app() -> App {
         siwe_domain: DOMAIN.into(),
         cors_origins: vec![],
         session_ttl_secs: 3600,
+        trust_proxy: false,
     };
     let db = connect_db(&config.database_url).await.unwrap();
     let store = Arc::new(LocalStore::new(&config.data_dir).unwrap());
@@ -626,6 +631,115 @@ async fn share_expiry_and_trashed_files() {
     sqlx::query("UPDATE shares SET expires_at = ? WHERE id = ?").bind(now - 1).bind(&id).execute(&app.state.db).await.unwrap();
     assert_eq!(app.get(&format!("/api/shares/{id}"), None).await.status, StatusCode::NOT_FOUND);
     assert_eq!(app.get(&content, None).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn new_owner_is_not_turned_away_by_a_stale_cache() {
+    let chain = Arc::new(FakeChain::default());
+    let (alice, bob) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
+    chain.mint(1, alice, 1);
+    let owners = Ownership::new(chain.clone(), Duration::from_secs(3600));
+    owners.require_owner(U256::from(1), alice).await.unwrap(); // cached: alice
+    chain.transfer(1, bob);
+    owners.require_owner(U256::from(1), bob).await.expect("rechecked on mismatch");
+    assert!(owners.require_owner(U256::from(1), alice).await.is_err(), "and the cache now knows");
+}
+
+// ------------------------------------------------------------ rate limits & ideas
+
+#[tokio::test]
+async fn sign_in_is_rate_limited() {
+    let app = app().await;
+    let mut statuses = Vec::new();
+    for _ in 0..20 {
+        statuses.push(app.get("/api/auth/nonce", None).await.status);
+    }
+    assert!(statuses[..15].iter().all(|s| *s == StatusCode::OK), "burst allowed");
+    let r = app.get("/api/auth/nonce", None).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(r.headers.get("retry-after").is_some());
+    // Other routes have their own budget.
+    assert_eq!(app.get("/api/ideas", None).await.status, StatusCode::OK);
+}
+
+async fn sign_vote(signer: &PrivateKeySigner, idea: i64, choice: &str) -> Value {
+    let issued_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let msg = vault_server::ideas::vote_message(idea, choice, &signer.address(), issued_at);
+    let sig = signer.sign_message(msg.as_bytes()).await.unwrap();
+    json!({ "choice": choice, "issued_at": issued_at, "signature": format!("0x{}", alloy::hex::encode(sig.as_bytes())) })
+}
+
+#[tokio::test]
+async fn ideas_board_one_vote_per_nft() {
+    let app = app().await;
+    let (alice, bob, admin, nobody) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    *app.chain.admin.lock().unwrap() = admin.address();
+    app.chain.mint(1, alice.address(), 1);
+    app.chain.mint(2, alice.address(), 1);
+    app.chain.mint(3, bob.address(), 1);
+    let (ta, tb, tadm, tn) = (app.login(&alice).await, app.login(&bob).await, app.login(&admin).await, app.login(&nobody).await);
+
+    // Proposing needs a drive and a sane title.
+    let propose = |t: String, title: &str| {
+        let body = json!({ "title": title, "body": "details" });
+        let app = &app;
+        async move { app.json(Method::POST, "/api/ideas", Some(&t), body).await }
+    };
+    assert_eq!(propose(tn.clone(), "no drive").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(propose(ta.clone(), "  ").await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(propose(ta.clone(), &"x".repeat(121)).await.status, StatusCode::BAD_REQUEST);
+    let r = propose(ta.clone(), "Dark mode for the share page").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["id"].as_i64().unwrap();
+    let id2 = propose(tb.clone(), "Russian translation").await.json()["id"].as_i64().unwrap();
+
+    // Alice holds two drives: her vote counts twice. Bob's counts once.
+    let vote = |t: String, body: Value, idea: i64| {
+        let app = &app;
+        async move { app.json(Method::POST, &format!("/api/ideas/{idea}/vote"), Some(&t), body).await }
+    };
+    let r = vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["votes"], 2);
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "for").await, id).await.json()["votes"], 3);
+    // Voting again doesn't double count.
+    assert_eq!(vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await.json()["votes"], 3);
+    // Signatures must be the caller's, for this idea and choice, and fresh.
+    assert_eq!(vote(tb.clone(), sign_vote(&alice, id2, "for").await, id2).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(vote(ta.clone(), sign_vote(&alice, id2, "for").await, id).await.status, StatusCode::BAD_REQUEST);
+    let mut stale = sign_vote(&alice, id2, "for").await;
+    stale["issued_at"] = json!(1_000_000);
+    assert_eq!(vote(ta.clone(), stale, id2).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(vote(tn.clone(), sign_vote(&nobody, id, "for").await, id).await.status, StatusCode::FORBIDDEN);
+
+    let list = app.get("/api/ideas", None).await.json();
+    assert_eq!(list[0]["id"], id, "most votes first");
+    assert_eq!(list[0]["votes"], 3);
+    let me = app.get("/api/ideas/me", Some(&ta)).await.json();
+    assert_eq!((me["tokens"].as_u64(), me["admin"].as_bool(), me["voted"].clone()), (Some(2), Some(false), json!([id])));
+    // Everyone can audit the signatures.
+    let audit = app.get(&format!("/api/ideas/{id}/votes"), None).await.json();
+    assert_eq!(audit.as_array().unwrap().len(), 3);
+    assert!(audit[0]["message"].as_str().unwrap().starts_with("NFT Vault vote"));
+
+    // The vote travels with the NFT: bob buys token 2 and withdraws, alice keeps one vote.
+    app.chain.transfer(2, bob.address());
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "withdraw").await, id).await.json()["votes"], 1);
+
+    // Moderation: only the admin; hidden ideas disappear for everyone else.
+    let patch = |t: String, body: Value| {
+        let app = &app;
+        async move { app.json(Method::PATCH, &format!("/api/ideas/{id2}"), Some(&t), body).await.status }
+    };
+    assert_eq!(patch(tb.clone(), json!({ "status": "done" })).await, StatusCode::FORBIDDEN);
+    assert_eq!(patch(tadm.clone(), json!({ "status": "nonsense" })).await, StatusCode::BAD_REQUEST);
+    assert_eq!(patch(tadm.clone(), json!({ "status": "planned" })).await, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/ideas", None).await.json()[1]["status"], "planned");
+    assert_eq!(patch(tadm.clone(), json!({ "hidden": true })).await, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/ideas", None).await.json().as_array().unwrap().len(), 1);
+    assert_eq!(app.get("/api/ideas", Some(&tadm)).await.json().as_array().unwrap().len(), 2, "the admin still sees it");
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id2, "for").await, id2).await.status, StatusCode::NOT_FOUND);
+    assert!(app.get("/api/ideas/me", Some(&tadm)).await.json()["admin"].as_bool().unwrap());
 }
 
 // ------------------------------------------------------------ key handover

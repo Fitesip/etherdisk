@@ -6,7 +6,8 @@ import { useState, type FormEvent } from "react";
 
 import { useT } from "@/i18n";
 import { api } from "@/lib/api";
-import { fromB64, loadCrypto, nextFrame, toB64, WasmVault } from "@/lib/crypto";
+import { fromB64, toB64 } from "@/lib/crypto";
+import { createVault, unlockVault } from "@/lib/kdf";
 import { passphraseValid } from "@/lib/passphrase";
 import { useUnlocked } from "@/lib/unlocked";
 
@@ -47,9 +48,7 @@ export function SetupForm({ token, tokenId, name }: { token: string; tokenId: st
     setBusy(true);
     setError(null);
     try {
-      await loadCrypto();
-      await nextFrame();
-      const vault = WasmVault.create(pass);
+      const vault = await createVault(pass);
       try {
         const saved = await api.putKey(token, tokenId, toB64(vault.keyBlob), null);
         unlocked.set(tokenId, { vault, etag: saved.etag });
@@ -113,10 +112,8 @@ export function UnlockForm({
     if (!pass) return;
     setBusy(true);
     setWrong(false);
-    await loadCrypto();
-    await nextFrame();
     try {
-      unlocked.set(tokenId, { vault: WasmVault.unlock(fromB64(keyBlob), pass), etag });
+      unlocked.set(tokenId, { vault: await unlockVault(fromB64(keyBlob), pass), etag });
     } catch {
       setWrong(true);
       setBusy(false);
