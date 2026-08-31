@@ -16,9 +16,16 @@ test("drive: upload, search, trash with undo, password link", async ({ page, bro
   await signIn(page);
   await mintAndSetUp(page);
 
-  // Upload and see the files.
-  await upload(page, [text("notes.txt", "hello from e2e"), text("report-2026.txt", "numbers")]);
+  // A one-file list is short: the actions menu still shows in full, not clipped by the list.
+  await upload(page, [text("notes.txt", "hello from e2e")]);
   const list = page.locator("main ul").last();
+  await list.locator("li", { hasText: "notes.txt" }).getByRole("button", { name: "Actions" }).click();
+  await expect(page.getByRole("button", { name: "Delete" })).toBeInViewport({ ratio: 1 });
+  await page.getByRole("button", { name: "Rename" }).click();
+  await page.keyboard.press("Escape");
+
+  // Upload and see the files.
+  await upload(page, [text("report-2026.txt", "numbers")]);
   await expect(list.getByText("notes.txt")).toBeVisible();
   await expect(list.getByText("report-2026.txt")).toBeVisible();
 

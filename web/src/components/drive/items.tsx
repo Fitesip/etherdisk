@@ -19,7 +19,8 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { useT } from "@/i18n";
 import { api } from "@/lib/api";
@@ -33,33 +34,69 @@ import type { DriveCtx } from "./dialogs";
 
 // ------------------------------------------------------------------ menu
 
+const MENU_GAP = 4;
+const EDGE = 8;
+
+/**
+ * A dropdown rendered into `document.body` with fixed positioning, so lists with
+ * `overflow: hidden` don't clip it. Opens upwards when there is no room below.
+ */
 export function Menu({ trigger, children, align = "right" }: { trigger: ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; up: boolean } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !ref.current || !menu.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const { width, height } = menu.current.getBoundingClientRect();
+    const up = r.bottom + MENU_GAP + height > window.innerHeight - EDGE && r.top - MENU_GAP - height >= EDGE;
+    const top = up ? r.top - MENU_GAP - height : r.bottom + MENU_GAP;
+    const left = Math.min(Math.max(align === "right" ? r.right - width : r.left, EDGE), window.innerWidth - width - EDGE);
+    setPos({ top, left, up });
+  }, [open, align]);
+
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const close = () => setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (!ref.current?.contains(target) && !menu.current?.contains(target)) close();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    // The menu is pinned to the viewport: close it rather than let it drift from its button.
+    const onScroll = (e: Event) => !menu.current?.contains(e.target as Node) && close();
     document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+      setPos(null);
     };
   }, [open]);
+
   return (
     <div ref={ref} className="relative">
       <div onClick={() => setOpen((o) => !o)}>{trigger}</div>
-      {open && (
-        <div
-          className={cn(
-            "absolute z-20 mt-1 w-52 animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg",
-            align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left",
-          )}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0, visibility: "hidden" }}
+            className={cn(
+              "fixed z-50 w-52 animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg",
+              pos?.up ? (align === "right" ? "origin-bottom-right" : "origin-bottom-left") : align === "right" ? "origin-top-right" : "origin-top-left",
+            )}
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
