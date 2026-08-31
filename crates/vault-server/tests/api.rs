@@ -846,6 +846,33 @@ async fn drive_key_handover() {
     assert_eq!(n, 0);
 }
 
+#[tokio::test]
+async fn transfer_without_the_key_asks_for_nothing() {
+    let app = app().await;
+    let (alice, bob, carol) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    setup_vault_with_file(&app, &ta, b"x").await;
+
+    // Alice transfers in the app with "send the key" unchecked: the indexer asks for nothing.
+    assert_eq!(app.json(Method::POST, "/api/vaults/1/handover/skip", Some(&ta), json!({ "to": bob.address() })).await.status, StatusCode::NO_CONTENT);
+    app.chain.transfer(1, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&tb)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.get("/api/handovers/outgoing", Some(&ta)).await.json().as_array().unwrap().len(), 0);
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM handover_skips").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0, "the skip is used up");
+
+    // Only the owner can skip; a skip for another recipient doesn't cover this transfer.
+    assert_eq!(app.json(Method::POST, "/api/vaults/1/handover/skip", Some(&ta), json!({ "to": carol.address() })).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.json(Method::POST, "/api/vaults/1/handover/skip", Some(&tb), json!({ "to": alice.address() })).await.status, StatusCode::NO_CONTENT);
+    app.chain.transfer(1, carol.address());
+    indexer::on_transfer(&app.state, bob.address(), carol.address(), U256::from(1)).await.unwrap();
+    let tc = app.login(&carol).await;
+    assert_eq!(app.get("/api/vaults/1/handover", Some(&tc)).await.status, StatusCode::OK);
+}
+
 // ------------------------------------------------------------ shares & transfer
 
 #[tokio::test]

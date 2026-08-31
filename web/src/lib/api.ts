@@ -237,6 +237,7 @@ export const api = {
   incomingHandover: (token: string, vault: string) => orNull(json<IncomingHandover>(request(`/vaults/${vault}/handover`, { token }))),
   sealHandover: (token: string, vault: string, to: string, sealed: string) =>
     empty(request(`/vaults/${vault}/handover`, { method: "POST", token, json: { to, sealed } })),
+  skipHandover: (token: string, vault: string, to: string) => empty(request(`/vaults/${vault}/handover/skip`, { method: "POST", token, json: { to } })),
   dismissHandover: (token: string, vault: string) => empty(request(`/vaults/${vault}/handover`, { method: "DELETE", token })),
   outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
   declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),

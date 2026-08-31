@@ -9,12 +9,13 @@
 //! - before a transfer made in the app, the owner may seal the key to the recipient;
 //! - when the indexer sees a `Transfer`, it records a request from the previous owner,
 //!   who can then fulfil it from any device (the wrapped key blob is returned to them
-//!   while it is unchanged, so they can unlock it with their passphrase).
+//!   while it is unchanged, so they can unlock it with their passphrase);
+//! - unless the owner chose in the app to transfer without the key (`handover/skip`).
 
 use alloy::primitives::{Address, Signature};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,7 @@ pub fn routes() -> Router<AppState> {
         .route("/handovers/outgoing", get(outgoing))
         .route("/handovers/outgoing/{token_id}", delete(decline))
         .route("/vaults/{token_id}/handover", get(incoming).post(seal).delete(dismiss))
+        .route("/vaults/{token_id}/handover/skip", post(skip))
 }
 
 /// The exact text a user signs to publish their inbox key (the client builds the same).
@@ -119,7 +121,8 @@ async fn seal(
     }
     let owner = st.chain.owner_of(id).await?;
     if owner == Some(user.0) {
-        // Before the transfer: replaces any earlier request for this token.
+        // Before the transfer: replaces any earlier request or skip for this token.
+        sqlx::query("DELETE FROM handover_skips WHERE token_id = ?").bind(&token).execute(&st.db).await?;
         sqlx::query(
             "INSERT INTO handovers (token_id, from_addr, to_addr, sealed, key_etag, created_at) VALUES (?, ?, ?, ?, NULL, ?)
              ON CONFLICT (token_id) DO UPDATE SET from_addr = excluded.from_addr, to_addr = excluded.to_addr,
@@ -149,6 +152,35 @@ async fn seal(
     if n == 0 {
         return Err(AppError::Forbidden);
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct SkipRequest {
+    to: Address,
+}
+
+/// Before a transfer made in the app without the key: the owner doesn't want to be asked
+/// for it, so the indexer records no request for this recipient. Replaces a sealed key.
+async fn skip(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>, Json(req): Json<SkipRequest>) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let (me, to) = (lower(&user.0), lower(&req.to));
+    if me == to {
+        return Err(AppError::bad("cannot hand a drive to yourself"));
+    }
+    let mut tx = st.db.begin().await?;
+    sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(&token).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO handover_skips (token_id, from_addr, to_addr, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET from_addr = excluded.from_addr, to_addr = excluded.to_addr, created_at = excluded.created_at",
+    )
+    .bind(&token)
+    .bind(&me)
+    .bind(&to)
+    .bind(now())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -245,14 +277,24 @@ async fn decline(State(st): State<AppState>, user: AuthUser, Path(token_id): Pat
 }
 
 /// Indexer hook: a transfer of an initialized drive asks the previous owner for its key,
-/// unless they already sealed it for exactly this recipient.
+/// unless they already sealed it for exactly this recipient or chose to send none.
 pub async fn on_transfer(st: &AppState, from: Address, to: Address, token: &str) -> AppResult<()> {
     let (from, to) = (lower(&from), lower(&to));
+    // A skip applies to exactly the transfer it was made for; any other one drops it.
+    let skipped = sqlx::query("DELETE FROM handover_skips WHERE token_id = ? AND from_addr = ? AND to_addr = ?")
+        .bind(token)
+        .bind(&from)
+        .bind(&to)
+        .execute(&st.db)
+        .await?
+        .rows_affected()
+        > 0;
+    sqlx::query("DELETE FROM handover_skips WHERE token_id = ?").bind(token).execute(&st.db).await?;
     let blob: Option<Vec<u8>> = sqlx::query_scalar("SELECT key_blob FROM vault_keys WHERE token_id = ?")
         .bind(token)
         .fetch_optional(&st.db)
         .await?;
-    let Some(blob) = blob else {
+    let Some(blob) = blob.filter(|_| !skipped) else {
         sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(token).execute(&st.db).await?;
         return Ok(());
     };

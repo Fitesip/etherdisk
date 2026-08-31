@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, ExternalLink, Eraser, Lock, ShieldAlert } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { isAddress, isAddressEqual, zeroAddress, type Address } from "viem";
 import { useConnection, usePublicClient, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 
@@ -53,9 +53,13 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
   });
   const isContract = !!code.data && code.data !== "0x";
 
-  // Once mined, the drive is no longer ours: forget its key and leave.
+  // Once mined, the drive is no longer ours: forget its key and leave. Only once: locking
+  // changes the store, which would run this again (and restart the navigation) while the
+  // dialog stays mounted on the settings page.
+  const left = useRef(false);
   useEffect(() => {
-    if (!receipt.isSuccess) return;
+    if (!receipt.isSuccess || left.current) return;
+    left.current = true;
     if (noInbox) toast({ text: t("handover.recipientNoInbox") });
     store.lock(info.token_id);
     qc.invalidateQueries({ queryKey: ["vaults", token] });
@@ -67,12 +71,17 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
     if (!valid || self || word !== CONFIRM_WORD || !address) return;
     setSealError(null);
     // Seal the drive key to the recipient first, while this wallet still owns the drive.
-    if (sendKey && unlocked) {
+    // A locked drive gets a request instead (the indexer records it); without the key,
+    // tell the server so it asks for nothing.
+    if (!sendKey || unlocked) {
       setSealing(true);
       try {
-        const inbox = await verifiedInbox(recipient as Address);
-        if (inbox) await api.sealHandover(token, info.token_id, recipient, sealDriveKey(unlocked.vault, info.token_id, inbox));
-        setNoInbox(!inbox);
+        if (!sendKey) await api.skipHandover(token, info.token_id, recipient);
+        else if (unlocked) {
+          const inbox = await verifiedInbox(recipient as Address);
+          if (inbox) await api.sealHandover(token, info.token_id, recipient, sealDriveKey(unlocked.vault, info.token_id, inbox));
+          setNoInbox(!inbox);
+        }
       } catch (err) {
         setSealError(err instanceof Error ? err.message : t("common.error"));
         return;
@@ -116,10 +125,10 @@ export function TransferDialog({ open, onClose, token, info }: { open: boolean; 
           <Input className="mt-2 font-mono" value={word} onChange={(e) => setWord(e.target.value)} autoComplete="off" disabled={busy} />
         </label>
         <label className="flex items-start gap-2 text-sm">
-          <input type="checkbox" className="mt-0.5" checked={sendKey && !!unlocked} disabled={!unlocked || busy} onChange={(e) => setSendKey(e.target.checked)} />
+          <input type="checkbox" className="mt-0.5" checked={sendKey} disabled={busy} onChange={(e) => setSendKey(e.target.checked)} />
           <span>
             {t("handover.sendKey")}
-            <span className="block text-xs text-muted">{unlocked ? t("handover.sendKeyHint") : t("handover.sendKeyLocked")}</span>
+            <span className="block text-xs text-muted">{!sendKey ? t("handover.sendKeyOff") : unlocked ? t("handover.sendKeyHint") : t("handover.sendKeyLocked")}</span>
           </span>
         </label>
         {sealError && <Notice tone="danger">{sealError}</Notice>}

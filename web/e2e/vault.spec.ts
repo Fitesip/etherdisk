@@ -83,7 +83,10 @@ test("transfer with the drive key: the new owner opens the files", async ({ brow
   const tokenId = await mintAndSetUp(alice);
   await upload(alice, [text("for-bob.txt", "the secret plan")]);
   await expect(alice.getByText("for-bob.txt").first()).toBeVisible();
+  // Transfer lives in the drive's settings only (client-side navigation keeps it unlocked).
   await alice.getByRole("button", { name: "Drive menu" }).click();
+  await expect(alice.getByRole("button", { name: "Transfer drive" })).toHaveCount(0);
+  await alice.getByRole("button", { name: "Drive settings" }).click();
   await alice.getByRole("button", { name: "Transfer drive" }).click();
   const dialog = alice.locator("dialog[open]");
   await dialog.getByPlaceholder("0x…").fill(BOB);

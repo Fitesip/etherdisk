@@ -5,10 +5,8 @@ import {
   ArrowDownUp,
   ArrowLeft,
   Camera,
-  ArrowRightLeft,
   ChevronRight,
   Download,
-  Eraser,
   FolderPlus,
   FolderUp,
   LayoutGrid,
@@ -39,11 +37,10 @@ import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 import { useToast } from "../toast";
 import { Button, cn, Dialog, Notice, Progress, Spinner } from "../ui";
 import { Viewer, type Gallery } from "../viewer";
-import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ResetDialog, ShareDialog, type DriveCtx } from "./dialogs";
+import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ShareDialog, type DriveCtx } from "./dialogs";
 import { ItemGrid, ItemList, Menu, MenuItem, useDropTarget, type ItemActions, type Sort, type SortKey } from "./items";
 import { ResumeBanner } from "./resume";
 import { SearchBox, useSearch } from "./search";
-import { TransferDialog } from "./settings";
 import { TrashView } from "./trash";
 import { UploadPanel, useUploads } from "./uploads";
 
@@ -100,8 +97,6 @@ type Dialogs =
   | { type: "move"; items: Item[] }
   | { type: "share"; item: Item }
   | { type: "links" }
-  | { type: "format" }
-  | { type: "transfer" }
   | null;
 
 export function FileBrowser({ token, info, unlocked }: { token: string; info: VaultInfo; unlocked: Unlocked }) {
@@ -559,9 +554,6 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
                   <>
                     <MenuItem icon={Lock} label={t("vault.lock")} onClick={() => store.lock(tokenId)} />
                     <MenuItem icon={Settings} label={t("driveMenu.settings")} onClick={() => (closeMenu(), router.push(`/drive/${tokenId}/settings`))} />
-                    <div className="my-1 border-t border-border" role="separator" />
-                    <MenuItem icon={ArrowRightLeft} label={t("driveMenu.transfer")} danger onClick={() => (closeMenu(), setDialog({ type: "transfer" }))} />
-                    <MenuItem icon={Eraser} label={t("driveMenu.format")} danger onClick={() => (closeMenu(), setDialog({ type: "format" }))} />
                   </>
                 )}
               </Menu>
@@ -681,8 +673,6 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         </div>
       </Dialog>
       <LinksDialog open={dialog?.type === "links"} onClose={close} ctx={ctx} />
-      <TransferDialog open={dialog?.type === "transfer"} onClose={close} token={token} info={info} />
-      <ResetDialog open={dialog?.type === "format"} onClose={close} token={token} tokenId={tokenId} />
     </div>
   );
 }
