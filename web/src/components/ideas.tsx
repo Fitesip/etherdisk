@@ -1,13 +1,13 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronUp, ExternalLink, EyeOff, Lightbulb, Plus } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, EyeOff, Lightbulb, Plus } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { Address } from "viem";
 import { useSignMessage } from "wagmi";
 
 import { useT, type MessageKey } from "@/i18n";
-import { api, ApiError, type Idea, type IdeaStatus } from "@/lib/api";
+import { api, ApiError, type Idea, type IdeaStatus, type VoteChoice } from "@/lib/api";
 import { API_URL } from "@/lib/config";
 import { formatDate, shortAddress } from "@/lib/format";
 import { useHydrated } from "@/lib/hydrated";
@@ -93,19 +93,47 @@ function ProposeDialog({ open, onClose, token }: { open: boolean; onClose: () =>
   );
 }
 
-function IdeaCard({ idea, token, voted, canVote, admin }: { idea: Idea; token: string | null; voted: boolean; canVote: boolean; admin: boolean }) {
+function VoteButton({ dir, active, disabled, busy, label, onClick }: { dir: VoteChoice; active: boolean; disabled: boolean; busy: boolean; label: string; onClick: () => void }) {
+  const Icon = dir === "for" ? ChevronUp : ChevronDown;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "grid h-7 w-10 place-items-center rounded-lg border transition",
+        active
+          ? dir === "for"
+            ? "border-accent bg-accent text-accent-fg"
+            : "border-danger bg-danger text-white"
+          : cn("border-transparent", dir === "for" ? "hover:border-accent hover:text-accent" : "hover:border-danger hover:text-danger"),
+        "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-transparent disabled:hover:text-inherit",
+      )}
+    >
+      {busy ? <Spinner className="h-4 w-4" /> : <Icon className="h-5 w-5" />}
+    </button>
+  );
+}
+
+function IdeaCard({ idea, token, mine, canVote, admin }: { idea: Idea; token: string | null; mine?: VoteChoice; canVote: boolean; admin: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const { address } = useSession();
   const sign = useSignMessage();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<VoteChoice | null>(null);
+  const own = !!address && idea.author.toLowerCase() === address.toLowerCase();
+  const score = idea.votes_for - idea.votes_against;
 
-  async function vote() {
+  /** Clicking your current side withdraws the vote; the other side switches to it. */
+  async function vote(side: VoteChoice) {
     if (!token || !address) return;
-    setBusy(true);
+    setBusy(side);
     try {
-      const choice = voted ? "withdraw" : "for";
+      const choice = mine === side ? "withdraw" : side;
       const issued_at = Math.floor(Date.now() / 1000);
       const signature = await sign.mutateAsync({ message: voteMessage(idea.id, choice, address, issued_at) });
       await api.voteIdea(token, idea.id, { choice, issued_at, signature });
@@ -113,7 +141,7 @@ function IdeaCard({ idea, token, voted, canVote, admin }: { idea: Idea; token: s
     } catch (err) {
       toast({ text: err instanceof Error ? err.message.split("\n")[0] : t("common.error") });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -126,22 +154,30 @@ function IdeaCard({ idea, token, voted, canVote, admin }: { idea: Idea; token: s
   return (
     <li className={cn("animate-fade-up", idea.hidden && "opacity-60")}>
       <Card className="flex gap-4 p-4 sm:p-5">
-        <button
-          type="button"
-          onClick={vote}
-          disabled={!canVote || busy}
-          aria-pressed={voted}
-          aria-label={`${voted ? t("ideas.voted") : t("ideas.vote")} · ${t("ideas.votes", { n: idea.votes })}`}
-          title={voted ? t("ideas.voted") : t("ideas.vote")}
-          className={cn(
-            "flex h-16 w-14 shrink-0 flex-col items-center justify-center rounded-xl border text-sm font-semibold tabular-nums transition",
-            voted ? "border-accent bg-accent text-accent-fg" : "border-border hover:border-accent hover:text-accent",
-            "disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-inherit",
-          )}
-        >
-          {busy ? <Spinner className="h-4 w-4" /> : <ChevronUp className="h-5 w-5" />}
-          {idea.votes}
-        </button>
+        <div className="flex shrink-0 flex-col items-center gap-0.5" title={own ? t("ideas.ownIdea") : undefined}>
+          <VoteButton
+            dir="for"
+            active={mine === "for"}
+            disabled={!canVote || own || !!busy}
+            busy={busy === "for"}
+            label={mine === "for" ? t("ideas.votedFor") : t("ideas.voteFor")}
+            onClick={() => vote("for")}
+          />
+          <span
+            className={cn("text-sm font-semibold tabular-nums", score > 0 && "text-accent", score < 0 && "text-danger")}
+            aria-label={t("ideas.score", { n: score, for: idea.votes_for, against: idea.votes_against })}
+          >
+            {score}
+          </span>
+          <VoteButton
+            dir="against"
+            active={mine === "against"}
+            disabled={!canVote || own || !!busy}
+            busy={busy === "against"}
+            label={mine === "against" ? t("ideas.votedAgainst") : t("ideas.voteAgainst")}
+            onClick={() => vote("against")}
+          />
+        </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-medium text-pretty">{idea.title}</h3>
@@ -157,7 +193,9 @@ function IdeaCard({ idea, token, voted, canVote, admin }: { idea: Idea; token: s
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
             <span className="font-mono">{t("ideas.by", { author: shortAddress(idea.author) })}</span>
             <span>{formatDate(idea.created_at)}</span>
-            {idea.votes > 0 && (
+            <span className="tabular-nums">{t("ideas.tally", { for: idea.votes_for, against: idea.votes_against })}</span>
+            {own && <span>{t("ideas.ownIdea")}</span>}
+            {idea.votes_for + idea.votes_against > 0 && (
               <a href={`${API_URL}/api/ideas/${idea.id}/votes`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-accent">
                 {t("ideas.audit")}
                 <ExternalLink className="h-3 w-3" />
@@ -199,7 +237,7 @@ export function IdeasView() {
   const me = useQuery({ queryKey: ["ideas", "me", token], queryFn: () => api.ideasMe(token!), enabled: !!token });
 
   const holder = (me.data?.tokens ?? 0) > 0;
-  const voted = new Set(me.data?.voted ?? []);
+  const myVotes = me.data?.votes ?? {};
   const list = (ideas.data ?? []).filter((i) => filter === "all" || i.status === filter);
 
   return (
@@ -252,7 +290,7 @@ export function IdeasView() {
       ) : (
         <ul className="flex flex-col gap-3">
           {list.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} token={token} voted={voted.has(idea.id)} canVote={!!token && holder && !idea.hidden} admin={!!me.data?.admin} />
+            <IdeaCard key={idea.id} idea={idea} token={token} mine={myVotes[idea.id]} canVote={!!token && holder && !idea.hidden} admin={!!me.data?.admin} />
           ))}
         </ul>
       )}

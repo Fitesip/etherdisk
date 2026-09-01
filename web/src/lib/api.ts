@@ -125,15 +125,19 @@ export interface Idea {
   author: string;
   status: IdeaStatus;
   hidden: boolean;
-  votes: number;
+  votes_for: number;
+  votes_against: number;
   created_at: number;
 }
+
+export type VoteChoice = "for" | "against";
 
 export interface IdeasMe {
   /** Votes this wallet casts (one per drive). */
   tokens: number;
   admin: boolean;
-  voted: number[];
+  /** How this wallet's drives vote, by idea id. */
+  votes: Record<string, VoteChoice>;
 }
 
 export interface ShareRow {
@@ -246,7 +250,7 @@ export const api = {
   ideasMe: (token: string) => json<IdeasMe>(request("/ideas/me", { token })),
   proposeIdea: (token: string, title: string, body: string) =>
     json<{ id: number }>(request("/ideas", { method: "POST", token, json: { title, body } })),
-  voteIdea: (token: string, id: number, vote: { choice: "for" | "withdraw"; issued_at: number; signature: string }) =>
+  voteIdea: (token: string, id: number, vote: { choice: VoteChoice | "withdraw"; issued_at: number; signature: string }) =>
     json<{ votes: number }>(request(`/ideas/${id}/vote`, { method: "POST", token, json: vote })),
   moderateIdea: (token: string, id: number, patch: { status?: IdeaStatus; hidden?: boolean }) =>
     empty(request(`/ideas/${id}`, { method: "PATCH", token, json: patch })),

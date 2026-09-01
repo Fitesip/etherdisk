@@ -105,7 +105,7 @@ test("transfer with the drive key: the new owner opens the files", async ({ brow
   await expect(bob.locator("dialog[open] pre")).toHaveText("the secret plan");
 });
 
-test("ideas: propose and vote, one vote per drive", async ({ page }) => {
+test("ideas: propose, vote for and against, not on your own idea", async ({ page, browser }) => {
   await installWallet(page, ALICE);
   await signIn(page);
   await page.goto("/ideas");
@@ -114,9 +114,23 @@ test("ideas: propose and vote, one vote per drive", async ({ page }) => {
   await page.getByRole("button", { name: "Publish" }).click();
   const card = page.locator("li", { hasText: "Dark mode for shared pages" });
   await expect(card).toBeVisible();
-  await card.getByRole("button", { name: /^Vote · 0 votes/ }).click();
-  // Alice still holds the drive from the first test: one drive, one vote.
-  await expect(card.getByRole("button", { name: /^Voted · 1 votes/ })).toBeVisible();
-  await card.getByRole("button", { name: /^Voted/ }).click();
-  await expect(card.getByRole("button", { name: /^Vote · 0 votes/ })).toBeVisible();
+  // The author can't vote on their own idea.
+  await expect(card.getByRole("button", { name: "Vote for" })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "Vote against" })).toBeDisabled();
+
+  // Bob holds the drive from the transfer test: one drive, one vote.
+  const bob = await (await browser.newContext()).newPage();
+  await installWallet(bob, BOB);
+  await signIn(bob);
+  await bob.goto("/ideas");
+  const his = bob.locator("li", { hasText: "Dark mode for shared pages" });
+  const score = (n: number) => his.getByLabel(new RegExp(`^Score ${n}:`));
+  await his.getByRole("button", { name: "Vote for" }).click();
+  await expect(score(1)).toBeVisible();
+  await expect(his.getByRole("button", { name: "You voted for" })).toHaveAttribute("aria-pressed", "true");
+  // Switching sides moves the vote; clicking it again withdraws it.
+  await his.getByRole("button", { name: "Vote against" }).click();
+  await expect(score(-1)).toBeVisible();
+  await his.getByRole("button", { name: "You voted against" }).click();
+  await expect(score(0)).toBeVisible();
 });

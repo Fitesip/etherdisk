@@ -1,12 +1,14 @@
-//! Ideas board: drive owners propose ideas and vote for them.
+//! Ideas board: drive owners propose ideas and vote on them.
 //!
 //! - Anyone may read; any wallet holding at least one drive may propose.
-//! - A vote counts once per NFT: voting "for" records every token the voter holds right
-//!   now; "withdraw" removes those. If a token changes hands, its new holder's vote
-//!   replaces the old one.
+//! - A vote counts once per NFT: voting "for" or "against" records every token the voter
+//!   holds right now; "withdraw" removes those. If a token changes hands, its new holder's
+//!   vote replaces the old one. Authors don't vote on their own ideas.
 //! - Each vote is a wallet signature over a fixed message (like Snapshot). The server
 //!   checks it and keeps it, so anyone can audit the tally via `GET /ideas/{id}/votes`.
 //! - The contract owner moderates: sets a status or hides an idea.
+
+use std::collections::BTreeMap;
 
 use alloy::primitives::{Address, Signature};
 use axum::extract::{Path, State};
@@ -51,11 +53,12 @@ struct Idea {
     author: String,
     status: String,
     hidden: bool,
-    votes: i64,
+    votes_for: i64,
+    votes_against: i64,
     created_at: i64,
 }
 
-/// Public list, most votes first. Hidden ideas only for the admin.
+/// Public list, best score (for minus against) first. Hidden ideas only for the admin.
 async fn list(State(st): State<AppState>, user: Option<AuthUser>) -> AppResult<Json<Vec<Idea>>> {
     let admin = match &user {
         Some(u) => st.chain.is_admin(u.0).await?,
@@ -63,9 +66,10 @@ async fn list(State(st): State<AppState>, user: Option<AuthUser>) -> AppResult<J
     };
     let rows = sqlx::query_as::<_, Idea>(
         "SELECT i.id, i.title, i.body, i.author, i.status, i.hidden, i.created_at,
-                (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
+                (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id AND v.choice = 'for') AS votes_for,
+                (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id AND v.choice = 'against') AS votes_against
          FROM ideas i WHERE i.hidden = 0 OR ?
-         ORDER BY votes DESC, i.created_at DESC",
+         ORDER BY votes_for - votes_against DESC, votes_for DESC, i.created_at DESC",
     )
     .bind(admin)
     .fetch_all(&st.db)
@@ -78,21 +82,20 @@ struct Me {
     /// Votes this wallet can cast (one per drive it holds).
     tokens: usize,
     admin: bool,
-    /// Ideas this wallet's tokens currently vote for.
-    voted: Vec<i64>,
+    /// How this wallet's tokens currently vote, by idea id: "for" or "against".
+    votes: BTreeMap<i64, String>,
 }
 
 async fn me(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Me>> {
     let tokens = st.chain.tokens_of_owner(user.0).await?;
     let ids: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
-    let mut voted: Vec<i64> = Vec::new();
+    let mut votes = BTreeMap::new();
     for id in &ids {
-        let rows: Vec<i64> = sqlx::query_scalar("SELECT idea_id FROM idea_votes WHERE token_id = ?").bind(id).fetch_all(&st.db).await?;
-        voted.extend(rows);
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as("SELECT idea_id, choice FROM idea_votes WHERE token_id = ?").bind(id).fetch_all(&st.db).await?;
+        votes.extend(rows);
     }
-    voted.sort_unstable();
-    voted.dedup();
-    Ok(Json(Me { tokens: ids.len(), admin: st.chain.is_admin(user.0).await?, voted }))
+    Ok(Json(Me { tokens: ids.len(), admin: st.chain.is_admin(user.0).await?, votes }))
 }
 
 #[derive(Deserialize)]
@@ -133,7 +136,7 @@ async fn create(State(st): State<AppState>, user: AuthUser, Json(req): Json<NewI
 
 #[derive(Deserialize)]
 struct VoteRequest {
-    /// "for" or "withdraw"
+    /// "for", "against" or "withdraw"
     choice: String,
     issued_at: i64,
     /// 0x-hex signature over `vote_message`.
@@ -141,8 +144,8 @@ struct VoteRequest {
 }
 
 async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, Json(req): Json<VoteRequest>) -> AppResult<Json<serde_json::Value>> {
-    if req.choice != "for" && req.choice != "withdraw" {
-        return Err(AppError::bad("choice must be \"for\" or \"withdraw\""));
+    if !["for", "against", "withdraw"].contains(&req.choice.as_str()) {
+        return Err(AppError::bad("choice must be \"for\", \"against\" or \"withdraw\""));
     }
     if (now() - req.issued_at).abs() > VOTE_MAX_AGE_SECS {
         return Err(AppError::bad("the signed vote is too old; sign again"));
@@ -156,9 +159,13 @@ async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, J
     if sig.recover_address_from_msg(&message).map_err(|_| AppError::bad("invalid signature"))? != user.0 {
         return Err(AppError::bad("the signature is not from this wallet"));
     }
-    let visible: Option<bool> = sqlx::query_scalar("SELECT hidden FROM ideas WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
-    if visible != Some(false) {
+    let idea: Option<(bool, String)> = sqlx::query_as("SELECT hidden, author FROM ideas WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
+    let Some((false, author)) = idea else {
         return Err(AppError::NotFound);
+    };
+    // Withdrawing stays possible, e.g. for a vote a token carried over from its previous holder.
+    if author == lower(&user.0) && req.choice != "withdraw" {
+        return Err(AppError::bad("you cannot vote on your own idea"));
     }
     let tokens = st.chain.tokens_of_owner(user.0).await?;
     if tokens.is_empty() {
@@ -168,15 +175,16 @@ async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, J
     let mut tx = st.db.begin().await?;
     for token in &tokens {
         let token = token.to_string();
-        if req.choice == "for" {
+        if req.choice != "withdraw" {
             sqlx::query(
-                "INSERT INTO idea_votes (idea_id, token_id, voter, message, signature, created_at) VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT (idea_id, token_id) DO UPDATE SET voter = excluded.voter, message = excluded.message,
-                    signature = excluded.signature, created_at = excluded.created_at",
+                "INSERT INTO idea_votes (idea_id, token_id, voter, choice, message, signature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (idea_id, token_id) DO UPDATE SET voter = excluded.voter, choice = excluded.choice,
+                    message = excluded.message, signature = excluded.signature, created_at = excluded.created_at",
             )
             .bind(id)
             .bind(&token)
             .bind(lower(&user.0))
+            .bind(&req.choice)
             .bind(&message)
             .bind(&req.signature)
             .bind(now())
@@ -187,14 +195,20 @@ async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, J
         }
     }
     tx.commit().await?;
-    let votes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM idea_votes WHERE idea_id = ?").bind(id).fetch_one(&st.db).await?;
-    Ok(Json(serde_json::json!({ "votes": votes })))
+    let (votes_for, votes_against): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE choice = 'for'), COUNT(*) FILTER (WHERE choice = 'against') FROM idea_votes WHERE idea_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "votes_for": votes_for, "votes_against": votes_against })))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
 struct VoteRecord {
     token_id: String,
     voter: String,
+    choice: String,
     message: String,
     signature: String,
     created_at: i64,
@@ -203,7 +217,7 @@ struct VoteRecord {
 /// Every vote with its signed message, for anyone to verify.
 async fn votes(State(st): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Vec<VoteRecord>>> {
     let rows = sqlx::query_as::<_, VoteRecord>(
-        "SELECT v.token_id, v.voter, v.message, v.signature, v.created_at FROM idea_votes v JOIN ideas i ON i.id = v.idea_id
+        "SELECT v.token_id, v.voter, v.choice, v.message, v.signature, v.created_at FROM idea_votes v JOIN ideas i ON i.id = v.idea_id
          WHERE v.idea_id = ? AND i.hidden = 0 ORDER BY v.created_at",
     )
     .bind(id)

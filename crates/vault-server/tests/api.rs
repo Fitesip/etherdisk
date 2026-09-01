@@ -672,12 +672,15 @@ async fn sign_vote(signer: &PrivateKeySigner, idea: i64, choice: &str) -> Value 
 #[tokio::test]
 async fn ideas_board_one_vote_per_nft() {
     let app = app().await;
-    let (alice, bob, admin, nobody) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    let signers: Vec<PrivateKeySigner> = (0..5).map(|_| PrivateKeySigner::random()).collect();
+    let [alice, bob, carol, admin, nobody] = <[PrivateKeySigner; 5]>::try_from(signers).unwrap();
     *app.chain.admin.lock().unwrap() = admin.address();
     app.chain.mint(1, alice.address(), 1);
     app.chain.mint(2, alice.address(), 1);
     app.chain.mint(3, bob.address(), 1);
-    let (ta, tb, tadm, tn) = (app.login(&alice).await, app.login(&bob).await, app.login(&admin).await, app.login(&nobody).await);
+    app.chain.mint(4, carol.address(), 1);
+    let (ta, tb, tc) = (app.login(&alice).await, app.login(&bob).await, app.login(&carol).await);
+    let (tadm, tn) = (app.login(&admin).await, app.login(&nobody).await);
 
     // Proposing needs a drive and a sane title.
     let propose = |t: String, title: &str| {
@@ -686,45 +689,58 @@ async fn ideas_board_one_vote_per_nft() {
         async move { app.json(Method::POST, "/api/ideas", Some(&t), body).await }
     };
     assert_eq!(propose(tn.clone(), "no drive").await.status, StatusCode::FORBIDDEN);
-    assert_eq!(propose(ta.clone(), "  ").await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(propose(ta.clone(), &"x".repeat(121)).await.status, StatusCode::BAD_REQUEST);
-    let r = propose(ta.clone(), "Dark mode for the share page").await;
+    assert_eq!(propose(tb.clone(), "  ").await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(propose(tb.clone(), &"x".repeat(121)).await.status, StatusCode::BAD_REQUEST);
+    let r = propose(tb.clone(), "Dark mode for the share page").await;
     assert_eq!(r.status, StatusCode::CREATED);
     let id = r.json()["id"].as_i64().unwrap();
-    let id2 = propose(tb.clone(), "Russian translation").await.json()["id"].as_i64().unwrap();
+    let id2 = propose(ta.clone(), "Russian translation").await.json()["id"].as_i64().unwrap();
 
-    // Alice holds two drives: her vote counts twice. Bob's counts once.
     let vote = |t: String, body: Value, idea: i64| {
         let app = &app;
         async move { app.json(Method::POST, &format!("/api/ideas/{idea}/vote"), Some(&t), body).await }
     };
+    let tally = |r: &Resp| (r.json()["votes_for"].as_i64().unwrap(), r.json()["votes_against"].as_i64().unwrap());
+
+    // Authors don't vote on their own ideas (withdrawing is fine).
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "for").await, id).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "against").await, id).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "withdraw").await, id).await.status, StatusCode::OK);
+
+    // Alice holds two drives: her vote counts twice. Carol's counts once, against.
     let r = vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await;
     assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
-    assert_eq!(r.json()["votes"], 2);
-    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "for").await, id).await.json()["votes"], 3);
-    // Voting again doesn't double count.
-    assert_eq!(vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await.json()["votes"], 3);
+    assert_eq!(tally(&r), (2, 0));
+    assert_eq!(tally(&vote(tc.clone(), sign_vote(&carol, id, "against").await, id).await), (2, 1));
+    // Voting again doesn't double count; changing sides moves the votes.
+    assert_eq!(tally(&vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await), (2, 1));
+    assert_eq!(tally(&vote(ta.clone(), sign_vote(&alice, id, "against").await, id).await), (0, 3));
+    assert_eq!(tally(&vote(ta.clone(), sign_vote(&alice, id, "for").await, id).await), (2, 1));
+    assert_eq!(vote(ta.clone(), sign_vote(&alice, id, "maybe").await, id).await.status, StatusCode::BAD_REQUEST);
     // Signatures must be the caller's, for this idea and choice, and fresh.
     assert_eq!(vote(tb.clone(), sign_vote(&alice, id2, "for").await, id2).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(vote(ta.clone(), sign_vote(&alice, id2, "for").await, id).await.status, StatusCode::BAD_REQUEST);
-    let mut stale = sign_vote(&alice, id2, "for").await;
+    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "for").await, id2).await.status, StatusCode::BAD_REQUEST);
+    let mut stale = sign_vote(&bob, id2, "for").await;
     stale["issued_at"] = json!(1_000_000);
-    assert_eq!(vote(ta.clone(), stale, id2).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(vote(tb.clone(), stale, id2).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(vote(tn.clone(), sign_vote(&nobody, id, "for").await, id).await.status, StatusCode::FORBIDDEN);
 
     let list = app.get("/api/ideas", None).await.json();
-    assert_eq!(list[0]["id"], id, "most votes first");
-    assert_eq!(list[0]["votes"], 3);
+    assert_eq!(list[0]["id"], id, "best score first");
+    assert_eq!((list[0]["votes_for"].clone(), list[0]["votes_against"].clone()), (json!(2), json!(1)));
     let me = app.get("/api/ideas/me", Some(&ta)).await.json();
-    assert_eq!((me["tokens"].as_u64(), me["admin"].as_bool(), me["voted"].clone()), (Some(2), Some(false), json!([id])));
+    assert_eq!((me["tokens"].as_u64(), me["admin"].as_bool()), (Some(2), Some(false)));
+    assert_eq!(me["votes"], json!({ id.to_string(): "for" }));
+    assert_eq!(app.get("/api/ideas/me", Some(&tc)).await.json()["votes"], json!({ id.to_string(): "against" }));
     // Everyone can audit the signatures.
     let audit = app.get(&format!("/api/ideas/{id}/votes"), None).await.json();
     assert_eq!(audit.as_array().unwrap().len(), 3);
     assert!(audit[0]["message"].as_str().unwrap().starts_with("NFT Vault vote"));
+    assert_eq!(audit.as_array().unwrap().iter().filter(|v| v["choice"] == "against").count(), 1);
 
-    // The vote travels with the NFT: bob buys token 2 and withdraws, alice keeps one vote.
-    app.chain.transfer(2, bob.address());
-    assert_eq!(vote(tb.clone(), sign_vote(&bob, id, "withdraw").await, id).await.json()["votes"], 1);
+    // The vote travels with the NFT: carol buys token 2 and withdraws, alice keeps one vote.
+    app.chain.transfer(2, carol.address());
+    assert_eq!(tally(&vote(tc.clone(), sign_vote(&carol, id, "withdraw").await, id).await), (1, 0));
 
     // Moderation: only the admin; hidden ideas disappear for everyone else.
     let patch = |t: String, body: Value| {
