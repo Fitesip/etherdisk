@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use vault_server::chain::{Ownership, RpcChain};
 use vault_server::storage::LocalStore;
-use vault_server::{connect_db, indexer, objects, AppState, Config};
+use vault_server::{connect_db, ideas, indexer, objects, AppState, Config};
 
 const OWNER_CACHE_TTL: Duration = Duration::from_secs(10);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
@@ -34,6 +34,16 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(db, store, chain, config.clone());
 
     tokio::spawn(indexer::run(state.clone(), rpc));
+    tokio::spawn({
+        let st = state.clone();
+        async move {
+            match ideas::drop_stale_votes(&st).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(dropped = n, "ideas: dropped votes of tokens that changed hands"),
+                Err(e) => tracing::warn!("ideas: checking votes: {e:#}"),
+            }
+        }
+    });
     tokio::spawn(cleanup(state.clone()));
 
     let origins = config.cors_origins.iter().map(|o| o.parse()).collect::<Result<Vec<HeaderValue>, _>>()?;

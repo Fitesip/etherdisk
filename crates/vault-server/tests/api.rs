@@ -738,9 +738,19 @@ async fn ideas_board_one_vote_per_nft() {
     assert!(audit[0]["message"].as_str().unwrap().starts_with("NFT Vault vote"));
     assert_eq!(audit.as_array().unwrap().iter().filter(|v| v["choice"] == "against").count(), 1);
 
-    // The vote travels with the NFT: carol buys token 2 and withdraws, alice keeps one vote.
+    // A transfer clears the token's votes: carol buys token 2, alice keeps one vote, and
+    // carol's own vote still counts once.
     app.chain.transfer(2, carol.address());
-    assert_eq!(tally(&vote(tc.clone(), sign_vote(&carol, id, "withdraw").await, id).await), (1, 0));
+    indexer::on_transfer(&app.state, alice.address(), carol.address(), U256::from(2)).await.unwrap();
+    let list = app.get("/api/ideas", None).await.json();
+    assert_eq!((list[0]["votes_for"].clone(), list[0]["votes_against"].clone()), (json!(1), json!(1)));
+    assert_eq!(app.get("/api/ideas/me", Some(&tc)).await.json()["votes"], json!({ id.to_string(): "against" }));
+    // Votes of a token that moved while the server wasn't clearing them go at startup.
+    app.chain.transfer(1, bob.address());
+    assert_eq!(vault_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 1);
+    assert_eq!(app.get("/api/ideas/me", Some(&tb)).await.json()["votes"], json!({}), "bob doesn't inherit a vote on his own idea");
+    assert_eq!(vault_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 0);
+    assert_eq!(tally(&vote(tc.clone(), sign_vote(&carol, id, "withdraw").await, id).await), (0, 0));
 
     // Moderation: only the admin; hidden ideas disappear for everyone else.
     let patch = |t: String, body: Value| {
@@ -750,7 +760,8 @@ async fn ideas_board_one_vote_per_nft() {
     assert_eq!(patch(tb.clone(), json!({ "status": "done" })).await, StatusCode::FORBIDDEN);
     assert_eq!(patch(tadm.clone(), json!({ "status": "nonsense" })).await, StatusCode::BAD_REQUEST);
     assert_eq!(patch(tadm.clone(), json!({ "status": "planned" })).await, StatusCode::NO_CONTENT);
-    assert_eq!(app.get("/api/ideas", None).await.json()[1]["status"], "planned");
+    let list = app.get("/api/ideas", None).await.json();
+    assert_eq!(list.as_array().unwrap().iter().find(|i| i["id"] == id2).unwrap()["status"], "planned");
     assert_eq!(patch(tadm.clone(), json!({ "hidden": true })).await, StatusCode::NO_CONTENT);
     assert_eq!(app.get("/api/ideas", None).await.json().as_array().unwrap().len(), 1);
     assert_eq!(app.get("/api/ideas", Some(&tadm)).await.json().as_array().unwrap().len(), 2, "the admin still sees it");

@@ -11,7 +11,7 @@ use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 
 use crate::chain::{RpcChain, Transfer};
-use crate::handover;
+use crate::{handover, ideas};
 use crate::shares::revoke_all;
 use crate::{AppResult, AppState};
 
@@ -67,6 +67,7 @@ pub async fn on_transfer(st: &AppState, from: Address, to: Address, token_id: U2
         let token = token_id.to_string();
         let n = revoke_all(st, &token).await?;
         handover::on_transfer(st, from, to, &token).await?;
+        ideas::on_transfer(st, &token).await?;
         tracing::info!(%token_id, revoked_links = n, "vault transferred");
     }
     Ok(())

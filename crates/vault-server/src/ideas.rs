@@ -2,8 +2,8 @@
 //!
 //! - Anyone may read; any wallet holding at least one drive may propose.
 //! - A vote counts once per NFT: voting "for" or "against" records every token the voter
-//!   holds right now; "withdraw" removes those. If a token changes hands, its new holder's
-//!   vote replaces the old one. Authors don't vote on their own ideas.
+//!   holds right now; "withdraw" removes those. A transfer clears the token's votes: its
+//!   new holder decides afresh. Authors don't vote on their own ideas.
 //! - Each vote is a wallet signature over a fixed message (like Snapshot). The server
 //!   checks it and keeps it, so anyone can audit the tally via `GET /ideas/{id}/votes`.
 //! - The contract owner moderates: sets a status or hides an idea.
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::ratelimit;
+use crate::vaults::parse_token;
 use crate::{now, AppError, AppResult, AppState};
 
 pub const MAX_TITLE: usize = 120;
@@ -39,6 +40,30 @@ pub fn routes() -> Router<AppState> {
 /// The exact text a voter signs; the client builds the same.
 pub fn vote_message(idea: i64, choice: &str, address: &Address, issued_at: i64) -> String {
     format!("NFT Vault vote\n\nIdea: #{idea}\nChoice: {choice}\nAddress: {address:#x}\nIssued at: {issued_at}")
+}
+
+/// Indexer hook: a token that changed hands no longer carries its previous holder's votes.
+pub async fn on_transfer(st: &AppState, token: &str) -> AppResult<u64> {
+    Ok(sqlx::query("DELETE FROM idea_votes WHERE token_id = ?").bind(token).execute(&st.db).await?.rows_affected())
+}
+
+/// At startup: drops votes whose token is no longer held by the wallet that cast them
+/// (cast before transfers cleared votes). Returns how many were dropped.
+pub async fn drop_stale_votes(st: &AppState) -> AppResult<u64> {
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT DISTINCT token_id, voter FROM idea_votes").fetch_all(&st.db).await?;
+    let mut dropped = 0;
+    for (token, voter) in rows {
+        let holder = st.chain.owner_of(parse_token(&token)?).await?;
+        if holder.map(|a| lower(&a)) != Some(voter.clone()) {
+            dropped += sqlx::query("DELETE FROM idea_votes WHERE token_id = ? AND voter = ?")
+                .bind(&token)
+                .bind(&voter)
+                .execute(&st.db)
+                .await?
+                .rows_affected();
+        }
+    }
+    Ok(dropped)
 }
 
 fn lower(a: &Address) -> String {
@@ -163,7 +188,7 @@ async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, J
     let Some((false, author)) = idea else {
         return Err(AppError::NotFound);
     };
-    // Withdrawing stays possible, e.g. for a vote a token carried over from its previous holder.
+    // Withdrawing stays possible (it only removes the caller's own tokens' votes).
     if author == lower(&user.0) && req.choice != "withdraw" {
         return Err(AppError::bad("you cannot vote on your own idea"));
     }
