@@ -1,4 +1,4 @@
-use vault_crypto::*;
+use etherdisk_crypto::*;
 
 // Cheap Argon2 settings so tests run fast; the default profile is covered separately.
 const FAST: KdfParams = KdfParams { m_cost_kib: 8, t_cost: 1, parallelism: 1 };
@@ -115,7 +115,7 @@ fn exported_key_restores_vault() {
 
 #[test]
 fn resumed_encryption_matches_uninterrupted() {
-    use vault_crypto::{FileEncryptor, FileHeader};
+    use etherdisk_crypto::{FileEncryptor, FileHeader};
     let (v, _) = vault("p");
     let plain = data(5 * 64 + 10);
     let header = FileHeader::generate(64).unwrap();
@@ -141,7 +141,7 @@ fn resumed_encryption_matches_uninterrupted() {
 
 #[test]
 fn inbox_seal_and_open() {
-    use vault_crypto::inbox::{seal, InboxSecret, SEALED_OVERHEAD};
+    use etherdisk_crypto::inbox::{seal, InboxSecret, SEALED_OVERHEAD};
     let sig = [7u8; 65];
     let bob = InboxSecret::from_signature(&sig).unwrap();
     // Same signature, same key (the recipient re-derives it later).

@@ -1,4 +1,4 @@
-//! Client-side encryption for NFT Vault.
+//! Client-side encryption for Etherdisk.
 //!
 //! Key hierarchy:
 //! passphrase --Argon2id--> KEK --wraps--> DEK (random, per vault/token)

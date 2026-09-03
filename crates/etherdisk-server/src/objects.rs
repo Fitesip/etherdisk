@@ -250,7 +250,7 @@ async fn create_file(
 ) -> AppResult<(StatusCode, Json<Created>)> {
     let (id, token) = owned(&st, &user, &token_id).await?;
     check_metadata(&req.metadata)?;
-    let min = (vault_crypto::HEADER_LEN + vault_crypto::TAG_LEN) as u64;
+    let min = (etherdisk_crypto::HEADER_LEN + etherdisk_crypto::TAG_LEN) as u64;
     if req.size < min || req.size > i64::MAX as u64 {
         return Err(AppError::bad("invalid size"));
     }
@@ -354,7 +354,7 @@ async fn put_thumbnail(
     let (vault, token) = owned(&st, &user, &token_id).await?;
     let file = file_row(&st, &token, &id, "pending").await?;
     let size = body.len() as u64;
-    let min = (vault_crypto::HEADER_LEN + vault_crypto::TAG_LEN) as u64;
+    let min = (etherdisk_crypto::HEADER_LEN + etherdisk_crypto::TAG_LEN) as u64;
     if size < min || size > MAX_THUMBNAIL {
         return Err(AppError::bad(format!("thumbnail must be {min}..={MAX_THUMBNAIL} bytes")));
     }
@@ -399,15 +399,15 @@ async fn drop_thumbnail(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Rejects blobs that are not well-formed vault-crypto files of exactly `size` bytes.
+/// Rejects blobs that are not well-formed etherdisk-crypto files of exactly `size` bytes.
 async fn check_encrypted(st: &AppState, key: &str, size: u64) -> AppResult<()> {
     let invalid = || AppError::bad("uploaded data is not a valid encrypted file");
     if st.store.size(key).await? != Some(size) {
         return Err(AppError::bad("upload is incomplete"));
     }
-    let head = read_to_vec(st.store.as_ref(), key, 0, vault_crypto::HEADER_LEN as u64).await?;
-    let header = vault_crypto::FileHeader::parse(&head).map_err(|_| invalid())?;
-    vault_crypto::plaintext_len(size, header.chunk_size).map_err(|_| invalid())?;
+    let head = read_to_vec(st.store.as_ref(), key, 0, etherdisk_crypto::HEADER_LEN as u64).await?;
+    let header = etherdisk_crypto::FileHeader::parse(&head).map_err(|_| invalid())?;
+    etherdisk_crypto::plaintext_len(size, header.chunk_size).map_err(|_| invalid())?;
     Ok(())
 }
 

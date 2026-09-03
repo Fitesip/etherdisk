@@ -14,8 +14,8 @@
 // and requests get 404; the page re-registers and retries.
 
 /* global wasm_bindgen */
-importScripts("/crypto-sw/vault_crypto_wasm.js");
-const wasmReady = wasm_bindgen({ module_or_path: "/crypto-sw/vault_crypto_wasm_bg.wasm" });
+importScripts("/crypto-sw/etherdisk_crypto_wasm.js");
+const wasmReady = wasm_bindgen({ module_or_path: "/crypto-sw/etherdisk_crypto_wasm_bg.wasm" });
 
 /** Chunks fetched per request (4 MiB with the default chunk size). */
 const BATCH = 4;

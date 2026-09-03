@@ -159,7 +159,7 @@ export interface Sort {
 }
 
 /** MIME type marking drags of drive items (as opposed to files from the desktop). */
-export const DRAG_TYPE = "application/x-nftvault-items";
+export const DRAG_TYPE = "application/x-etherdisk-items";
 
 /** Drag source: the dragged item, or all selected items if it is one of them. */
 export function dragProps(item: Item, selected: ReadonlySet<string> | undefined, enabled: boolean) {

@@ -29,7 +29,7 @@ impl InboxSecret {
             return Err(Error::Argument("signature too short"));
         }
         let mut h = Sha256::new();
-        h.update(b"nft-vault/inbox/v1");
+        h.update(b"etherdisk/inbox/v1");
         h.update(signature);
         let seed = Zeroizing::new(<[u8; 32]>::from(h.finalize()));
         Ok(Self(StaticSecret::from(*seed)))
@@ -64,7 +64,7 @@ fn seal_key(shared: &x25519_dalek::SharedSecret, eph: &[u8; 32], recipient: &[u8
     salt[32..].copy_from_slice(recipient);
     let mut key = Zeroizing::new([0u8; 32]);
     Hkdf::<Sha256>::new(Some(&salt), shared.as_bytes())
-        .expand(b"nft-vault/inbox-seal/v1", &mut key[..])
+        .expand(b"etherdisk/inbox-seal/v1", &mut key[..])
         .map_err(|_| Error::Argument("hkdf"))?;
     Ok(key)
 }

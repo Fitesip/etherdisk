@@ -1,5 +1,5 @@
 //! End-to-end API tests against an in-memory chain, real SIWE signatures and real
-//! vault-crypto ciphertext.
+//! etherdisk-crypto ciphertext.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,10 +18,10 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use vault_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
-use vault_server::chain::{Chain, Ownership};
-use vault_server::storage::LocalStore;
-use vault_server::{bind_deployment, connect_db, indexer, AppState, Config};
+use etherdisk_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
+use etherdisk_server::chain::{Chain, Ownership};
+use etherdisk_server::storage::LocalStore;
+use etherdisk_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
 // ------------------------------------------------------------ fixtures
 
@@ -91,7 +91,7 @@ async fn app() -> App {
     let chain = Arc::new(FakeChain::default());
     // TTL 0: every request sees the fake chain's current state.
     let state = AppState::new(db, store, Ownership::new(chain.clone(), Duration::ZERO), config);
-    App { router: vault_server::router(state.clone()), state, chain, data_dir }
+    App { router: etherdisk_server::router(state.clone()), state, chain, data_dir }
 }
 
 struct Resp {
@@ -151,7 +151,7 @@ impl App {
 
 fn siwe_message(domain: &str, address: Address, chain_id: u64, nonce: &str) -> String {
     format!(
-        "{domain} wants you to sign in with your Ethereum account:\n{}\n\nSign in to NFT Vault\n\n\
+        "{domain} wants you to sign in with your Ethereum account:\n{}\n\nSign in to Etherdisk\n\n\
          URI: http://{domain}\nVersion: 1\nChain ID: {chain_id}\nNonce: {nonce}\nIssued At: 2025-01-01T00:00:00Z",
         address.to_checksum(None)
     )
@@ -301,17 +301,17 @@ async fn upload_download_and_range() {
 
     let full = app.get(&format!("/api/vaults/1/files/{id}/content"), Some(&t)).await;
     assert_eq!(full.status, StatusCode::OK);
-    assert_eq!(vault_crypto::decrypt_file(&vault.file_key(&FileHeader::parse(&full.body).unwrap().file_salt), &full.body).unwrap(), plain);
+    assert_eq!(etherdisk_crypto::decrypt_file(&vault.file_key(&FileHeader::parse(&full.body).unwrap().file_salt), &full.body).unwrap(), plain);
 
     // One encrypted chunk via Range, decrypted on its own (what video seeking does).
-    let loc = vault_crypto::chunk_location(3, 64, ct.len() as u64).unwrap();
+    let loc = etherdisk_crypto::chunk_location(3, 64, ct.len() as u64).unwrap();
     let range = format!("bytes={}-{}", loc.offset, loc.offset + loc.len - 1);
     let part = app
         .req(Method::GET, &format!("/api/vaults/1/files/{id}/content"), Some(&t), Body::empty(), "", &[("range", &range)])
         .await;
     assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(part.headers[header::CONTENT_RANGE], format!("bytes {}-{}/{}", loc.offset, loc.offset + loc.len - 1, ct.len()));
-    let dec = vault_crypto::FileDecryptor::new(&vault.file_key(&FileHeader::parse(&ct).unwrap().file_salt), &ct).unwrap();
+    let dec = etherdisk_crypto::FileDecryptor::new(&vault.file_key(&FileHeader::parse(&ct).unwrap().file_salt), &ct).unwrap();
     assert_eq!(dec.decrypt_chunk(3, &part.body, loc.is_last).unwrap(), plain[3 * 64..4 * 64]);
 
     let bad = app
@@ -664,7 +664,7 @@ async fn sign_in_is_rate_limited() {
 
 async fn sign_vote(signer: &PrivateKeySigner, idea: i64, choice: &str) -> Value {
     let issued_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    let msg = vault_server::ideas::vote_message(idea, choice, &signer.address(), issued_at);
+    let msg = etherdisk_server::ideas::vote_message(idea, choice, &signer.address(), issued_at);
     let sig = signer.sign_message(msg.as_bytes()).await.unwrap();
     json!({ "choice": choice, "issued_at": issued_at, "signature": format!("0x{}", alloy::hex::encode(sig.as_bytes())) })
 }
@@ -735,7 +735,7 @@ async fn ideas_board_one_vote_per_nft() {
     // Everyone can audit the signatures.
     let audit = app.get(&format!("/api/ideas/{id}/votes"), None).await.json();
     assert_eq!(audit.as_array().unwrap().len(), 3);
-    assert!(audit[0]["message"].as_str().unwrap().starts_with("NFT Vault vote"));
+    assert!(audit[0]["message"].as_str().unwrap().starts_with("Etherdisk vote"));
     assert_eq!(audit.as_array().unwrap().iter().filter(|v| v["choice"] == "against").count(), 1);
 
     // A transfer clears the token's votes: carol buys token 2, alice keeps one vote, and
@@ -747,9 +747,9 @@ async fn ideas_board_one_vote_per_nft() {
     assert_eq!(app.get("/api/ideas/me", Some(&tc)).await.json()["votes"], json!({ id.to_string(): "against" }));
     // Votes of a token that moved while the server wasn't clearing them go at startup.
     app.chain.transfer(1, bob.address());
-    assert_eq!(vault_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 1);
+    assert_eq!(etherdisk_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 1);
     assert_eq!(app.get("/api/ideas/me", Some(&tb)).await.json()["votes"], json!({}), "bob doesn't inherit a vote on his own idea");
-    assert_eq!(vault_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 0);
+    assert_eq!(etherdisk_server::ideas::drop_stale_votes(&app.state).await.unwrap(), 0);
     assert_eq!(tally(&vote(tc.clone(), sign_vote(&carol, id, "withdraw").await, id).await), (0, 0));
 
     // Moderation: only the admin; hidden ideas disappear for everyone else.
@@ -773,8 +773,8 @@ async fn ideas_board_one_vote_per_nft() {
 
 /// Publishes `signer`'s inbox key the way the browser does; returns the key.
 async fn publish_inbox(app: &App, token: &str, signer: &PrivateKeySigner, seed: u8) -> Vec<u8> {
-    let key = vault_crypto::inbox::InboxSecret::from_signature(&[seed; 65]).unwrap().public().to_vec();
-    let msg = vault_server::handover::inbox_message(&signer.address(), &key);
+    let key = etherdisk_crypto::inbox::InboxSecret::from_signature(&[seed; 65]).unwrap().public().to_vec();
+    let msg = etherdisk_server::handover::inbox_message(&signer.address(), &key);
     let sig = signer.sign_message(msg.as_bytes()).await.unwrap();
     let r = app
         .json(Method::PUT, "/api/inbox", Some(token), json!({ "pubkey": b64(&key), "signature": format!("0x{}", alloy::hex::encode(sig.as_bytes())) }))
@@ -794,7 +794,7 @@ async fn inbox_keys_are_bound_to_the_wallet() {
     assert_eq!(r.json()["pubkey"], b64(&key));
 
     // A signature by someone else over bob's message is refused.
-    let msg = vault_server::handover::inbox_message(&bob.address(), &key);
+    let msg = etherdisk_server::handover::inbox_message(&bob.address(), &key);
     let forged = alice.sign_message(msg.as_bytes()).await.unwrap();
     let r = app
         .json(Method::PUT, "/api/inbox", Some(&tb), json!({ "pubkey": b64(&key), "signature": format!("0x{}", alloy::hex::encode(forged.as_bytes())) }))
@@ -810,7 +810,7 @@ async fn drive_key_handover() {
     app.chain.mint(1, alice.address(), 1);
     let ta = app.login(&alice).await;
     setup_vault_with_file(&app, &ta, b"x").await;
-    let sealed = b64(&[9u8; vault_server::handover::SEALED_LEN]);
+    let sealed = b64(&[9u8; etherdisk_server::handover::SEALED_LEN]);
     let seal = |t: String, to: Address| {
         let sealed = sealed.clone();
         let app = &app;
@@ -944,7 +944,7 @@ async fn share_links_and_transfer_revocation() {
     let unlocked = Vault::unlock(&STANDARD.decode(key["key_blob"].as_str().unwrap()).unwrap(), "pass").unwrap();
     let got = app.get(&format!("/api/vaults/1/files/{shared}/content"), Some(&tb)).await.body;
     let fk = unlocked.file_key(&FileHeader::parse(&got).unwrap().file_salt);
-    assert_eq!(vault_crypto::decrypt_file(&fk, &got).unwrap(), b"shared content");
+    assert_eq!(etherdisk_crypto::decrypt_file(&fk, &got).unwrap(), b"shared content");
     assert_eq!(app.get("/api/vaults/1/shares", Some(&tb)).await.json().as_array().unwrap().len(), 0);
 }
 

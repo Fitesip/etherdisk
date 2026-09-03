@@ -3,7 +3,7 @@
 
 export const en = {
   common: {
-    appName: "NFT Vault",
+    appName: "Etherdisk",
     cancel: "Cancel",
     close: "Close",
     confirm: "Confirm",

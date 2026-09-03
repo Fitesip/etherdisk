@@ -5,13 +5,13 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {VaultArt} from "./VaultArt.sol";
+import {EtherdiskArt} from "./EtherdiskArt.sol";
 
-/// @title VaultNFT
-/// @notice Each token is a storage vault. The token's tier defines its capacity in GB.
+/// @title Etherdisk
+/// @notice Each token is an encrypted storage drive. The token's tier defines its capacity in GB.
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
 ///         Transfers are plain ERC-721 transfers (no restrictions).
-contract VaultNFT is ERC721Enumerable, Ownable {
+contract Etherdisk is ERC721Enumerable, Ownable {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
         uint256 price; // wei, can be updated for future mints
@@ -25,7 +25,7 @@ contract VaultNFT is ERC721Enumerable, Ownable {
     event TierAdded(uint256 indexed tierId, uint32 capacityGb, uint256 price);
     event TierPriceUpdated(uint256 indexed tierId, uint256 price);
     event TierActiveUpdated(uint256 indexed tierId, bool active);
-    event VaultMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
+    event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
 
     error InvalidTier();
     error TierInactive();
@@ -33,7 +33,7 @@ contract VaultNFT is ERC721Enumerable, Ownable {
     error ZeroCapacity();
     error WithdrawFailed();
 
-    constructor(address initialOwner) ERC721("Vault", "VAULT") Ownable(initialOwner) {
+    constructor(address initialOwner) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
         // Test tiers. Larger tiers (8/16/32/64/128/512/1024 GB) are added later via addTier.
         _addTier(1, 0.0005 ether);
         _addTier(2, 0.00075 ether);
@@ -50,7 +50,7 @@ contract VaultNFT is ERC721Enumerable, Ownable {
         tokenId = _nextTokenId++;
         _tokenTier[tokenId] = tierId;
         _safeMint(msg.sender, tokenId);
-        emit VaultMinted(tokenId, msg.sender, tierId);
+        emit DriveMinted(tokenId, msg.sender, tierId);
     }
 
     // ---------------------------------------------------------------- views
@@ -68,7 +68,7 @@ contract VaultNFT is ERC721Enumerable, Ownable {
         return _tokenTier[tokenId];
     }
 
-    /// @notice Capacity of the vault in GB. Used by the backend to enforce quotas.
+    /// @notice Capacity of the drive in GB. Used by the backend to enforce quotas.
     function capacityOf(uint256 tokenId) external view returns (uint32) {
         _requireOwned(tokenId);
         return _tiers[_tokenTier[tokenId]].capacityGb;
@@ -87,7 +87,7 @@ contract VaultNFT is ERC721Enumerable, Ownable {
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         _requireOwned(tokenId);
         uint256 tierId = _tokenTier[tokenId];
-        return VaultArt.tokenURI(tokenId, _tiers[tierId].capacityGb, tierId);
+        return EtherdiskArt.tokenURI(tokenId, _tiers[tierId].capacityGb, tierId);
     }
 
     // ---------------------------------------------------------------- admin

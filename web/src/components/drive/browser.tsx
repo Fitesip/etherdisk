@@ -44,7 +44,7 @@ import { SearchBox, useSearch } from "./search";
 import { TrashView } from "./trash";
 import { UploadPanel, useUploads } from "./uploads";
 
-const SORT_KEY = "nftvault.sort";
+const SORT_KEY = "etherdisk.sort";
 const parseSort = (raw: string | null): Sort => {
   const [key, dir] = (raw ?? "").split(":");
   return { key: key === "size" || key === "modified" ? key : "name", desc: dir === "desc" };
@@ -88,8 +88,8 @@ interface Conflict {
 }
 
 /** Last open folder of a drive, so the Files tab returns to it. */
-export const lastFolderKey = (tokenId: string) => `nftvault.folder.${tokenId}`;
-const VIEW_KEY = "nftvault.view";
+export const lastFolderKey = (tokenId: string) => `etherdisk.folder.${tokenId}`;
+const VIEW_KEY = "etherdisk.view";
 
 type Dialogs =
   | { type: "newFolder" }

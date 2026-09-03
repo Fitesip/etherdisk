@@ -3,8 +3,8 @@ import type { MetadataRoute } from "next";
 // Installable app (PWA). The service worker in public/sw.js already controls the site.
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "NFT Vault",
-    short_name: "NFT Vault",
+    name: "Etherdisk",
+    short_name: "Etherdisk",
     description: "Encrypted cloud storage you buy once and own as an NFT.",
     start_url: "/drive",
     scope: "/",

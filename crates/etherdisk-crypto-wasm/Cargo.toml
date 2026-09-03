@@ -1,5 +1,5 @@
 [package]
-name = "vault-crypto-wasm"
+name = "etherdisk-crypto-wasm"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-vault-crypto = { path = "../vault-crypto" }
+etherdisk-crypto = { path = "../etherdisk-crypto" }
 wasm-bindgen = "0.2"
 # Browser randomness (crypto.getRandomValues)
 getrandom = { version = "0.2", features = ["js"] }

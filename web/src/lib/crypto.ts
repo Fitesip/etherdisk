@@ -1,6 +1,6 @@
 // Loads the Rust crypto crate (WASM) and small byte helpers. Client-only.
 
-import init from "@/wasm/vault_crypto_wasm";
+import init from "@/wasm/etherdisk_crypto_wasm";
 
 export {
   WasmFileDecryptor,
@@ -16,13 +16,13 @@ export {
   inboxPublicKey,
   inboxSeal,
   plaintextLen,
-} from "@/wasm/vault_crypto_wasm";
+} from "@/wasm/etherdisk_crypto_wasm";
 
 let ready: Promise<void> | undefined;
 
 /** Must be awaited before calling anything from the crate. */
 export function loadCrypto(): Promise<void> {
-  ready ??= init({ module_or_path: "/crypto/vault_crypto_wasm_bg.wasm" }).then(() => undefined);
+  ready ??= init({ module_or_path: "/crypto/etherdisk_crypto_wasm_bg.wasm" }).then(() => undefined);
   return ready;
 }
 

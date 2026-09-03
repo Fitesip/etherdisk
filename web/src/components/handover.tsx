@@ -92,7 +92,7 @@ export function InboxSettings({ token }: { token: string }) {
 export function InboxHint({ token }: { token: string }) {
   const t = useT();
   const status = useInboxStatus(token);
-  const dismissed = useStored("nftvault.inboxHint") === "dismissed";
+  const dismissed = useStored("etherdisk.inboxHint") === "dismissed";
   if (dismissed || !status.isSuccess || status.data) return null;
   return (
     <Card className="flex animate-fade-up flex-wrap items-center gap-4 p-4">
@@ -104,7 +104,7 @@ export function InboxHint({ token }: { token: string }) {
         <p className="text-sm text-muted">{t("handover.inboxHint")}</p>
       </div>
       <EnableInboxButton token={token} size="sm" />
-      <Button size="icon" variant="ghost" aria-label={t("handover.notNow")} onClick={() => writeStored("nftvault.inboxHint", "dismissed")}>
+      <Button size="icon" variant="ghost" aria-label={t("handover.notNow")} onClick={() => writeStored("etherdisk.inboxHint", "dismissed")}>
         <X className="h-4 w-4" />
       </Button>
     </Card>

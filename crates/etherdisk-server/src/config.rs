@@ -29,7 +29,7 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             bind_addr: var_or("BIND_ADDR", "127.0.0.1:8787"),
-            database_url: var_or("DATABASE_URL", "sqlite://data/vault.db"),
+            database_url: var_or("DATABASE_URL", "sqlite://data/etherdisk.db"),
             data_dir: var_or("DATA_DIR", "data/blobs").into(),
             rpc_url: var("RPC_URL")?,
             contract_address: parse("CONTRACT_ADDRESS", &var("CONTRACT_ADDRESS")?)?,

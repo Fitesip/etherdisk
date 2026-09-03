@@ -100,7 +100,7 @@ jobs:
       - run: npm ci
       - name: Build server
         working-directory: .
-        run: cargo build -p vault-server
+        run: cargo build -p etherdisk-server
       - name: Build app (test env)
         run: npm run build
       - run: npx playwright install --with-deps chromium

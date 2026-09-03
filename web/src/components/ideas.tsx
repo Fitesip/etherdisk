@@ -23,7 +23,7 @@ const MAX_BODY = 2000;
 
 /** Must match the server's `vote_message`. */
 const voteMessage = (idea: number, choice: string, address: Address, issuedAt: number) =>
-  `NFT Vault vote\n\nIdea: #${idea}\nChoice: ${choice}\nAddress: ${address.toLowerCase()}\nIssued at: ${issuedAt}`;
+  `Etherdisk vote\n\nIdea: #${idea}\nChoice: ${choice}\nAddress: ${address.toLowerCase()}\nIssued at: ${issuedAt}`;
 
 const STATUS_STYLE: Record<IdeaStatus, string> = {
   open: "border-border text-muted",

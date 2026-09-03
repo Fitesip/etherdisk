@@ -8,9 +8,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
-use vault_server::chain::{Ownership, RpcChain};
-use vault_server::storage::LocalStore;
-use vault_server::{connect_db, ideas, indexer, objects, AppState, Config};
+use etherdisk_server::chain::{Ownership, RpcChain};
+use etherdisk_server::storage::LocalStore;
+use etherdisk_server::{connect_db, ideas, indexer, objects, AppState, Config};
 
 const OWNER_CACHE_TTL: Duration = Duration::from_secs(10);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
@@ -19,7 +19,7 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "vault_server=info,tower_http=info".into()))
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "etherdisk_server=info,tower_http=info".into()))
         .init();
 
     let config = Config::from_env()?;
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let db = connect_db(&config.database_url).await?;
-    vault_server::bind_deployment(&db, config.contract_address, config.chain_id).await?;
+    etherdisk_server::bind_deployment(&db, config.contract_address, config.chain_id).await?;
     let store = Arc::new(LocalStore::new(&config.data_dir)?);
     let rpc = Arc::new(RpcChain::new(&config.rpc_url, config.contract_address)?);
     let chain = Ownership::new(rpc.clone(), OWNER_CACHE_TTL);
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .expose_headers([header::CONTENT_RANGE, header::CONTENT_LENGTH, header::ACCEPT_RANGES]);
 
     // The API serves JSON and ciphertext only: never let a browser render it as a page.
-    let app = vault_server::router(state)
+    let app = etherdisk_server::router(state)
         .layer(SetResponseHeaderLayer::overriding(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,

@@ -39,7 +39,7 @@ pub fn routes() -> Router<AppState> {
 
 /// The exact text a voter signs; the client builds the same.
 pub fn vote_message(idea: i64, choice: &str, address: &Address, issued_at: i64) -> String {
-    format!("NFT Vault vote\n\nIdea: #{idea}\nChoice: {choice}\nAddress: {address:#x}\nIssued at: {issued_at}")
+    format!("Etherdisk vote\n\nIdea: #{idea}\nChoice: {choice}\nAddress: {address:#x}\nIssued at: {issued_at}")
 }
 
 /// Indexer hook: a token that changed hands no longer carries its previous holder's votes.

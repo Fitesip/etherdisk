@@ -3,7 +3,7 @@
 // keeps animating. It hands back the raw drive key (and key blob); the page rebuilds the
 // vault from them. Same-origin, in-memory only.
 
-import init, { WasmVault } from "@/wasm/vault_crypto_wasm";
+import init, { WasmVault } from "@/wasm/etherdisk_crypto_wasm";
 
 type Req =
   | { id: number; op: "create"; passphrase: string }
@@ -14,7 +14,7 @@ let ready: Promise<unknown> | undefined;
 
 self.onmessage = async (e: MessageEvent<Req>) => {
   const req = e.data;
-  ready ??= init({ module_or_path: "/crypto/vault_crypto_wasm_bg.wasm" });
+  ready ??= init({ module_or_path: "/crypto/etherdisk_crypto_wasm_bg.wasm" });
   let vault: WasmVault | undefined;
   try {
     await ready;

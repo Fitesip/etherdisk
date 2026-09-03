@@ -175,7 +175,7 @@ async fn put_key(
     Json(req): Json<PutKeyRequest>,
 ) -> AppResult<Json<KeyResponse>> {
     let (_, token) = owned(&st, &user, &token_id).await?;
-    if req.key_blob.len() != vault_crypto::KEY_BLOB_LEN || !req.key_blob.starts_with(b"NVK1") {
+    if req.key_blob.len() != etherdisk_crypto::KEY_BLOB_LEN || !req.key_blob.starts_with(b"NVK1") {
         return Err(AppError::bad("not a vault key blob"));
     }
 

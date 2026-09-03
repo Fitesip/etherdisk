@@ -1938,6 +1938,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "etherdisk-crypto"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hkdf",
+ "sha2",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "etherdisk-crypto-wasm"
+version = "0.1.0"
+dependencies = [
+ "etherdisk-crypto",
+ "getrandom 0.2.17",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "etherdisk-server"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "dotenvy",
+ "etherdisk-crypto",
+ "futures-util",
+ "getrandom 0.2.17",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2",
+ "siwe",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5139,61 +5194,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vault-crypto"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "chacha20poly1305",
- "getrandom 0.2.17",
- "hkdf",
- "sha2",
- "thiserror 2.0.21",
- "unicode-normalization",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "vault-crypto-wasm"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.2.17",
- "vault-crypto",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "vault-server"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bytes",
- "dotenvy",
- "futures-util",
- "getrandom 0.2.17",
- "http-body-util",
- "serde",
- "serde_json",
- "sha2",
- "siwe",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vault-crypto",
-]
 
 [[package]]
 name = "vcpkg"

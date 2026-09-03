@@ -1,7 +1,7 @@
-//! JS-facing wrapper around `vault-crypto`.
-//! Build: `wasm-pack build crates/vault-crypto-wasm --target web --release`
+//! JS-facing wrapper around `etherdisk-crypto`.
+//! Build: `wasm-pack build crates/etherdisk-crypto-wasm --target web --release`
 
-use vault_crypto as vc;
+use etherdisk_crypto as vc;
 use wasm_bindgen::prelude::*;
 
 fn err(e: vc::Error) -> JsError {

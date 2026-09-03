@@ -1,4 +1,4 @@
-//! Follows `Transfer` events of the VaultNFT contract.
+//! Follows `Transfer` events of the Etherdisk contract.
 //! On a transfer the token's links are revoked and its cached owner dropped,
 //! so the previous owner loses access immediately. Files and the key blob stay:
 //! they belong to the token, and the new owner unlocks them with the passphrase.

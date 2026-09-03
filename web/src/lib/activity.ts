@@ -3,7 +3,7 @@
 // Last user activity in this tab, for auto-lock. Survives reloads via sessionStorage,
 // so reloading does not reset the idle timer.
 
-const KEY = "nftvault.activity";
+const KEY = "etherdisk.activity";
 const PERSIST_EVERY_MS = 5_000;
 
 let last = 0;

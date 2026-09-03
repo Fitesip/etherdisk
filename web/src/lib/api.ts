@@ -1,4 +1,4 @@
-// Typed client for the Rust backend (crates/vault-server). Binary fields are base64 in JSON.
+// Typed client for the Rust backend (crates/etherdisk-server). Binary fields are base64 in JSON.
 
 import { API_URL } from "./config";
 
@@ -13,7 +13,7 @@ export class ApiError extends Error {
 }
 
 /** Fired when the backend rejects the session token, so the session can be dropped. */
-export const UNAUTHORIZED_EVENT = "nftvault:unauthorized";
+export const UNAUTHORIZED_EVENT = "etherdisk:unauthorized";
 
 interface RequestOpts {
   method?: string;

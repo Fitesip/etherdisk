@@ -9,9 +9,9 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "NFT Vault",
+  title: "Etherdisk",
   description: "Encrypted cloud storage you buy once and own as an NFT.",
-  appleWebApp: { capable: true, title: "NFT Vault", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "Etherdisk", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

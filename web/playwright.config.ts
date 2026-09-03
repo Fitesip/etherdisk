@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // End-to-end tests against a local chain (anvil), the real Rust server and the built app.
-// Locally: `cargo build -p vault-server`, then `npm run e2e` (Foundry on PATH or FOUNDRY_BIN).
+// Locally: `cargo build -p etherdisk-server`, then `npm run e2e` (Foundry on PATH or FOUNDRY_BIN).
 const CI = !!process.env.CI;
 const anvil = process.env.FOUNDRY_BIN ? `"${process.env.FOUNDRY_BIN}/anvil"` : "anvil";
 

@@ -4,10 +4,10 @@ pragma solidity ^0.8.28;
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
-/// @title VaultArt
-/// @notice On-chain metadata and SVG image of a vault token, so wallets and marketplaces
+/// @title EtherdiskArt
+/// @notice On-chain metadata and SVG image of a drive token, so wallets and marketplaces
 ///         show the drive (capacity, number) without any off-chain server.
-library VaultArt {
+library EtherdiskArt {
     using Strings for uint256;
 
     /// @dev Accent color per capacity; larger tiers cycle through the rest.
@@ -60,7 +60,7 @@ library VaultArt {
             frame,
             '<text x="140" y="148" fill="#ececf1" font-size="20" font-weight="600">Drive #',
             id,
-            '</text><text x="140" y="172" fill="#8e8e99" font-size="13">NFT Vault</text>'
+            '</text><text x="140" y="172" fill="#8e8e99" font-size="13">Etherdisk</text>'
         );
     }
 
@@ -85,7 +85,7 @@ library VaultArt {
     function tokenURI(uint256 tokenId, uint32 capacityGb, uint256 tierId) internal pure returns (string memory) {
         string memory label = _capacityLabel(capacityGb);
         string memory head = string.concat(
-            '{"name":"Vault Drive #',
+            '{"name":"Etherdisk #',
             tokenId.toString(),
             '","description":"End-to-end encrypted cloud storage owned as an NFT. Capacity: ',
             label,

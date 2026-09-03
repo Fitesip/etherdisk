@@ -14,14 +14,14 @@ export type Sign = (message: string) => Promise<Hex>;
 
 /** Signed to derive the inbox key. Never send this signature anywhere. */
 export const INBOX_UNLOCK_MESSAGE =
-  "NFT Vault: open my inbox\n\nOnly sign this on the NFT Vault site. It lets this browser open drive keys that were sent to you. It is free and sends no transaction.";
+  "Etherdisk: open my inbox\n\nOnly sign this on the Etherdisk site. It lets this browser open drive keys that were sent to you. It is free and sends no transaction.";
 
 /** Signed to publish the inbox key; must match the server's `inbox_message`. */
 export const inboxMessage = (address: string, key: Uint8Array) =>
-  `NFT Vault inbox key\n\nPublishing this key lets people who send you a drive include its key, encrypted so only you can open it.\n\nAddress: ${address.toLowerCase()}\nKey: ${bytesToHex(key).slice(2)}`;
+  `Etherdisk inbox key\n\nPublishing this key lets people who send you a drive include its key, encrypted so only you can open it.\n\nAddress: ${address.toLowerCase()}\nKey: ${bytesToHex(key).slice(2)}`;
 
 /** Binds a sealed key to its token, so it can't be replayed for another drive. */
-const aad = (tokenId: string) => utf8(`nft-vault/handover/${tokenId}`);
+const aad = (tokenId: string) => utf8(`etherdisk/handover/${tokenId}`);
 
 /** Derives this wallet's inbox key and publishes it (two signatures). */
 export async function enableInbox(token: string, address: Address, sign: Sign): Promise<void> {

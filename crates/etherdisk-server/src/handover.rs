@@ -1,6 +1,6 @@
 //! Handing a drive's key to its next owner.
 //!
-//! A user publishes an inbox key (X25519 public key, see `vault_crypto::inbox`) together
+//! A user publishes an inbox key (X25519 public key, see `etherdisk_crypto::inbox`) together
 //! with a wallet signature binding it to their address; senders verify that signature
 //! themselves, so the server cannot swap in its own key. The drive key (DEK) is sealed
 //! to the recipient's inbox in the sender's browser; the server only stores ciphertext.
@@ -23,9 +23,9 @@ use crate::auth::AuthUser;
 use crate::vaults::{etag, owned, parse_token};
 use crate::{b64, now, AppError, AppResult, AppState};
 
-pub const INBOX_KEY_LEN: usize = vault_crypto::inbox::INBOX_PUBLIC_LEN;
+pub const INBOX_KEY_LEN: usize = etherdisk_crypto::inbox::INBOX_PUBLIC_LEN;
 /// A sealed 32-byte drive key.
-pub const SEALED_LEN: usize = vault_crypto::inbox::SEALED_OVERHEAD + 32;
+pub const SEALED_LEN: usize = etherdisk_crypto::inbox::SEALED_OVERHEAD + 32;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -40,7 +40,7 @@ pub fn routes() -> Router<AppState> {
 /// The exact text a user signs to publish their inbox key (the client builds the same).
 pub fn inbox_message(address: &Address, key: &[u8]) -> String {
     format!(
-        "NFT Vault inbox key\n\nPublishing this key lets people who send you a drive include its key, encrypted so only you can open it.\n\nAddress: {address:#x}\nKey: {}",
+        "Etherdisk inbox key\n\nPublishing this key lets people who send you a drive include its key, encrypted so only you can open it.\n\nAddress: {address:#x}\nKey: {}",
         alloy::hex::encode(key)
     )
 }

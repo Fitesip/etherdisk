@@ -131,14 +131,14 @@ impl Vault {
     /// Per-file key, derived from the DEK and the file's public random salt.
     /// Safe to hand out for sharing: it does not reveal the DEK or other files' keys.
     pub fn file_key(&self, file_salt: &[u8; 16]) -> FileKey {
-        FileKey::from_bytes(*self.hkdf(Some(file_salt), b"nft-vault/file/v1"))
+        FileKey::from_bytes(*self.hkdf(Some(file_salt), b"etherdisk/file/v1"))
     }
 
     /// Encrypts a small blob (file names, MIME types, folder tree, ...).
     /// `aad` should bind the blob to its context (e.g. vault id + object id)
     /// so the server cannot swap manifests between objects.
     pub fn seal_metadata(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        let key = self.hkdf(None, b"nft-vault/metadata/v1");
+        let key = self.hkdf(None, b"etherdisk/metadata/v1");
         let nonce: [u8; NONCE_LEN] = random()?;
         let ct = XChaCha20Poly1305::new(Key::from_slice(&key[..]))
             .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad })
@@ -152,7 +152,7 @@ impl Vault {
         if sealed.len() < NONCE_LEN + 16 {
             return Err(Error::Format("sealed data too short"));
         }
-        let key = self.hkdf(None, b"nft-vault/metadata/v1");
+        let key = self.hkdf(None, b"etherdisk/metadata/v1");
         let (nonce, ct) = sealed.split_at(NONCE_LEN);
         XChaCha20Poly1305::new(Key::from_slice(&key[..]))
             .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad })

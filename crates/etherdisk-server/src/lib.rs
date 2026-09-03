@@ -1,8 +1,8 @@
-//! NFT Vault backend.
+//! Etherdisk backend.
 //!
 //! The server never sees plaintext or keys: it stores the wrapped DEK, encrypted
 //! metadata and encrypted blobs, and decides *who* may touch them by asking the
-//! VaultNFT contract who owns the token right now.
+//! Etherdisk contract who owns the token right now.
 
 pub mod auth;
 pub mod chain;

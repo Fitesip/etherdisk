@@ -41,7 +41,7 @@ yarn-error.log*
 next-env.d.ts
 !.env.example
 
-# generated from crates/vault-crypto-wasm (npm run wasm)
+# generated from crates/etherdisk-crypto-wasm (npm run wasm)
 /src/wasm/
 /public/crypto/
 /public/crypto-sw/

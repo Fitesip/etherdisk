@@ -1,4 +1,4 @@
-//! Reads token ownership and capacity from the VaultNFT contract.
+//! Reads token ownership and capacity from the Etherdisk contract.
 //! The contract is the source of truth; the server only caches it briefly.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use crate::{AppError, AppResult};
 
 sol! {
     #[sol(rpc)]
-    interface IVaultNFT {
+    interface IEtherdisk {
         event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
 
         function ownerOf(uint256 tokenId) external view returns (address);
@@ -24,7 +24,7 @@ sol! {
     }
 }
 
-pub use IVaultNFT::Transfer;
+pub use IEtherdisk::Transfer;
 
 /// What the server needs from the chain. Abstracted so tests can run without an RPC node.
 #[async_trait]
@@ -40,13 +40,13 @@ pub trait Chain: Send + Sync {
 
 pub struct RpcChain {
     pub provider: DynProvider,
-    pub contract: IVaultNFT::IVaultNFTInstance<DynProvider>,
+    pub contract: IEtherdisk::IEtherdiskInstance<DynProvider>,
 }
 
 impl RpcChain {
     pub fn new(rpc_url: &str, contract: Address) -> anyhow::Result<Self> {
         let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?).erased();
-        Ok(Self { contract: IVaultNFT::new(contract, provider.clone()), provider })
+        Ok(Self { contract: IEtherdisk::new(contract, provider.clone()), provider })
     }
 }
 

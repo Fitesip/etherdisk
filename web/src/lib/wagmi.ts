@@ -15,7 +15,7 @@ export const wagmiConfig = createConfig({
           walletConnect({
             projectId: WC_PROJECT_ID,
             metadata: {
-              name: "NFT Vault",
+              name: "Etherdisk",
               description: "Encrypted storage you own as an NFT",
               url: typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
               icons: [],
