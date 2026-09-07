@@ -254,15 +254,13 @@ export function DriveSettingsPanel({ token, info }: { token: string; info: Vault
             <p className="mb-3 text-sm font-medium">{t("driveSettings.passphrase")}</p>
             <p className="mb-4 text-sm text-muted">{t("vault.changePassphraseText")}</p>
             {ctx && unlocked ? <ChangePassphraseForm ctx={ctx} etag={unlocked.etag} /> : needsUnlock}
-          </div>
-          {unlocked && (
-            <div className="mt-5 pt-5">
-              <Button onClick={() => store.lock(tokenId)}>
+            {unlocked && (
+              <Button className="mt-5" onClick={() => store.lock(tokenId)}>
                 <Lock className="h-4 w-4" />
                 {t("driveSettings.lockNow")}
               </Button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </Section>
 
