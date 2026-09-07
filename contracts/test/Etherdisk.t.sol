@@ -12,6 +12,13 @@ contract ArtHarness {
     }
 }
 
+/// An owner that refuses ETH.
+contract Rejecter {
+    receive() external payable {
+        revert();
+    }
+}
+
 contract EtherdiskTest is Test {
     Etherdisk disk;
     address admin = makeAddr("admin");
@@ -127,14 +134,48 @@ contract EtherdiskTest is Test {
         vm.stopPrank();
     }
 
-    function test_withdraw() public {
+    function test_mintPaysTheOwner() public {
         vm.prank(alice);
         disk.mint{value: 0.001 ether}(2);
-        address payable treasury = payable(makeAddr("treasury"));
+        assertEq(admin.balance, 0.001 ether);
+        assertEq(address(disk).balance, 0);
+
+        // A new owner gets the next payments.
         vm.prank(admin);
+        disk.transferOwnership(bob);
+        uint256 before = bob.balance;
+        vm.prank(alice);
+        disk.mint{value: 0.0005 ether}(0);
+        assertEq(bob.balance, before + 0.0005 ether);
+        assertEq(admin.balance, 0.001 ether);
+    }
+
+    function test_paymentStaysWhenTheOwnerRefusesIt() public {
+        Rejecter rejecter = new Rejecter();
+        vm.prank(admin);
+        disk.transferOwnership(address(rejecter));
+
+        // Minting still works; the payment waits in the contract.
+        vm.expectEmit(address(disk));
+        emit Etherdisk.PaymentHeld(address(rejecter), 0.001 ether);
+        vm.prank(alice);
+        uint256 id = disk.mint{value: 0.001 ether}(2);
+        assertEq(disk.ownerOf(id), alice);
+        assertEq(address(disk).balance, 0.001 ether);
+
+        address payable treasury = payable(makeAddr("treasury"));
+        vm.prank(address(rejecter));
         disk.withdraw(treasury);
         assertEq(treasury.balance, 0.001 ether);
         assertEq(address(disk).balance, 0);
+    }
+
+    function test_paymentStaysWithoutAnOwner() public {
+        vm.prank(admin);
+        disk.renounceOwnership();
+        vm.prank(alice);
+        disk.mint{value: 0.0005 ether}(0);
+        assertEq(address(disk).balance, 0.0005 ether);
     }
 
     function test_tierOfNonexistentTokenReverts() public {

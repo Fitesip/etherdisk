@@ -48,6 +48,7 @@
 - Крипто-крейт: `FileEncryptor::resume` (в WASM `WasmFileEncryptor.resume`).
 
 ### Изменено
+- **Оплата минта сразу уходит владельцу контракта**, а не копится на контракте. Если владелец сменится (`transferOwnership`), платежи пойдут новому. Если перевод не прошёл (владелец — контракт, не принимающий ETH) или владельца нет, оплата остаётся на контракте (событие `PaymentHeld`) и забирается через `withdraw`, как раньше. На перевод выделено не больше 50 000 газа, чтобы владелец-контракт не мог сделать минт дорогим.
 - **Проект переименован в Etherdisk** (было NFT Vault). Сайт: etherdisk.app.
   - Контракт: `Etherdisk` (было `VaultNFT`), токен «Etherdisk», символ `DISK`, у дисков названия «Etherdisk #N», а на картинке подпись «Etherdisk». Событие `VaultMinted` переименовано в `DriveMinted`. Имя и символ хранятся в самом контракте, поэтому его нужно развернуть заново.
   - Крейты: `etherdisk-crypto`, `etherdisk-crypto-wasm`, `etherdisk-server` (бинарник `etherdisk-server`); база по умолчанию `data/etherdisk.db`; для e2e — `ETHERDISK_SERVER_BIN`.

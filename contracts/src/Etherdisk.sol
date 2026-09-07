@@ -11,6 +11,8 @@ import {EtherdiskArt} from "./EtherdiskArt.sol";
 /// @notice Each token is an encrypted storage drive. The token's tier defines its capacity in GB.
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
 ///         Transfers are plain ERC-721 transfers (no restrictions).
+///         Mint payments go straight to the contract owner; if that transfer fails they stay
+///         here for `withdraw`.
 contract Etherdisk is ERC721Enumerable, Ownable {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
@@ -22,10 +24,15 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     mapping(uint256 tokenId => uint256 tierId) private _tokenTier;
     uint256 private _nextTokenId = 1;
 
+    /// Enough for an EOA or a multisig's `receive`; bounds what an owner contract can cost minters.
+    uint256 private constant PAYOUT_GAS = 50_000;
+
     event TierAdded(uint256 indexed tierId, uint32 capacityGb, uint256 price);
     event TierPriceUpdated(uint256 indexed tierId, uint256 price);
     event TierActiveUpdated(uint256 indexed tierId, bool active);
     event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
+    /// The owner couldn't take a mint payment (e.g. a contract without `receive`): kept for `withdraw`.
+    event PaymentHeld(address indexed owner, uint256 amount);
 
     error InvalidTier();
     error TierInactive();
@@ -51,6 +58,7 @@ contract Etherdisk is ERC721Enumerable, Ownable {
         _tokenTier[tokenId] = tierId;
         _safeMint(msg.sender, tokenId);
         emit DriveMinted(tokenId, msg.sender, tierId);
+        _payOwner(msg.value);
     }
 
     // ---------------------------------------------------------------- views
@@ -112,6 +120,15 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     }
 
     // ---------------------------------------------------------------- internal
+
+    /// Forwards a mint payment to the owner. Never reverts: a failed transfer (or no owner
+    /// after `renounceOwnership`) leaves the payment in the contract.
+    function _payOwner(uint256 amount) private {
+        address payable to = payable(owner());
+        if (amount == 0 || to == address(0)) return;
+        (bool ok,) = to.call{value: amount, gas: PAYOUT_GAS}("");
+        if (!ok) emit PaymentHeld(to, amount);
+    }
 
     function _addTier(uint32 capacityGb, uint256 price) private returns (uint256 tierId) {
         if (capacityGb == 0) revert ZeroCapacity();
