@@ -107,7 +107,14 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
             </Button>
           </div>
         ) : (
-          <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+          <UnlockForm
+            token={token}
+            tokenId={tokenId}
+            name={name}
+            keyBlob={key.data.key_blob}
+            etag={key.data.etag}
+            hasRecovery={!!vault.recovery_at}
+          />
         )}
       </>
     );

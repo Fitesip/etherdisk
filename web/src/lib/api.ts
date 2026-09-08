@@ -57,6 +57,8 @@ export interface VaultInfo {
   capacity_bytes: number;
   used_bytes: number;
   initialized: boolean;
+  /** When this owner saved a recovery key (unix seconds), or null. */
+  recovery_at: number | null;
   /** Owner-chosen look; null = defaults. Plaintext on the server. */
   name: string | null;
   stroke: string | null;
@@ -166,6 +168,11 @@ export const api = {
     json<{ key_blob: string; etag: string }>(
       request(`/vaults/${id}/key`, { method: "PUT", token, json: { key_blob: keyBlob, previous_etag: previousEtag } }),
     ),
+  getRecovery: (token: string, id: string) =>
+    orNull(json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { token }))),
+  putRecovery: (token: string, id: string, blob: string) =>
+    json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { method: "PUT", token, json: { blob } })),
+  deleteRecovery: (token: string, id: string) => empty(request(`/vaults/${id}/recovery`, { method: "DELETE", token })),
   setProfile: (token: string, id: string, profile: VaultProfile) =>
     json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),
   reset: (token: string, id: string) =>

@@ -9,6 +9,7 @@ use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::file::FileKey;
+use crate::recovery::RecoveryKey;
 use crate::{Error, Result};
 
 const BLOB_MAGIC: &[u8; 4] = b"NVK1";
@@ -20,6 +21,13 @@ const WRAPPED_DEK_LEN: usize = 32 + 16;
 
 /// Size of the serialized wrapped-DEK blob stored on the server.
 pub const KEY_BLOB_LEN: usize = HEADER_LEN + NONCE_LEN + WRAPPED_DEK_LEN;
+
+const RECOVERY_MAGIC: &[u8; 4] = b"EDR1";
+const RECOVERY_VERSION: u8 = 1;
+const RECOVERY_HEADER_LEN: usize = 4 + 1; // magic, version (authenticated as AAD)
+
+/// Size of the DEK wrapped under a recovery key (`Vault::wrap_for_recovery`).
+pub const RECOVERY_BLOB_LEN: usize = RECOVERY_HEADER_LEN + NONCE_LEN + WRAPPED_DEK_LEN;
 
 pub(crate) fn random<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
@@ -126,6 +134,44 @@ impl Vault {
     /// Wraps the same DEK under a new passphrase (new salt and nonce). Existing files stay valid.
     pub fn rewrap(&self, new_passphrase: &str) -> Result<Vec<u8>> {
         wrap_dek(&self.dek, new_passphrase, self.params)
+    }
+
+    /// Wraps the DEK under a recovery key; store the blob next to the key blob. Anyone with
+    /// the words and this blob can open the drive, so it is dropped when the drive changes hands.
+    pub fn wrap_for_recovery(&self, key: &RecoveryKey) -> Result<Vec<u8>> {
+        let nonce: [u8; NONCE_LEN] = random()?;
+        let mut out = Vec::with_capacity(RECOVERY_BLOB_LEN);
+        out.extend_from_slice(RECOVERY_MAGIC);
+        out.push(RECOVERY_VERSION);
+        let kek = key.kek();
+        let ct = XChaCha20Poly1305::new(Key::from_slice(&kek[..]))
+            .encrypt(XNonce::from_slice(&nonce), Payload { msg: &self.dek.0, aad: &out })
+            .map_err(|_| Error::Auth)?;
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ct);
+        debug_assert_eq!(out.len(), RECOVERY_BLOB_LEN);
+        Ok(out)
+    }
+
+    /// Opens a vault with its recovery key. `key_blob` (the current passphrase blob)
+    /// supplies the KDF parameters that the new passphrase is wrapped with.
+    pub fn recover(recovery_blob: &[u8], key: &RecoveryKey, key_blob: &[u8]) -> Result<Vault> {
+        let params = blob_params(key_blob)?;
+        if recovery_blob.len() != RECOVERY_BLOB_LEN || &recovery_blob[..4] != RECOVERY_MAGIC {
+            return Err(Error::Format("bad recovery blob"));
+        }
+        if recovery_blob[4] != RECOVERY_VERSION {
+            return Err(Error::Format("unsupported recovery blob version"));
+        }
+        let (header, rest) = recovery_blob.split_at(RECOVERY_HEADER_LEN);
+        let (nonce, wrapped) = rest.split_at(NONCE_LEN);
+        let kek = key.kek();
+        let plain = XChaCha20Poly1305::new(Key::from_slice(&kek[..]))
+            .decrypt(XNonce::from_slice(nonce), Payload { msg: wrapped, aad: header })
+            .map_err(|_| Error::Unlock)?;
+        let plain = Zeroizing::new(plain);
+        let dek: [u8; 32] = plain[..].try_into().map_err(|_| Error::Format("bad DEK length"))?;
+        Ok(Vault { dek: Dek(dek), params })
     }
 
     /// Per-file key, derived from the DEK and the file's public random salt.

@@ -351,3 +351,76 @@ fn default_chunk_roundtrip_multi_mib() {
     assert_eq!(enc.len() as u64, encrypted_len(plain.len() as u64, DEFAULT_CHUNK_SIZE));
     assert_eq!(decrypt_file(&key, &enc).unwrap(), plain);
 }
+
+// ------------------------------------------------------------ recovery key
+
+// BIP-39 test vector: 32 zero bytes of entropy.
+const ZERO_WORDS: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+     abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+
+#[test]
+fn recovery_key_opens_the_drive_and_sets_a_new_passphrase() {
+    let (v, blob) = vault("forgotten");
+    let enc = encrypt(&v, &data(100));
+    let key = RecoveryKey::generate().unwrap();
+    let words = key.to_words();
+    assert_eq!(words.split(' ').count(), RECOVERY_WORDS);
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    assert_eq!(rblob.len(), RECOVERY_BLOB_LEN);
+
+    // Later, from the written-down words only.
+    let typed = RecoveryKey::from_words(&words).unwrap();
+    let recovered = Vault::recover(&rblob, &typed, &blob).unwrap();
+    assert_eq!(decrypt(&recovered, &enc).unwrap(), data(100));
+    let new_blob = recovered.rewrap("brand new").unwrap();
+    let reopened = Vault::unlock(&new_blob, "brand new").unwrap();
+    assert_eq!(decrypt(&reopened, &enc).unwrap(), data(100));
+    // The recovery blob keeps working after the passphrase changed: same DEK.
+    assert!(Vault::recover(&rblob, &typed, &new_blob).is_ok());
+}
+
+#[test]
+fn recovery_words_follow_bip39_and_forgive_formatting() {
+    let key = RecoveryKey::from_words(ZERO_WORDS).unwrap();
+    assert_eq!(&*key.to_words(), &ZERO_WORDS.split_whitespace().collect::<Vec<_>>().join(" "));
+    // Numbering, punctuation, case, line breaks and four-letter prefixes are fine.
+    let messy = ZERO_WORDS
+        .split_whitespace()
+        .enumerate()
+        .map(|(i, w)| format!("{}. {}", i + 1, if i % 2 == 0 { w[..4].to_uppercase() } else { w.to_string() }))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    assert_eq!(RecoveryKey::from_words(&messy).unwrap().to_words(), key.to_words());
+}
+
+#[test]
+fn recovery_words_report_what_is_wrong() {
+    let words: Vec<&str> = ZERO_WORDS.split_whitespace().collect();
+    let with = |i: usize, w: &str| {
+        let mut v = words.clone();
+        v[i] = w;
+        v.join(" ")
+    };
+    assert_eq!(RecoveryKey::from_words(&with(4, "notaword")).err(), Some(Error::RecoveryWord(5)));
+    assert_eq!(RecoveryKey::from_words(&with(4, "ab")).err(), Some(Error::RecoveryWord(5)), "ambiguous prefix");
+    assert_eq!(RecoveryKey::from_words(&with(23, "abandon")).err(), Some(Error::RecoveryChecksum));
+    assert!(matches!(RecoveryKey::from_words(&words[..23].join(" ")), Err(Error::Argument(_))));
+    assert!(matches!(RecoveryKey::from_words(""), Err(Error::Argument(_))));
+}
+
+#[test]
+fn recovery_blob_rejects_other_keys_and_tampering() {
+    let (v, blob) = vault("pass");
+    let key = RecoveryKey::generate().unwrap();
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    let other = RecoveryKey::generate().unwrap();
+    assert_eq!(Vault::recover(&rblob, &other, &blob).err(), Some(Error::Unlock));
+    for i in [0, 4, 10, rblob.len() - 1] {
+        let mut bad = rblob.clone();
+        bad[i] ^= 1;
+        assert!(Vault::recover(&bad, &key, &blob).is_err(), "byte {i}");
+    }
+    assert!(matches!(Vault::recover(&rblob[1..], &key, &blob), Err(Error::Format(_))));
+    // Two wraps of the same DEK differ (fresh nonce).
+    assert_ne!(v.wrap_for_recovery(&key).unwrap(), rblob);
+}

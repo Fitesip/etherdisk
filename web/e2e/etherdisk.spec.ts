@@ -134,3 +134,66 @@ test("ideas: propose, vote for and against, not on your own idea", async ({ page
   await his.getByRole("button", { name: "You voted against" }).click();
   await expect(score(0)).toBeVisible();
 });
+
+test("recovery key: save the words, forget the passphrase, open the drive with them", async ({ page }) => {
+  await installWallet(page, ALICE);
+  await signIn(page);
+  await mintAndSetUp(page);
+  await upload(page, [text("keep-me.txt", "still here")]);
+
+  // The drive suggests a recovery key; the words come with a download.
+  await page.getByRole("button", { name: "Create recovery key" }).click();
+  const dialog = page.locator("dialog[open]");
+  const items = dialog.locator("ol li span:last-child");
+  await expect(items).toHaveCount(24);
+  const words = await items.allTextContents();
+  const [file] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download" }).click()]);
+  expect(file.suggestedFilename()).toMatch(/^etherdisk-recovery-drive-\d+\.txt$/);
+  const sheet = await new Promise<string>((resolve) => file.createReadStream().then((s) => {
+    let out = "";
+    s.on("data", (c) => (out += c));
+    s.on("end", () => resolve(out));
+  }));
+  expect(sheet).toContain(`24. ${words[23]}`);
+
+  // Asked back for three of them; a wrong answer is caught.
+  await dialog.getByRole("button", { name: "I saved them" }).click();
+  const fields = dialog.getByLabel(/^Word \d+$/);
+  await expect(fields).toHaveCount(3);
+  for (let i = 0; i < 3; i++) await fields.nth(i).fill("wrong");
+  await dialog.getByRole("button", { name: "Save recovery key" }).click();
+  await expect(dialog.getByText(/not what's in your copy/)).toBeVisible();
+  const labels = dialog.locator("label");
+  for (let i = 0; i < 3; i++) {
+    const n = Number((await labels.nth(i).innerText()).match(/\d+/)![0]);
+    await labels.nth(i).locator("input").fill(words[n - 1]);
+  }
+  await dialog.getByRole("button", { name: "Save recovery key" }).click();
+  await expect(page.getByRole("button", { name: "Create recovery key" })).toHaveCount(0);
+
+  // Passphrase forgotten: lock, then open with the words and a new passphrase.
+  await page.getByRole("button", { name: "Drive menu" }).click();
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page.getByRole("button", { name: /Forgot the passphrase/ }).click();
+  const box = page.getByLabel("Recovery words");
+  await box.fill(words.slice(0, 23).join(" "));
+  await expect(page.getByText("24 valid words")).toHaveCount(0);
+  await box.fill(words.map((w, i) => `${i + 1}. ${w.toUpperCase()}`).join("\n"));
+  await expect(page.getByText("24 valid words")).toBeVisible();
+  await page.getByPlaceholder("New passphrase").fill("Fresh#Pass9");
+  await page.getByPlaceholder("Repeat passphrase").fill("Fresh#Pass9");
+  await page.getByRole("button", { name: "Open the drive" }).click();
+  await page.getByRole("button", { name: /keep-me\.txt/ }).click();
+  await expect(page.locator("dialog[open] pre")).toHaveText("still here");
+
+  // The new passphrase works; the old one doesn't.
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Drive menu" }).click();
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page.getByPlaceholder("Passphrase", { exact: true }).fill("Good#Pass1");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Wrong passphrase")).toBeVisible();
+  await page.getByPlaceholder("Passphrase", { exact: true }).fill("Fresh#Pass9");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Upload" })).toBeVisible();
+});

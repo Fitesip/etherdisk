@@ -61,6 +61,21 @@ impl WasmVault {
         Ok(blob)
     }
 
+    /// Opens a vault with its recovery words (no passphrase). Set a new passphrase right
+    /// after with `changePassphrase`. `key_blob` is the drive's current passphrase blob.
+    pub fn recover(recovery_blob: &[u8], words: &str, key_blob: &[u8]) -> Result<WasmVault, JsError> {
+        let key = vc::RecoveryKey::from_words(words).map_err(err)?;
+        let inner = vc::Vault::recover(recovery_blob, &key, key_blob).map_err(err)?;
+        Ok(WasmVault { inner, key_blob: key_blob.to_vec() })
+    }
+
+    /// Wraps the drive key under recovery words (from `newRecoveryWords`); upload the result.
+    #[wasm_bindgen(js_name = wrapForRecovery)]
+    pub fn wrap_for_recovery(&self, words: &str) -> Result<Vec<u8>, JsError> {
+        let key = vc::RecoveryKey::from_words(words).map_err(err)?;
+        self.inner.wrap_for_recovery(&key).map_err(err)
+    }
+
     #[wasm_bindgen(js_name = sealMetadata)]
     pub fn seal_metadata(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, JsError> {
         self.inner.seal_metadata(plaintext, aad).map_err(err)
@@ -76,6 +91,24 @@ impl WasmVault {
     pub fn file_key(&self, header: &[u8]) -> Result<Vec<u8>, JsError> {
         let parsed = vc::FileHeader::parse(header).map_err(err)?;
         Ok(self.inner.file_key(&parsed.file_salt).as_bytes().to_vec())
+    }
+}
+
+/// 24 fresh recovery words, separated by spaces.
+#[wasm_bindgen(js_name = newRecoveryWords)]
+pub fn new_recovery_words() -> Result<String, JsError> {
+    Ok(vc::RecoveryKey::generate().map_err(err)?.to_words().to_string())
+}
+
+/// Checks typed recovery words: "" when they are valid, "word:N" when word N is not in
+/// the list, "count" when there aren't 24 words, "checksum" when they don't add up.
+#[wasm_bindgen(js_name = checkRecoveryWords)]
+pub fn check_recovery_words(words: &str) -> String {
+    match vc::RecoveryKey::from_words(words) {
+        Ok(_) => String::new(),
+        Err(vc::Error::RecoveryWord(n)) => format!("word:{n}"),
+        Err(vc::Error::RecoveryChecksum) => "checksum".into(),
+        Err(_) => "count".into(),
     }
 }
 

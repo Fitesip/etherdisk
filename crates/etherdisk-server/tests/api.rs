@@ -769,6 +769,67 @@ async fn ideas_board_one_vote_per_nft() {
     assert!(app.get("/api/ideas/me", Some(&tadm)).await.json()["admin"].as_bool().unwrap());
 }
 
+// ------------------------------------------------------------ recovery key
+
+#[tokio::test]
+async fn recovery_key_is_per_holder_and_dropped_on_transfer() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    let url = "/api/vaults/1/recovery";
+    let key = etherdisk_crypto::RecoveryKey::generate().unwrap();
+    let put = |t: String, blob: Vec<u8>| {
+        let app = &app;
+        async move { app.json(Method::PUT, url, Some(&t), json!({ "blob": b64(&blob) })).await.status }
+    };
+
+    // Only for a set-up drive, and only a well-formed blob.
+    let (scratch, _) = Vault::create_with_params("x", FAST).unwrap();
+    assert_eq!(put(ta.clone(), scratch.wrap_for_recovery(&key).unwrap()).await, StatusCode::CONFLICT);
+    let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
+    let blob = vault.wrap_for_recovery(&key).unwrap();
+    assert_eq!(put(ta.clone(), blob[1..].to_vec()).await, StatusCode::BAD_REQUEST);
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::NOT_FOUND);
+    assert!(app.get("/api/vaults/1", Some(&ta)).await.json()["recovery_at"].is_null());
+
+    assert_eq!(put(ta.clone(), blob.clone()).await, StatusCode::OK);
+    let r = app.get(url, Some(&ta)).await.json();
+    assert_eq!(r["blob"], b64(&blob));
+    assert!(r["created_at"].as_i64().unwrap() > 0);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.json()["recovery_at"], r["created_at"]);
+
+    // Bob owns no drive here: he gets nothing.
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get(url, Some(&tb)).await.status, StatusCode::FORBIDDEN);
+
+    // After a transfer alice can't read it, and bob doesn't see alice's key as his.
+    app.chain.transfer(1, bob.address());
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.get(url, Some(&tb)).await.status, StatusCode::NOT_FOUND);
+    assert!(app.get("/api/vaults/1", Some(&tb)).await.json()["recovery_at"].is_null());
+    // Bob saves his own before the indexer catches up: the transfer keeps it.
+    let bobs = vault.wrap_for_recovery(&etherdisk_crypto::RecoveryKey::generate().unwrap()).unwrap();
+    assert_eq!(put(tb.clone(), bobs.clone()).await, StatusCode::OK);
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get(url, Some(&tb)).await.json()["blob"], b64(&bobs));
+
+    // A transfer back to alice drops bob's key.
+    app.chain.transfer(1, alice.address());
+    indexer::on_transfer(&app.state, bob.address(), alice.address(), U256::from(1)).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0);
+
+    // Deleting, and formatting the drive, remove it too.
+    assert_eq!(put(ta.clone(), blob.clone()).await, StatusCode::OK);
+    assert_eq!(app.req(Method::DELETE, url, Some(&ta), Body::empty(), "", &[]).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(put(ta.clone(), blob).await, StatusCode::OK);
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&ta), json!({ "confirm": "DELETE" })).await;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0);
+}
+
 // ------------------------------------------------------------ key handover
 
 /// Publishes `signer`'s inbox key the way the browser does; returns the key.

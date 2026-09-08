@@ -238,3 +238,20 @@ dialog[open]::backdrop {
     transform: none;
   }
 }
+
+/* The recovery sheet is printed alone; it never shows on screen. */
+.print-only {
+  display: none;
+}
+@media print {
+  body > *:not(.print-only) {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    padding: 0 !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+}

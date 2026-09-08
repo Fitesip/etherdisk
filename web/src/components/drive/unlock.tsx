@@ -14,6 +14,7 @@ import { useUnlocked } from "@/lib/unlocked";
 import { PassphraseRules } from "../passphrase-rules";
 import { Button, Card, Notice, PasswordInput } from "../ui";
 import { ResetDialog } from "./dialogs";
+import { RecoverForm } from "./recovery";
 
 function Shell({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
   return (
@@ -93,12 +94,15 @@ export function UnlockForm({
   name,
   keyBlob,
   etag,
+  hasRecovery,
 }: {
   token: string;
   tokenId: string;
   name: string;
   keyBlob: string;
   etag: string;
+  /** The owner saved a recovery key: offer it for a forgotten passphrase. */
+  hasRecovery: boolean;
 }) {
   const t = useT();
   const unlocked = useUnlocked();
@@ -106,6 +110,10 @@ export function UnlockForm({
   const [busy, setBusy] = useState(false);
   const [wrong, setWrong] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+
+  if (recovering)
+    return <RecoverForm token={token} tokenId={tokenId} name={name} keyBlob={keyBlob} etag={etag} onCancel={() => setRecovering(false)} />;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -128,6 +136,11 @@ export function UnlockForm({
         <Button type="submit" variant="primary" loading={busy} disabled={!pass}>
           {busy ? t("vault.unlocking") : t("vault.unlock")}
         </Button>
+        {hasRecovery && (
+          <button type="button" className="self-start text-xs text-accent underline" onClick={() => setRecovering(true)}>
+            {t("recovery.forgot")}
+          </button>
+        )}
         <p className="text-xs text-muted">{t("vault.unlockTransferHint")}</p>
         <button type="button" className="self-start text-xs text-danger underline" onClick={() => setResetOpen(true)}>
           {t("vault.noPassphrase")}

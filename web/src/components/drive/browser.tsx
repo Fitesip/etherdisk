@@ -41,6 +41,7 @@ import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ShareDia
 import { ItemGrid, ItemList, Menu, MenuItem, useDropTarget, type ItemActions, type Sort, type SortKey } from "./items";
 import { ResumeBanner } from "./resume";
 import { SearchBox, useSearch } from "./search";
+import { RecoveryBanner } from "./recovery";
 import { TrashView } from "./trash";
 import { UploadPanel, useUploads } from "./uploads";
 
@@ -567,6 +568,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         {t("drives.usage", { used: formatBytes(info.used_bytes), total: formatBytes(info.capacity_bytes) })}
       </div>
 
+      {!inTrash && <RecoveryBanner ctx={ctx} recoveryAt={info.recovery_at} />}
       {!inTrash && <ResumeBanner ctx={ctx} onResume={uploads.resume} active={uploads.started} />}
 
       {missing && !inTrash && (

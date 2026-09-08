@@ -14,6 +14,12 @@ pub enum Error {
     Kdf,
     #[error("random number generator failed")]
     Rng,
+    /// Recovery words: the word at this position (1-based) is not in the word list.
+    #[error("recovery word {0} is not in the word list")]
+    RecoveryWord(usize),
+    /// Recovery words: every word is valid but they don't add up (a word is wrong or out of order).
+    #[error("these recovery words don't match: check each word and their order")]
+    RecoveryChecksum,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
