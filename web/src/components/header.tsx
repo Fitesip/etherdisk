@@ -1,6 +1,6 @@
 "use client";
 
-import { HardDrive, Settings } from "lucide-react";
+import { HardDrive, Lightbulb, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense } from "react";
@@ -17,7 +17,7 @@ export function Logo() {
       <span className="grid h-7 w-7 place-items-center rounded-lg bg-fg text-bg">
         <HardDrive className="h-4 w-4" />
       </span>
-      {t("common.appName")}
+      <span className="hidden whitespace-nowrap sm:inline">{t("common.appName")}</span>
     </Link>
   );
 }
@@ -26,6 +26,7 @@ function NavLinks({ active }: { active?: string }) {
   const t = useT();
   const nav = [
     { href: "/drive", label: t("nav.drives"), icon: HardDrive },
+    { href: "/ideas", label: t("nav.ideas"), icon: Lightbulb },
     { href: "/settings", label: t("nav.settings"), icon: Settings },
   ];
   return (
@@ -55,7 +56,7 @@ function ActiveNav() {
 export function AppHeader() {
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-bg/80 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4">
+      <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4 sm:gap-6">
         <Logo />
         <Suspense fallback={<NavLinks />}>
           <ActiveNav />

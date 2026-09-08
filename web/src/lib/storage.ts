@@ -5,7 +5,7 @@ import { useSyncExternalStore } from "react";
 // localStorage as an external store: no hydration mismatch (server snapshot is null)
 // and every hook using a key re-renders when it changes, in this tab or another.
 
-const EVENT = "nftvault:storage";
+const EVENT = "etherdisk:storage";
 
 export function readStored(key: string): string | null {
   try {

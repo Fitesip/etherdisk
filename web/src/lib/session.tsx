@@ -17,7 +17,7 @@ interface Stored {
   expiresAt: number;
 }
 
-const storageKey = (a: Address) => `nftvault.session.${a.toLowerCase()}`;
+const storageKey = (a: Address) => `etherdisk.session.${a.toLowerCase()}`;
 
 function parse(raw: string | null): string | null {
   try {
@@ -68,7 +68,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const message = createSiweMessage({
         domain: window.location.host,
         address,
-        statement: "Sign in to NFT Vault",
+        statement: "Sign in to Etherdisk",
         uri: window.location.origin,
         version: "1",
         chainId: CHAIN.id,

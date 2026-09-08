@@ -23,8 +23,8 @@ export interface FolderMeta {
 }
 
 /** Binds metadata to its object id so the server cannot swap it between objects. */
-const aad = (objectId: string) => utf8(`nft-vault/object/${objectId}`);
-export const SHARE_AAD = utf8("nft-vault/share");
+const aad = (objectId: string) => utf8(`etherdisk/object/${objectId}`);
+export const SHARE_AAD = utf8("etherdisk/share");
 
 export function sealMeta(vault: WasmVault, objectId: string, meta: FileMeta | FolderMeta): string {
   return toB64(vault.sealMetadata(utf8(JSON.stringify(meta)), aad(objectId)));

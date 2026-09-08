@@ -1,6 +1,6 @@
 import { CONTRACT_ADDRESS } from "./config";
 
-/** The parts of VaultNFT (ERC-721) the frontend uses. Ownership/capacity reads go through the backend. */
+/** The parts of Etherdisk (ERC-721) the frontend uses. Ownership/capacity reads go through the backend. */
 export const vaultNftAbi = [
   {
     type: "function",

@@ -15,6 +15,7 @@ import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { DriveTile } from "./drive/dialogs";
+import { InboxHint, OutgoingHandovers } from "./handover";
 import { RequireSession } from "./require-session";
 import { Button, Card, Notice, Spinner } from "./ui";
 
@@ -90,6 +91,7 @@ function Drives({ token }: { token: string }) {
 
   return (
     <div className="flex flex-col gap-12">
+      <InboxHint token={token} />
       <section>
         <h1 className="text-2xl font-semibold tracking-tight">{t("drives.title")}</h1>
         <div className="mt-6">
@@ -108,6 +110,8 @@ function Drives({ token }: { token: string }) {
           )}
         </div>
       </section>
+
+      <OutgoingHandovers token={token} />
 
       <section>
         <h2 className="flex items-center gap-2 text-lg font-semibold">

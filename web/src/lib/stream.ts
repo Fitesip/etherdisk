@@ -57,8 +57,8 @@ export function initServiceWorker(): Promise<boolean> {
   return swPromise;
 }
 
-/** Same-origin URL served by the worker, or null if streaming is unavailable. */
-export async function registerStream(src: StreamSource): Promise<string | null> {
+/** Sends a registration to the worker; resolves to the new id, or null without a worker. */
+async function postToWorker(type: string, payload: Record<string, unknown>): Promise<string | null> {
   if (!(await initServiceWorker())) return null;
   const sw = navigator.serviceWorker.controller;
   if (!sw) return null;
@@ -70,9 +70,46 @@ export async function registerStream(src: StreamSource): Promise<string | null> 
       clearTimeout(timer);
       resolve();
     };
-    sw.postMessage({ type: "register", id, stream: src }, [ch.port2]);
+    sw.postMessage({ type, id, ...payload }, [ch.port2]);
   });
-  return `/__stream/${id}`;
+  return id;
+}
+
+/** Same-origin URL served by the worker, or null if streaming is unavailable. */
+export async function registerStream(src: StreamSource): Promise<string | null> {
+  const id = await postToWorker("register", { stream: src });
+  return id && `/__stream/${id}`;
+}
+
+export interface ZipEntry {
+  /** Path inside the archive, e.g. "Photos/2026/beach.jpg". */
+  path: string;
+  /** Plaintext size (exact: the archive's Content-Length is computed from it). */
+  size: number;
+  /** Last modified, ms. */
+  mtime: number;
+  src: StreamSource;
+}
+
+/** Starts a streamed ZIP download. Throws "no-worker" when the browser can't stream. */
+export async function downloadZip(name: string, entries: ZipEntry[]): Promise<void> {
+  // Duplicate paths would overwrite each other when extracted: number them.
+  const seen = new Map<string, number>();
+  const unique = entries.map((e) => {
+    const n = seen.get(e.path) ?? 0;
+    seen.set(e.path, n + 1);
+    if (n === 0) return e;
+    const dot = e.path.lastIndexOf(".");
+    const at = dot > e.path.lastIndexOf("/") + 1 ? dot : e.path.length;
+    return { ...e, path: `${e.path.slice(0, at)} (${n + 1})${e.path.slice(at)}` };
+  });
+  const id = await postToWorker("register-zip", { zip: { name, entries: unique } });
+  if (!id) throw new Error("no-worker");
+  const a = document.createElement("a");
+  a.href = `/__zip/${id}`;
+  document.body.append(a);
+  a.click();
+  a.remove();
 }
 
 /** Fallback: fetch and decrypt everything in memory. */

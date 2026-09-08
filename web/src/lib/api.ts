@@ -1,4 +1,4 @@
-// Typed client for the Rust backend (crates/vault-server). Binary fields are base64 in JSON.
+// Typed client for the Rust backend (crates/etherdisk-server). Binary fields are base64 in JSON.
 
 import { API_URL } from "./config";
 
@@ -13,7 +13,7 @@ export class ApiError extends Error {
 }
 
 /** Fired when the backend rejects the session token, so the session can be dropped. */
-export const UNAUTHORIZED_EVENT = "nftvault:unauthorized";
+export const UNAUTHORIZED_EVENT = "etherdisk:unauthorized";
 
 interface RequestOpts {
   method?: string;
@@ -76,6 +76,68 @@ export interface ObjectRow {
   thumb_size: number | null;
   created_at: number;
   updated_at: number;
+  /** Set while in the trash (unix seconds). */
+  trashed_at: number | null;
+}
+
+export interface PendingUpload extends ObjectRow {
+  /** Encrypted bytes the server already has. */
+  received: number;
+}
+
+export interface InboxKey {
+  /** base64 X25519 public key */
+  pubkey: string;
+  /** 0x-hex wallet signature over the inbox message */
+  signature: string;
+}
+
+export interface IncomingHandover {
+  from: string;
+  /** base64 drive key sealed to the caller's inbox; null while the previous owner hasn't sent it */
+  sealed: string | null;
+  created_at: number;
+}
+
+export interface OutgoingHandover {
+  token_id: string;
+  to: string;
+  /** base64 wrapped key, while unchanged since the transfer */
+  key_blob: string | null;
+  recipient: InboxKey | null;
+  name: string | null;
+  created_at: number;
+}
+
+/** null for 404, the value otherwise. */
+const orNull = <T>(p: Promise<T>): Promise<T | null> =>
+  p.catch((e) => {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  });
+
+export type IdeaStatus = "open" | "planned" | "in_progress" | "done" | "declined";
+
+export interface Idea {
+  id: number;
+  title: string;
+  body: string;
+  author: string;
+  status: IdeaStatus;
+  hidden: boolean;
+  votes_for: number;
+  votes_against: number;
+  created_at: number;
+}
+
+export type VoteChoice = "for" | "against";
+
+export interface IdeasMe {
+  /** Votes this wallet casts (one per drive). */
+  tokens: number;
+  admin: boolean;
+  /** How this wallet's drives vote, by idea id. */
+  votes: Record<string, VoteChoice>;
 }
 
 export interface ShareRow {
@@ -83,6 +145,7 @@ export interface ShareRow {
   owner_metadata: string;
   file_count: number;
   created_at: number;
+  expires_at: number | null;
 }
 
 // ------------------------------------------------------------------ endpoints
@@ -110,6 +173,20 @@ export const api = {
 
   list: (token: string, vault: string, parent: string | null) =>
     json<ObjectRow[]>(request(`/vaults/${vault}/objects${parent ? `?parent=${parent}` : ""}`, { token })),
+  /** Every live object of the drive (for search). */
+  all: (token: string, vault: string) => json<ObjectRow[]>(request(`/vaults/${vault}/objects/all`, { token })),
+  trash: (token: string, vault: string) => json<ObjectRow[]>(request(`/vaults/${vault}/trash`, { token })),
+  emptyTrash: (token: string, vault: string) => empty(request(`/vaults/${vault}/trash/empty`, { method: "POST", token })),
+  restore: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/objects/${id}/restore`, { method: "POST", token })),
+  removePermanent: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/objects/${id}/permanent`, { method: "DELETE", token })),
+  uploads: (token: string, vault: string) => json<PendingUpload[]>(request(`/vaults/${vault}/uploads`, { token })),
+  /** Encrypted bytes `from..=to` of a file (also of a pending upload, for resuming). */
+  contentRange: async (token: string, vault: string, id: string, from: number, to: number) =>
+    new Uint8Array(
+      await (await request(`/vaults/${vault}/files/${id}/content`, { token, headers: { Range: `bytes=${from}-${to}` } })).arrayBuffer(),
+    ),
   /** The folder and its ancestors, root first. */
   path: (token: string, vault: string, id: string) => json<ObjectRow[]>(request(`/vaults/${vault}/objects/${id}/path`, { token })),
   createFolder: (token: string, vault: string, body: { id: string; parent_id: string | null; metadata: string }) =>
@@ -137,6 +214,8 @@ export const api = {
         headers: { "Content-Type": "application/octet-stream" },
       }),
     ),
+  dropThumbnail: (token: string, vault: string, id: string) =>
+    empty(request(`/vaults/${vault}/files/${id}/thumbnail`, { method: "DELETE", token })),
   complete: (token: string, vault: string, id: string) =>
     empty(request(`/vaults/${vault}/files/${id}/complete`, { method: "POST", token, json: {} })),
   thumbnail: async (token: string, vault: string, id: string) =>
@@ -151,11 +230,30 @@ export const api = {
   createShare: (
     token: string,
     vault: string,
-    body: { object_ids: string[]; manifest: string; owner_metadata: string },
+    body: { object_ids: string[]; manifest: string; owner_metadata: string; expires_at: number | null },
   ) => json<{ id: string }>(request(`/vaults/${vault}/shares`, { method: "POST", token, json: body })),
   shares: (token: string, vault: string) => json<ShareRow[]>(request(`/vaults/${vault}/shares`, { token })),
   revokeShare: (token: string, vault: string, id: string) =>
     empty(request(`/vaults/${vault}/shares/${id}`, { method: "DELETE", token })),
+
+  putInbox: (token: string, key: InboxKey) => empty(request("/inbox", { method: "PUT", token, json: key })),
+  getInbox: (address: string) => orNull(json<InboxKey>(request(`/inbox/${address}`))),
+  incomingHandover: (token: string, vault: string) => orNull(json<IncomingHandover>(request(`/vaults/${vault}/handover`, { token }))),
+  sealHandover: (token: string, vault: string, to: string, sealed: string) =>
+    empty(request(`/vaults/${vault}/handover`, { method: "POST", token, json: { to, sealed } })),
+  skipHandover: (token: string, vault: string, to: string) => empty(request(`/vaults/${vault}/handover/skip`, { method: "POST", token, json: { to } })),
+  dismissHandover: (token: string, vault: string) => empty(request(`/vaults/${vault}/handover`, { method: "DELETE", token })),
+  outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
+  declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),
+
+  ideas: (token: string | null) => json<Idea[]>(request("/ideas", { token })),
+  ideasMe: (token: string) => json<IdeasMe>(request("/ideas/me", { token })),
+  proposeIdea: (token: string, title: string, body: string) =>
+    json<{ id: number }>(request("/ideas", { method: "POST", token, json: { title, body } })),
+  voteIdea: (token: string, id: number, vote: { choice: VoteChoice | "withdraw"; issued_at: number; signature: string }) =>
+    json<{ votes: number }>(request(`/ideas/${id}/vote`, { method: "POST", token, json: vote })),
+  moderateIdea: (token: string, id: number, patch: { status?: IdeaStatus; hidden?: boolean }) =>
+    empty(request(`/ideas/${id}`, { method: "PATCH", token, json: patch })),
 
   openShare: (id: string) => json<{ manifest: string }>(request(`/shares/${id}`)),
   shareThumbnail: async (share: string, id: string) =>

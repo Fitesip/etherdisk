@@ -16,7 +16,7 @@ export interface LockSettings {
 export const IDLE_CHOICES = [0, 5, 15, 30, 60] as const;
 export const DEFAULT_LOCK: LockSettings = { idleMinutes: 15, keepOnReload: false };
 
-const key = (tokenId: string) => `nftvault.lock.${tokenId}`;
+const key = (tokenId: string) => `etherdisk.lock.${tokenId}`;
 
 function parse(raw: string | null): LockSettings {
   try {

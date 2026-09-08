@@ -132,7 +132,7 @@ const DEMO_FILES = [
 ] as const;
 
 type Phase = "ready" | "encrypting" | "uploading" | "stored";
-const STEP_MS = 280;
+const STEP_MS = 150;
 
 /**
  * The real upload pipeline, animated: the file is cut into chunks, each chunk is
@@ -149,14 +149,14 @@ function EncryptionDemo() {
     const { phase, step } = state;
     const next = (ms: number, s: Partial<typeof state>) => setTimeout(() => setState((p) => ({ ...p, ...s })), ms);
     let timer: ReturnType<typeof setTimeout>;
-    if (phase === "ready") timer = next(900, { phase: "encrypting", step: 0 });
-    else if (phase === "encrypting") timer = step < CHUNKS ? next(STEP_MS, { step: step + 1 }) : next(350, { phase: "uploading" });
+    if (phase === "ready") timer = next(450, { phase: "encrypting", step: 0 });
+    else if (phase === "encrypting") timer = step < CHUNKS ? next(STEP_MS, { step: step + 1 }) : next(250, { phase: "uploading" });
     else if (phase === "uploading")
       timer = setTimeout(() => {
         setStored((n) => n + 1);
         setState((p) => ({ ...p, phase: "stored" }));
-      }, 750);
-    else timer = setTimeout(() => setState((p) => ({ file: (p.file + 1) % DEMO_FILES.length, phase: "ready", step: 0 })), 1600);
+      }, 550);
+    else timer = setTimeout(() => setState((p) => ({ file: (p.file + 1) % DEMO_FILES.length, phase: "ready", step: 0 })), 1100);
     return () => clearTimeout(timer);
   }, [state]);
 
@@ -196,14 +196,14 @@ function EncryptionDemo() {
             <div
               key={i}
               className={cn(
-                "aspect-square transition-all duration-500 ease-out",
+                "aspect-square transition-all duration-400 ease-out",
                 state.phase === "uploading" && "translate-y-24 opacity-0",
                 state.phase === "stored" && "opacity-0",
               )}
-              style={{ transitionDelay: state.phase === "uploading" ? `${i * 45}ms` : "0ms" }}
+              style={{ transitionDelay: state.phase === "uploading" ? `${i * 30}ms` : "0ms" }}
             >
               <div
-                className="relative h-full w-full transition-transform duration-500 [transform-style:preserve-3d]"
+                className="relative h-full w-full transition-transform duration-300 [transform-style:preserve-3d]"
                 style={{ transform: encrypted(i) ? "rotateY(180deg)" : "none" }}
               >
                 <div className="absolute inset-0 rounded-md [backface-visibility:hidden]" style={file.tile(i)} />
@@ -257,6 +257,37 @@ function EncryptionDemo() {
   );
 }
 
+/** The two drives that float around the demo (decor). */
+const SIDE_DRIVES = [
+  { id: 12, gb: 2, used: 0.31, color: "#10b981", tilt: "4deg", className: "-top-16 -left-16 hidden sm:block", delay: "-2s" },
+  { id: 3, gb: 1, used: 0.88, color: "#f59e0b", tilt: "-3deg", className: "-bottom-16 -right-12 hidden sm:block", delay: "-4s" },
+];
+
+function SideDrive({ d }: { d: (typeof SIDE_DRIVES)[number] }) {
+  const t = useT();
+  return (
+    <div
+      className={cn("float absolute -z-10 w-56 rounded-2xl border border-border bg-card/80 p-4 shadow-xl backdrop-blur", d.className)}
+      style={{ "--tilt": d.tilt, animationDelay: d.delay } as CSSProperties}
+    >
+      <div className="flex items-center gap-3">
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-white shadow-md" style={{ background: d.color }}>
+          <HardDrive className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between text-sm">
+            <span className="font-medium">{t("landing.demoDrive", { id: d.id })}</span>
+            <span className="font-mono text-xs text-muted">{d.gb} GB</span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-subtle">
+            <div className="h-full rounded-full" style={{ width: `${d.used * 100}%`, background: d.color }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Hero() {
   const t = useT();
   return (
@@ -297,7 +328,10 @@ function Hero() {
           <p className="animate-fade-up mt-6 text-xs text-muted [animation-delay:320ms]">{t("landing.testnet")}</p>
         </div>
 
-        <div aria-hidden className="animate-fade-up [animation-delay:200ms]">
+        <div aria-hidden className="animate-fade-up relative isolate mx-auto my-12 w-full max-w-sm [animation-delay:200ms] sm:my-16">
+          {SIDE_DRIVES.map((d) => (
+            <SideDrive key={d.id} d={d} />
+          ))}
           <EncryptionDemo />
         </div>
       </div>

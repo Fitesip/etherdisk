@@ -9,11 +9,11 @@ import { fileURLToPath } from "node:url";
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const crates = resolve(web, "../crates");
-const crate = join(crates, "vault-crypto-wasm");
+const crate = join(crates, "etherdisk-crypto-wasm");
 const appOut = join(web, "src/wasm");
 const swOut = join(web, "public/crypto-sw");
 const wasmPublic = join(web, "public/crypto");
-const WASM = "vault_crypto_wasm_bg.wasm";
+const WASM = "etherdisk_crypto_wasm_bg.wasm";
 
 function newest(dir) {
   let t = 0;
@@ -26,7 +26,7 @@ function newest(dir) {
 }
 
 const outputs = [join(appOut, WASM), join(swOut, WASM), join(wasmPublic, WASM)];
-const src = Math.max(newest(join(crates, "vault-crypto")), newest(crate));
+const src = Math.max(newest(join(crates, "etherdisk-crypto")), newest(crate));
 if (!process.argv.includes("--force") && outputs.every((f) => existsSync(f) && statSync(f).mtimeMs > src)) {
   console.log("wasm: up to date");
   process.exit(0);

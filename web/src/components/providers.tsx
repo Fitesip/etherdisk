@@ -9,6 +9,8 @@ import { SessionProvider } from "@/lib/session";
 import { UnlockedProvider } from "@/lib/unlocked";
 import { wagmiConfig } from "@/lib/wagmi";
 
+import { ToastProvider } from "./toast";
+
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
     () => new QueryClient({ defaultOptions: { queries: { staleTime: 10_000, retry: 1, refetchOnWindowFocus: false } } }),
@@ -18,7 +20,9 @@ export function Providers({ children }: { children: ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <I18nProvider>
           <SessionProvider>
-            <UnlockedProvider>{children}</UnlockedProvider>
+            <UnlockedProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </UnlockedProvider>
           </SessionProvider>
         </I18nProvider>
       </QueryClientProvider>

@@ -7,9 +7,9 @@
 
 import { fromB64, loadCrypto, toB64, WasmVault } from "./crypto";
 
-const DB = "nftvault";
+const DB = "etherdisk";
 const STORE = "tab-keys";
-const TAB_KEY = "nftvault.tab";
+const TAB_KEY = "etherdisk.tab";
 /** Tab keys of closed tabs are useless (their sessionStorage is gone); prune them. */
 const TAB_KEY_TTL_MS = 7 * 24 * 3600 * 1000;
 
@@ -21,7 +21,7 @@ interface KeptEntry {
   etag: string;
 }
 
-const entryKey = (address: string, tokenId: string) => `nftvault.kept.${address.toLowerCase()}.${tokenId}`;
+const entryKey = (address: string, tokenId: string) => `etherdisk.kept.${address.toLowerCase()}.${tokenId}`;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {

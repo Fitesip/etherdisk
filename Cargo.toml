@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vault-crypto", "crates/vault-crypto-wasm", "crates/vault-server"]
+members = ["crates/etherdisk-crypto", "crates/etherdisk-crypto-wasm", "crates/etherdisk-server"]
 
 # Argon2 is slow in debug builds; optimize dependencies even for `cargo test`.
 [profile.dev.package."*"]
