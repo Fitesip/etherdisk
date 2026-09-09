@@ -12,7 +12,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
 futures-util = "0.3"
 bytes = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
-alloy = { version = "2", features = ["contract", "provider-http", "rpc-types"] }
+alloy = { version = "2", features = ["contract", "provider-http", "rpc-client", "rpc-types"] }
 siwe = "0.6"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +26,7 @@ thiserror = "2"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = "0.5"
 
 [dev-dependencies]
 alloy = { version = "2", features = ["signer-local"] }

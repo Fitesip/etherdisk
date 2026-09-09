@@ -75,7 +75,7 @@ async fn app() -> App {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
         data_dir: data_dir.path().join("blobs"),
-        rpc_url: String::new(),
+        rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
         chain_id: CHAIN_ID,
         start_block: 0,
