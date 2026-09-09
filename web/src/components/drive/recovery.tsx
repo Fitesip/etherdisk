@@ -108,43 +108,82 @@ function PrintSheet({ sheet }: { sheet: SheetInfo }) {
   );
 }
 
+/**
+ * Words shown but not saved yet, per signed-in wallet and drive. Kept in page memory only
+ * (never stored), so reopening the dialog shows the same words and a sheet already
+ * downloaded or printed stays valid. A reload starts over.
+ */
+interface Draft {
+  words: string[];
+  created: number;
+  /** Downloaded or sent to the printer: closing now would leave a sheet that opens nothing. */
+  exported: boolean;
+}
+const drafts = new Map<string, Draft>();
+
 /** Creates (or replaces) the drive's recovery key: show the words, check them, save. */
 export function RecoveryDialog({ open, onClose, ctx, replacing }: { open: boolean; onClose: () => void; ctx: DriveCtx; replacing?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
-  const [words, setWords] = useState<string[] | null>(null);
-  const [step, setStep] = useState<"show" | "check">("show");
+  const draftKey = `${ctx.token}:${ctx.tokenId}`;
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const words = draft?.words ?? null;
+  const [step, setStep] = useState<"show" | "check" | "leave">("show");
   const [positions, setPositions] = useState<number[]>([]);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [wrong, setWrong] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState(0);
 
   useEffect(() => {
     if (!open) return;
     let live = true;
     loadCrypto().then(() => {
       if (!live) return;
-      setWords(newRecoveryWords().split(" "));
-      setCreated(Date.now());
+      let d = drafts.get(draftKey);
+      if (!d) {
+        d = { words: newRecoveryWords().split(" "), created: Date.now(), exported: false };
+        drafts.set(draftKey, d);
+      }
+      setDraft(d);
     });
     return () => {
       live = false;
-      // Forget the words once the dialog closes.
-      setWords(null);
+      setDraft(null);
       setStep("show");
       setAnswers({});
       setWrong(false);
       setError(null);
     };
-  }, [open]);
+  }, [open, draftKey]);
 
-  const sheet: SheetInfo | null = words && { name: ctx.name, tokenId: ctx.tokenId, words, created };
+  const sheet: SheetInfo | null = draft && { name: ctx.name, tokenId: ctx.tokenId, words: draft.words, created: draft.created };
+
+  function markExported() {
+    if (!draft) return;
+    const next = { ...draft, exported: true };
+    drafts.set(draftKey, next);
+    setDraft(next);
+  }
+
+  /** Closing with a sheet out but nothing saved: warn first. */
+  function requestClose() {
+    if (busy) return;
+    if (draft?.exported && step !== "leave") setStep("leave");
+    else onClose();
+  }
+
+  function startCheck() {
+    setPositions(pickPositions());
+    setAnswers({});
+    setWrong(false);
+    setStep("check");
+  }
 
   function download() {
     if (!sheet) return;
+    markExported();
     const url = URL.createObjectURL(new Blob([sheetText(sheet, t)], { type: "text/plain;charset=utf-8" }));
     const a = Object.assign(document.createElement("a"), { href: url, download: `etherdisk-recovery-drive-${ctx.tokenId}.txt` });
     a.click();
@@ -166,6 +205,7 @@ export function RecoveryDialog({ open, onClose, ctx, replacing }: { open: boolea
       await api.putRecovery(ctx.token, ctx.tokenId, toB64(blob));
       await qc.invalidateQueries({ queryKey: ["vault", ctx.token, ctx.tokenId] });
       await qc.invalidateQueries({ queryKey: ["vaults", ctx.token] });
+      drafts.delete(draftKey);
       toast({ text: t("recovery.saved") });
       onClose();
     } catch (err) {
@@ -176,8 +216,20 @@ export function RecoveryDialog({ open, onClose, ctx, replacing }: { open: boolea
   }
 
   return (
-    <Dialog open={open} onClose={busy ? () => {} : onClose} title={t("recovery.dialogTitle", { name: ctx.name })}>
-      {!words ? null : step === "show" ? (
+    <Dialog open={open} onClose={requestClose} title={t("recovery.dialogTitle", { name: ctx.name })}>
+      {!words ? null : step === "leave" ? (
+        <div className="flex flex-col gap-4">
+          <Notice tone="danger">{t("recovery.notSavedYet")}</Notice>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="primary" onClick={startCheck}>
+              {t("recovery.finishCheck")}
+            </Button>
+            <Button variant="ghost" onClick={onClose}>
+              {t("recovery.closeAnyway")}
+            </Button>
+          </div>
+        </div>
+      ) : step === "show" ? (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted">{t("recovery.intro")}</p>
           {replacing && <Notice tone="danger">{t("recovery.replaceWarning")}</Notice>}
@@ -187,20 +239,17 @@ export function RecoveryDialog({ open, onClose, ctx, replacing }: { open: boolea
               <Download className="h-4 w-4" />
               {t("recovery.download")}
             </Button>
-            <Button onClick={() => window.print()}>
+            <Button
+              onClick={() => {
+                markExported();
+                window.print();
+              }}
+            >
               <Printer className="h-4 w-4" />
               {t("recovery.print")}
             </Button>
           </div>
-          <Button
-            variant="primary"
-            onClick={() => {
-              setPositions(pickPositions());
-              setAnswers({});
-              setWrong(false);
-              setStep("check");
-            }}
-          >
+          <Button variant="primary" onClick={startCheck}>
             {t("recovery.next")}
           </Button>
           {sheet && <PrintSheet sheet={sheet} />}

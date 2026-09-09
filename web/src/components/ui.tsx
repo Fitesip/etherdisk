@@ -131,6 +131,10 @@ export function Dialog({
 }) {
   const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
   // Snapshot of the content while open, shown during the close animation.
   const [snapshot, setSnapshot] = useState<{ title: ReactNode; children: ReactNode } | null>(null);
   const [closing, setClosing] = useState(false);
@@ -158,7 +162,20 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // Escape asks the parent instead of closing natively, so it can keep the dialog open
+      // (e.g. to warn about unsaved work). Browsers may still force-close after repeated
+      // presses: reopen then if the parent still wants it open.
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClose={() => {
+        onClose();
+        requestAnimationFrame(() => {
+          const d = ref.current;
+          if (openRef.current && d && !d.open) d.showModal();
+        });
+      }}
       onClick={(e) => e.target === ref.current && onClose()}
       className={cn(
         "m-auto w-[calc(100%-2rem)] rounded-2xl border bg-card p-0 text-fg shadow-2xl",

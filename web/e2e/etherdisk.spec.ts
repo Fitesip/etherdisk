@@ -156,6 +156,16 @@ test("recovery key: save the words, forget the passphrase, open the drive with t
   }));
   expect(sheet).toContain(`24. ${words[23]}`);
 
+  // Closing before the check warns that the downloaded words don't work yet; reopening
+  // shows the same words, so the file stays valid.
+  await page.keyboard.press("Escape");
+  await expect(dialog.getByText(/isn't saved yet/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Close anyway" }).click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Create recovery key" }).click();
+  await expect(items).toHaveCount(24);
+  expect(await items.allTextContents()).toEqual(words);
+
   // Asked back for three of them; a wrong answer is caught.
   await dialog.getByRole("button", { name: "I saved them" }).click();
   const fields = dialog.getByLabel(/^Word \d+$/);
