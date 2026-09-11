@@ -85,6 +85,16 @@ async fn app() -> App {
         cors_origins: vec![],
         session_ttl_secs: 3600,
         trust_proxy: false,
+        telegram_bot_token: None,
+        telegram_chat_id: None,
+        telegram_api_url: String::new(),
+        alert_thresholds: etherdisk_server::monitor::Thresholds {
+            free_percent: 15,
+            critical_percent: 5,
+            indexer_lag_blocks: 300,
+            errors_per_check: 20,
+        },
+        monitor_interval_secs: 60,
     };
     let db = connect_db(&config.database_url).await.unwrap();
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());

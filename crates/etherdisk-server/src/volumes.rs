@@ -97,12 +97,8 @@ impl VolumeStore {
             volumes.push(volume);
         }
         let store = Self { volumes, db, placed: Mutex::new(HashMap::new()) };
-        let known: Vec<(String, i64)> =
-            sqlx::query_as("SELECT volume, COUNT(*) FROM vault_volumes GROUP BY volume").fetch_all(&store.db).await?;
-        for (id, vaults) in known {
-            if !store.volumes.iter().any(|v| v.id == id) {
-                tracing::error!(volume = %id, vaults, "storage volume is not configured or not mounted: its drives are unavailable");
-            }
+        for (id, vaults) in store.missing().await? {
+            tracing::error!(volume = %id, vaults, "storage volume is not configured or not mounted: its drives are unavailable");
         }
         Ok(store)
     }
@@ -125,6 +121,15 @@ impl VolumeStore {
             });
         }
         Ok(out)
+    }
+
+    /// Volumes that hold drives but are not configured (or not mounted): (id, drives).
+    pub async fn missing(&self) -> io::Result<Vec<(String, i64)>> {
+        let known: Vec<(String, i64)> = sqlx::query_as("SELECT volume, COUNT(*) FROM vault_volumes GROUP BY volume")
+            .fetch_all(&self.db)
+            .await
+            .map_err(db_err)?;
+        Ok(known.into_iter().filter(|(id, _)| !self.volumes.iter().any(|v| &v.id == id)).collect())
     }
 
     /// The vault's volume, if it has one yet.

@@ -9,6 +9,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use etherdisk_server::chain::{Ownership, RpcChain};
+use etherdisk_server::monitor::Monitor;
 use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{connect_db, ideas, indexer, objects, AppState, Config};
 
@@ -34,9 +35,10 @@ async fn main() -> anyhow::Result<()> {
     }
     let rpc = Arc::new(RpcChain::new(&config.rpc_urls, config.contract_address)?);
     let chain = Ownership::new(rpc.clone(), OWNER_CACHE_TTL);
-    let state = AppState::new(db, store, chain, config.clone());
+    let state = AppState::new(db, store.clone(), chain, config.clone());
 
-    tokio::spawn(indexer::run(state.clone(), rpc));
+    tokio::spawn(indexer::run(state.clone(), rpc.clone()));
+    tokio::spawn(Arc::new(Monitor::new(state.clone(), store, rpc)).run());
     tokio::spawn({
         let st = state.clone();
         async move {

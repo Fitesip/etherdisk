@@ -11,6 +11,7 @@ pub mod error;
 pub mod handover;
 pub mod ideas;
 pub mod indexer;
+pub mod monitor;
 pub mod objects;
 pub mod range;
 pub mod ratelimit;
@@ -20,6 +21,7 @@ pub mod volumes;
 pub mod vaults;
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
@@ -42,6 +44,8 @@ pub struct Inner {
     /// Objects with an upload request in flight (one writer per object).
     uploads: Mutex<HashSet<uuid::Uuid>>,
     pub limiter: ratelimit::Limiter,
+    /// Requests answered with 5xx since start (the monitor watches for bursts).
+    pub server_errors: AtomicU64,
 }
 
 impl std::ops::Deref for AppState {
@@ -53,7 +57,7 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub fn new(db: SqlitePool, store: Arc<dyn BlobStore>, chain: Ownership, config: Config) -> Self {
-        Self(Arc::new(Inner { db, store, chain, config, uploads: Mutex::new(HashSet::new()), limiter: Default::default() }))
+        Self(Arc::new(Inner { db, store, chain, config, uploads: Mutex::new(HashSet::new()), limiter: Default::default(), server_errors: AtomicU64::new(0) }))
     }
 
     /// Marks `id` as being written to. `None` if another request already holds it.
@@ -112,7 +116,17 @@ pub fn router(state: AppState) -> Router {
     let rest = vaults::routes()
         .merge(objects::routes())
         .route_layer(from_fn_with_state(state.clone(), ratelimit::default));
-    Router::new().nest("/api", auth.merge(public).merge(rest)).with_state(state)
+    Router::new()
+        .nest("/api", auth.merge(public).merge(rest))
+        .layer(axum::middleware::map_response_with_state(state.clone(), count_errors))
+        .with_state(state)
+}
+
+async fn count_errors(axum::extract::State(st): axum::extract::State<AppState>, res: axum::response::Response) -> axum::response::Response {
+    if res.status().is_server_error() {
+        st.server_errors.fetch_add(1, Ordering::Relaxed);
+    }
+    res
 }
 
 pub(crate) fn now() -> i64 {

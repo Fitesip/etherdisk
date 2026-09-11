@@ -25,6 +25,12 @@ pub struct Config {
     pub session_ttl_secs: i64,
     /// Take the client IP from `X-Forwarded-For` (only behind a trusted reverse proxy).
     pub trust_proxy: bool,
+    /// Alerts go to this Telegram bot and chat; without them, only to the log.
+    pub telegram_bot_token: Option<String>,
+    pub telegram_chat_id: Option<String>,
+    pub telegram_api_url: String,
+    pub alert_thresholds: crate::monitor::Thresholds,
+    pub monitor_interval_secs: u64,
 }
 
 impl Config {
@@ -47,6 +53,16 @@ impl Config {
                 .collect(),
             session_ttl_secs: parse::<i64>("SESSION_TTL_HOURS", &var_or("SESSION_TTL_HOURS", "168"))? * 3600,
             trust_proxy: var_or("TRUST_PROXY", "false") == "true",
+            telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty()),
+            telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty()),
+            telegram_api_url: var_or("TELEGRAM_API_URL", "https://api.telegram.org"),
+            alert_thresholds: crate::monitor::Thresholds {
+                free_percent: parse("ALERT_FREE_PERCENT", &var_or("ALERT_FREE_PERCENT", "15"))?,
+                critical_percent: parse("ALERT_CRITICAL_PERCENT", &var_or("ALERT_CRITICAL_PERCENT", "5"))?,
+                indexer_lag_blocks: parse("ALERT_INDEXER_LAG_BLOCKS", &var_or("ALERT_INDEXER_LAG_BLOCKS", "300"))?,
+                errors_per_check: parse("ALERT_ERRORS_PER_CHECK", &var_or("ALERT_ERRORS_PER_CHECK", "20"))?,
+            },
+            monitor_interval_secs: parse("MONITOR_INTERVAL_SECS", &var_or("MONITOR_INTERVAL_SECS", "60"))?,
         })
     }
 }
