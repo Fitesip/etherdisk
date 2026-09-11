@@ -16,6 +16,7 @@ pub mod range;
 pub mod ratelimit;
 pub mod shares;
 pub mod storage;
+pub mod volumes;
 pub mod vaults;
 
 use std::collections::HashSet;

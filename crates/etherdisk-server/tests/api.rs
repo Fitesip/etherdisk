@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use etherdisk_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
 use etherdisk_server::chain::{Chain, Ownership};
-use etherdisk_server::storage::LocalStore;
+use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
 // ------------------------------------------------------------ fixtures
@@ -74,7 +74,7 @@ async fn app() -> App {
     let config = Config {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
-        data_dir: data_dir.path().join("blobs"),
+        data_dirs: vec![data_dir.path().join("blobs")],
         rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
         chain_id: CHAIN_ID,
@@ -87,7 +87,7 @@ async fn app() -> App {
         trust_proxy: false,
     };
     let db = connect_db(&config.database_url).await.unwrap();
-    let store = Arc::new(LocalStore::new(&config.data_dir).unwrap());
+    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
     let chain = Arc::new(FakeChain::default());
     // TTL 0: every request sees the fake chain's current state.
     let state = AppState::new(db, store, Ownership::new(chain.clone(), Duration::ZERO), config);

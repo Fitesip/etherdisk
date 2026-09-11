@@ -8,7 +8,8 @@ use anyhow::Context;
 pub struct Config {
     pub bind_addr: String,
     pub database_url: String,
-    pub data_dir: PathBuf,
+    /// Storage volumes (`DATA_DIR`, comma-separated), e.g. one per RAID array.
+    pub data_dirs: Vec<PathBuf>,
     /// One or more endpoints (`RPC_URL`, comma-separated): the first that works is used.
     pub rpc_urls: Vec<String>,
     pub contract_address: Address,
@@ -31,7 +32,7 @@ impl Config {
         Ok(Self {
             bind_addr: var_or("BIND_ADDR", "127.0.0.1:8787"),
             database_url: var_or("DATABASE_URL", "sqlite://data/etherdisk.db"),
-            data_dir: var_or("DATA_DIR", "data/blobs").into(),
+            data_dirs: var_or("DATA_DIR", "data/blobs").split(',').map(str::trim).filter(|d| !d.is_empty()).map(PathBuf::from).collect(),
             rpc_urls: var("RPC_URL")?.split(',').map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()).collect(),
             contract_address: parse("CONTRACT_ADDRESS", &var("CONTRACT_ADDRESS")?)?,
             chain_id: parse("CHAIN_ID", &var_or("CHAIN_ID", "11155111"))?,

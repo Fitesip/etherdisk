@@ -27,6 +27,7 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = "0.5"
+fs4 = "1"
 
 [dev-dependencies]
 alloy = { version = "2", features = ["signer-local"] }
