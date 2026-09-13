@@ -229,8 +229,22 @@ impl Monitor {
     pub fn new(state: AppState, store: Arc<VolumeStore>, rpc: Arc<RpcChain>) -> Self {
         let c = &state.config;
         let telegram = match (&c.telegram_bot_token, &c.telegram_chat_id) {
-            (Some(token), Some(chat)) => Some(Telegram::new(&c.telegram_api_url, token, chat)),
-            _ => None,
+            (Some(token), Some(chat)) => {
+                tracing::info!(chat = %chat, "monitor: alerts go to Telegram");
+                Some(Telegram::new(&c.telegram_api_url, token, chat))
+            }
+            (None, None) => {
+                tracing::info!("monitor: no TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID, alerts go to the log only");
+                None
+            }
+            (Some(_), None) => {
+                tracing::warn!("monitor: TELEGRAM_BOT_TOKEN is set but TELEGRAM_CHAT_ID is not: alerts go to the log only");
+                None
+            }
+            (None, Some(_)) => {
+                tracing::warn!("monitor: TELEGRAM_CHAT_ID is set but TELEGRAM_BOT_TOKEN is not: alerts go to the log only");
+                None
+            }
         };
         Self {
             thresholds: c.alert_thresholds.clone(),
