@@ -66,31 +66,57 @@ pub fn fmt_bytes(n: u64) -> String {
     }
 }
 
-fn space_problems(out: &mut Vec<Problem>, key: &str, what: &str, free: u64, total: u64, t: &Thresholds) {
-    let p = pct(free, total);
-    let detail = format!("свободно {} из {} ({p}%)", fmt_bytes(free), fmt_bytes(total));
-    if p < t.critical_percent {
-        out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}") });
-    } else if p < t.free_percent {
-        out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}") });
+/// Free and total space of one place (a volume or the database's directory).
+struct Place {
+    key: String,
+    label: String,
+    free: u64,
+    total: u64,
+}
+
+/// Directories on the same disk report the same size and (almost) the same free space at
+/// the same moment: they are one disk, reported once. Portable stand-in for a device id.
+const SAME_DISK_SLACK: u64 = 64 << 20;
+
+fn space_problems(out: &mut Vec<Problem>, places: Vec<Place>, t: &Thresholds) {
+    let mut disks: Vec<Vec<Place>> = Vec::new();
+    for p in places {
+        match disks.iter_mut().find(|d| d[0].total == p.total && d[0].free.abs_diff(p.free) <= SAME_DISK_SLACK) {
+            Some(d) => d.push(p),
+            None => disks.push(vec![p]),
+        }
+    }
+    for d in disks {
+        let (free, total) = (d[0].free, d[0].total);
+        let pc = pct(free, total);
+        let key = d.iter().map(|p| p.key.as_str()).collect::<Vec<_>>().join("+");
+        let what = d.iter().map(|p| p.label.as_str()).collect::<Vec<_>>().join(", ");
+        let detail = format!("свободно {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
+        if pc < t.critical_percent {
+            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}") });
+        } else if pc < t.free_percent {
+            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}") });
+        }
     }
 }
 
 /// Every problem the snapshot shows.
 pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
     let mut out = Vec::new();
-    for v in &s.volumes {
-        let what = format!("том {}", v.root.display());
-        space_problems(&mut out, &format!("volume:{}", v.id), &what, v.available_bytes, v.total_bytes, t);
+    let mut places: Vec<Place> = s
+        .volumes
+        .iter()
+        .map(|v| Place { key: format!("volume:{}", v.id), label: format!("том {}", v.root.display()), free: v.available_bytes, total: v.total_bytes })
+        .collect();
+    if let Some((dir, free, total)) = &s.db_disk {
+        places.push(Place { key: "db".into(), label: format!("база данных ({})", dir.display()), free: *free, total: *total });
     }
+    space_problems(&mut out, places, t);
     for (id, drives) in &s.missing_volumes {
         out.push(Problem {
             key: format!("missing:{id}"),
             text: format!("🔴 Том {id} недоступен (не примонтирован или убран из DATA_DIR): {drives} дисков не открываются"),
         });
-    }
-    if let Some((dir, free, total)) = &s.db_disk {
-        space_problems(&mut out, "db", &format!("база данных ({})", dir.display()), *free, *total, t);
     }
     match &s.indexer {
         Some(Ok((next, head))) => {
@@ -394,6 +420,16 @@ mod tests {
         };
         let keys: Vec<String> = problems(&s, &T).into_iter().map(|p| p.key).collect();
         assert_eq!(keys, ["volume:b:low", "volume:c:critical", "missing:d", "indexer", "errors"]);
+        // A volume and the database on one disk: one message naming both.
+        let shared = Snapshot {
+            volumes: vec![vol("a", 2 * GB, 100 * GB)],
+            db_disk: Some((PathBuf::from("data"), 2 * GB + 1024, 100 * GB)),
+            ..Default::default()
+        };
+        let p = problems(&shared, &T);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].key, "volume:a+db:critical");
+        assert!(p[0].text.contains("том /mnt/a, база данных (data)"), "{}", p[0].text);
         let healthy = Snapshot { indexer: Some(Ok((1000, 1200))), volumes: vec![vol("a", 50 * GB, 100 * GB)], ..Default::default() };
         assert!(problems(&healthy, &T).is_empty());
         let down = Snapshot { indexer: Some(Err("timeout".into())), ..Default::default() };
