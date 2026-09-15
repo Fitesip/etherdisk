@@ -70,8 +70,12 @@ struct App {
 }
 
 async fn app() -> App {
+    app_with(|_| {}).await
+}
+
+async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     let data_dir = tempfile::tempdir().unwrap();
-    let config = Config {
+    let mut config = Config {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
         data_dirs: vec![data_dir.path().join("blobs")],
@@ -95,7 +99,9 @@ async fn app() -> App {
             errors_per_check: 20,
         },
         monitor_interval_secs: 60,
+        ideas_admins: Vec::new(),
     };
+    tweak(&mut config);
     let db = connect_db(&config.database_url).await.unwrap();
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
     let chain = Arc::new(FakeChain::default());
@@ -777,6 +783,28 @@ async fn ideas_board_one_vote_per_nft() {
     assert_eq!(app.get("/api/ideas", Some(&tadm)).await.json().as_array().unwrap().len(), 2, "the admin still sees it");
     assert_eq!(vote(tb.clone(), sign_vote(&bob, id2, "for").await, id2).await.status, StatusCode::NOT_FOUND);
     assert!(app.get("/api/ideas/me", Some(&tadm)).await.json()["admin"].as_bool().unwrap());
+}
+
+#[tokio::test]
+async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
+    let (moderator, author, stranger) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    let app = app_with(|c| c.ideas_admins = vec![moderator.address()]).await;
+    // The contract owner is someone else (a multisig, say).
+    *app.chain.admin.lock().unwrap() = Address::repeat_byte(0x5a);
+    app.chain.mint(1, author.address(), 1);
+    let (tm, ta, ts) = (app.login(&moderator).await, app.login(&author).await, app.login(&stranger).await);
+    let id = app.json(Method::POST, "/api/ideas", Some(&ta), json!({ "title": "Dark mode" })).await.json()["id"].as_i64().unwrap();
+
+    assert!(app.get("/api/ideas/me", Some(&tm)).await.json()["admin"].as_bool().unwrap());
+    assert!(!app.get("/api/ideas/me", Some(&ts)).await.json()["admin"].as_bool().unwrap());
+    let patch = |t: String| {
+        let app = &app;
+        async move { app.json(Method::PATCH, &format!("/api/ideas/{id}"), Some(&t), json!({ "hidden": true })).await.status }
+    };
+    assert_eq!(patch(ts.clone()).await, StatusCode::FORBIDDEN);
+    assert_eq!(patch(tm.clone()).await, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/ideas", Some(&tm)).await.json().as_array().unwrap().len(), 1, "a moderator sees hidden ideas");
+    assert_eq!(app.get("/api/ideas", Some(&ts)).await.json().as_array().unwrap().len(), 0);
 }
 
 // ------------------------------------------------------------ recovery key

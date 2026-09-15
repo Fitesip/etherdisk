@@ -31,6 +31,9 @@ pub struct Config {
     pub telegram_api_url: String,
     pub alert_thresholds: crate::monitor::Thresholds,
     pub monitor_interval_secs: u64,
+    /// Wallets that moderate the ideas board (`IDEAS_ADMINS`, comma-separated), besides
+    /// the contract owner.
+    pub ideas_admins: Vec<Address>,
 }
 
 impl Config {
@@ -63,6 +66,12 @@ impl Config {
                 errors_per_check: parse("ALERT_ERRORS_PER_CHECK", &var_or("ALERT_ERRORS_PER_CHECK", "20"))?,
             },
             monitor_interval_secs: parse("MONITOR_INTERVAL_SECS", &var_or("MONITOR_INTERVAL_SECS", "60"))?,
+            ideas_admins: var_or("IDEAS_ADMINS", "")
+                .split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .map(|a| parse("IDEAS_ADMINS", a))
+                .collect::<anyhow::Result<_>>()?,
         })
     }
 }
