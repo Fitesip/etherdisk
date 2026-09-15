@@ -40,6 +40,41 @@ jobs:
       - name: Tests
         run: forge test -vvv
 
+  contract-analysis:
+    name: Contract analysis (Slither, Aderyn)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Static analysis of our contracts (libraries, tests and scripts are skipped).
+      # High-severity findings fail the build; the rest is in the log and the report.
+      - name: Slither
+        run: |
+          pip install slither-analyzer==0.11.6
+          slither . --filter-paths "lib/|test/|script/" --fail-high
+      - name: Aderyn
+        run: |
+          npm install -g @cyfrin/aderyn@0.6.8
+          aderyn . --src src --output aderyn-report.md
+          cat aderyn-report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aderyn-report
+          path: contracts/aderyn-report.md
+          if-no-files-found: ignore
+
   web:
     name: Web (Next.js)
     runs-on: ubuntu-latest

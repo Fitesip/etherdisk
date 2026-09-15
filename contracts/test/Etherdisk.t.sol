@@ -140,20 +140,27 @@ contract EtherdiskTest is Test {
         assertEq(admin.balance, 0.001 ether);
         assertEq(address(disk).balance, 0);
 
-        // A new owner gets the next payments.
+        // A new owner gets the next payments once they accepted.
         vm.prank(admin);
         disk.transferOwnership(bob);
+        vm.prank(alice);
+        disk.mint{value: 0.0005 ether}(0);
+        assertEq(admin.balance, 0.0015 ether, "still the owner until bob accepts");
+        vm.prank(bob);
+        disk.acceptOwnership();
         uint256 before = bob.balance;
         vm.prank(alice);
         disk.mint{value: 0.0005 ether}(0);
         assertEq(bob.balance, before + 0.0005 ether);
-        assertEq(admin.balance, 0.001 ether);
+        assertEq(admin.balance, 0.0015 ether);
     }
 
     function test_paymentStaysWhenTheOwnerRefusesIt() public {
         Rejecter rejecter = new Rejecter();
         vm.prank(admin);
         disk.transferOwnership(address(rejecter));
+        vm.prank(address(rejecter));
+        disk.acceptOwnership();
 
         // Minting still works; the payment waits in the contract.
         vm.expectEmit(address(disk));
@@ -170,12 +177,26 @@ contract EtherdiskTest is Test {
         assertEq(address(disk).balance, 0);
     }
 
-    function test_paymentStaysWithoutAnOwner() public {
+    function test_ownershipNeedsAcceptingAndCantBeRenounced() public {
+        // A typo in the address changes nothing: only the named wallet can accept.
         vm.prank(admin);
+        disk.transferOwnership(bob);
+        assertEq(disk.owner(), admin);
+        assertEq(disk.pendingOwner(), bob);
+        vm.prank(alice);
+        vm.expectRevert();
+        disk.acceptOwnership();
+        vm.prank(bob);
+        disk.acceptOwnership();
+        assertEq(disk.owner(), bob);
+
+        vm.prank(bob);
+        vm.expectRevert(Etherdisk.RenounceDisabled.selector);
         disk.renounceOwnership();
         vm.prank(alice);
-        disk.mint{value: 0.0005 ether}(0);
-        assertEq(address(disk).balance, 0.0005 ether);
+        vm.expectRevert();
+        disk.renounceOwnership();
+        assertEq(disk.owner(), bob);
     }
 
     function test_tierOfNonexistentTokenReverts() public {

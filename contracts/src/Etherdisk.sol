@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 import {EtherdiskArt} from "./EtherdiskArt.sol";
 
@@ -12,8 +13,9 @@ import {EtherdiskArt} from "./EtherdiskArt.sol";
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
 ///         Transfers are plain ERC-721 transfers (no restrictions).
 ///         Mint payments go straight to the contract owner; if that transfer fails they stay
-///         here for `withdraw`.
-contract Etherdisk is ERC721Enumerable, Ownable {
+///         here for `withdraw`. Ownership moves in two steps (the new owner accepts), and it
+///         can't be renounced: a typo or a slip can't leave the contract without an owner.
+contract Etherdisk is ERC721Enumerable, Ownable2Step {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
         uint256 price; // wei, can be updated for future mints
@@ -39,6 +41,7 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     error WrongPayment();
     error ZeroCapacity();
     error WithdrawFailed();
+    error RenounceDisabled();
 
     constructor(address initialOwner) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
         // Test tiers. Larger tiers (8/16/32/64/128/512/1024 GB) are added later via addTier.
@@ -114,6 +117,11 @@ contract Etherdisk is ERC721Enumerable, Ownable {
         emit TierActiveUpdated(tierId, active);
     }
 
+    /// Disabled: without an owner, prices could never change and held payments would be stuck.
+    function renounceOwnership() public view override onlyOwner {
+        revert RenounceDisabled();
+    }
+
     function withdraw(address payable to) external onlyOwner {
         (bool ok,) = to.call{value: address(this).balance}("");
         if (!ok) revert WithdrawFailed();
@@ -121,11 +129,11 @@ contract Etherdisk is ERC721Enumerable, Ownable {
 
     // ---------------------------------------------------------------- internal
 
-    /// Forwards a mint payment to the owner. Never reverts: a failed transfer (or no owner
-    /// after `renounceOwnership`) leaves the payment in the contract.
+    /// Forwards a mint payment to the owner. Never reverts: a failed transfer leaves the
+    /// payment in the contract for `withdraw`.
     function _payOwner(uint256 amount) private {
         address payable to = payable(owner());
-        if (amount == 0 || to == address(0)) return;
+        if (amount == 0) return;
         (bool ok,) = to.call{value: amount, gas: PAYOUT_GAS}("");
         if (!ok) emit PaymentHeld(to, amount);
     }
