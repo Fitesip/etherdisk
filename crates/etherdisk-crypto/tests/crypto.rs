@@ -424,3 +424,25 @@ fn recovery_blob_rejects_other_keys_and_tampering() {
     // Two wraps of the same DEK differ (fresh nonce).
     assert_ne!(v.wrap_for_recovery(&key).unwrap(), rblob);
 }
+
+#[test]
+fn a_new_passphrase_is_never_wrapped_weaker_than_the_default() {
+    // A hostile server hands out a key blob with tiny Argon2 parameters, e.g. as the
+    // "current" blob during recovery: it doesn't need to unlock, only to be parsed.
+    let (v, _) = vault("real");
+    let key = RecoveryKey::generate().unwrap();
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    let (_, weak_blob) = vault("whatever"); // FAST: 8 KiB, 1 pass
+    let m_cost = |b: &[u8]| u32::from_le_bytes(b[5..9].try_into().unwrap());
+    let t_cost = |b: &[u8]| u32::from_le_bytes(b[9..13].try_into().unwrap());
+    assert_eq!(m_cost(&weak_blob), 8);
+
+    let recovered = Vault::recover(&rblob, &key, &weak_blob).unwrap();
+    let new_blob = recovered.rewrap("chosen after recovery").unwrap();
+    assert!(m_cost(&new_blob) >= KdfParams::DEFAULT.m_cost_kib && t_cost(&new_blob) >= KdfParams::DEFAULT.t_cost);
+    assert!(Vault::unlock(&new_blob, "chosen after recovery").is_ok());
+
+    // Same for a key handed over by the previous owner.
+    let handed = Vault::from_exported_dek(&v.export_dek()[..], &weak_blob).unwrap();
+    assert!(m_cost(&handed.rewrap("mine now").unwrap()) >= KdfParams::DEFAULT.m_cost_kib);
+}

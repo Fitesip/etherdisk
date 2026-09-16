@@ -53,6 +53,17 @@ impl KdfParams {
     const MAX_T: u32 = 16;
     const MAX_P: u32 = 16;
 
+    /// At least the defaults, component-wise. A key blob's parameters are only authenticated
+    /// once it unlocks; a blob that is just read for its parameters (recovery, a handed-over
+    /// key) may come from a hostile server that wants the new passphrase wrapped weakly.
+    fn at_least_default(self) -> Self {
+        Self {
+            m_cost_kib: self.m_cost_kib.max(Self::DEFAULT.m_cost_kib),
+            t_cost: self.t_cost.max(Self::DEFAULT.t_cost),
+            parallelism: self.parallelism.max(Self::DEFAULT.parallelism),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if self.m_cost_kib > Self::MAX_M_KIB || self.t_cost > Self::MAX_T || self.parallelism > Self::MAX_P {
             return Err(Error::Format("kdf parameters out of range"));
@@ -132,8 +143,9 @@ impl Vault {
     }
 
     /// Wraps the same DEK under a new passphrase (new salt and nonce). Existing files stay valid.
+    /// Never weaker than the default KDF parameters, whatever blob the vault came from.
     pub fn rewrap(&self, new_passphrase: &str) -> Result<Vec<u8>> {
-        wrap_dek(&self.dek, new_passphrase, self.params)
+        wrap_dek(&self.dek, new_passphrase, self.params.at_least_default())
     }
 
     /// Wraps the DEK under a recovery key; store the blob next to the key blob. Anyone with
