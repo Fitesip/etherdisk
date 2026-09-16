@@ -177,6 +177,12 @@ contract EtherdiskTest is Test {
         assertEq(address(disk).balance, 0);
     }
 
+    function test_withdrawToZeroAddressReverts() public {
+        vm.prank(admin);
+        vm.expectRevert(Etherdisk.ZeroAddress.selector);
+        disk.withdraw(payable(address(0)));
+    }
+
     function test_ownershipNeedsAcceptingAndCantBeRenounced() public {
         // A typo in the address changes nothing: only the named wallet can accept.
         vm.prank(admin);

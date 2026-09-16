@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
@@ -42,6 +42,7 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     error ZeroCapacity();
     error WithdrawFailed();
     error RenounceDisabled();
+    error ZeroAddress();
 
     constructor(address initialOwner) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
         // Test tiers. Larger tiers (8/16/32/64/128/512/1024 GB) are added later via addTier.
@@ -59,8 +60,9 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
 
         tokenId = _nextTokenId++;
         _tokenTier[tokenId] = tierId;
-        _safeMint(msg.sender, tokenId);
+        // Logged before the receiver's callback, so a re-entering minter can't reorder events.
         emit DriveMinted(tokenId, msg.sender, tierId);
+        _safeMint(msg.sender, tokenId);
         _payOwner(msg.value);
     }
 
@@ -123,6 +125,7 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     }
 
     function withdraw(address payable to) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
         (bool ok,) = to.call{value: address(this).balance}("");
         if (!ok) revert WithdrawFailed();
     }
@@ -134,8 +137,15 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     function _payOwner(uint256 amount) private {
         address payable to = payable(owner());
         if (amount == 0) return;
-        (bool ok,) = to.call{value: amount, gas: PAYOUT_GAS}("");
-        if (!ok) emit PaymentHeld(to, amount);
+        // The destination is the owner, not the caller. Return data is not copied, so the
+        // receiver can't make minting expensive with a huge answer.
+        bool ok;
+        assembly ("memory-safe") {
+            ok := call(PAYOUT_GAS, to, amount, 0, 0, 0, 0)
+        }
+        // The event can only follow the transfer's result.
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (!ok) emit PaymentHeld(to, amount); // slither-disable-line reentrancy-events
     }
 
     function _addTier(uint32 capacityGb, uint256 price) private returns (uint256 tierId) {
@@ -148,22 +158,5 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     function _getTier(uint256 tierId) private view returns (Tier storage) {
         if (tierId >= _tiers.length) revert InvalidTier();
         return _tiers[tierId];
-    }
-
-    // ERC721Enumerable requires these overrides (OpenZeppelin v5).
-    function _update(address to, uint256 tokenId, address auth)
-        internal
-        override(ERC721Enumerable)
-        returns (address)
-    {
-        return super._update(to, tokenId, auth);
-    }
-
-    function _increaseBalance(address account, uint128 value) internal override(ERC721Enumerable) {
-        super._increaseBalance(account, value);
-    }
-
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721Enumerable) returns (bool) {
-        return super.supportsInterface(interfaceId);
     }
 }
