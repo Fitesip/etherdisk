@@ -9,6 +9,7 @@ import { useConnection } from "wagmi";
 
 import { idleFor, startActivityTracking } from "./activity";
 import type { WasmVault } from "./crypto";
+import { openKeyring } from "./kdf";
 import { forgetUnlocked, keepUnlocked, restoreUnlocked } from "./kept-keys";
 import { readLockSettings } from "./lock-settings";
 
@@ -25,7 +26,7 @@ interface Store {
   /** Re-applies the drive's "stay unlocked on reload" setting to the current key. */
   syncKept: (tokenId: string) => void;
   /** Tries to bring back a kept drive after a reload. Resolves to whether it did. */
-  restore: (tokenId: string, currentEtag: string) => Promise<boolean>;
+  restore: (tokenId: string, currentEtag: string, keyring: string | null) => Promise<boolean>;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -78,7 +79,7 @@ export function UnlockedProvider({ children }: { children: ReactNode }) {
   );
 
   const restore = useCallback(
-    async (tokenId: string, currentEtag: string) => {
+    async (tokenId: string, currentEtag: string, keyring: string | null) => {
       if (!address || map.current.has(tokenId)) return map.current.has(tokenId);
       if (!readLockSettings(tokenId).keepOnReload || idleExpired(tokenId)) {
         forgetUnlocked(address, tokenId);
@@ -86,6 +87,12 @@ export function UnlockedProvider({ children }: { children: ReactNode }) {
       }
       const vault = await restoreUnlocked(address, tokenId, currentEtag);
       if (!vault) return false;
+      try {
+        openKeyring(vault, keyring);
+      } catch {
+        vault.free();
+        return false;
+      }
       map.current.set(tokenId, { vault, etag: currentEtag });
       bump();
       return true;

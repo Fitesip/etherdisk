@@ -8,10 +8,11 @@ import { useSignMessage } from "wagmi";
 
 import { useT } from "@/i18n";
 import { api, type OutgoingHandover } from "@/lib/api";
-import { fromB64, toB64, type WasmVault } from "@/lib/crypto";
+import { fromB64, loadCrypto, toB64, WasmVault } from "@/lib/crypto";
 import { shortAddress } from "@/lib/format";
 import { enableInbox, openDriveKey, sealDriveKey, verifiedInbox, type Sign } from "@/lib/inbox";
-import { rewrapKey, unlockVault } from "@/lib/kdf";
+import { takeOver } from "@/lib/drive-key";
+import { openKeyring, rewrapVault, unlockVault } from "@/lib/kdf";
 import { passphraseValid } from "@/lib/passphrase";
 import { useSession } from "@/lib/session";
 import { useStored, writeStored } from "@/lib/storage";
@@ -216,7 +217,21 @@ export function OutgoingHandovers({ token }: { token: string }) {
  * On a locked drive: the key the previous owner sent (open it with the wallet, then set
  * a new passphrase), or a note that it hasn't arrived yet.
  */
-export function IncomingHandover({ token, tokenId, keyBlob, etag }: { token: string; tokenId: string; keyBlob: string; etag: string }) {
+export function IncomingHandover({
+  token,
+  tokenId,
+  keyBlob,
+  etag,
+  keyring,
+  needsNewKey,
+}: {
+  token: string;
+  tokenId: string;
+  keyBlob: string;
+  etag: string;
+  keyring: string | null;
+  needsNewKey: boolean;
+}) {
   const t = useT();
   const qc = useQueryClient();
   const store = useUnlocked();
@@ -264,19 +279,31 @@ export function IncomingHandover({ token, tokenId, keyBlob, etag }: { token: str
     if (!dek || !passphraseValid(pass) || pass !== repeat) return;
     setBusy(true);
     setError(null);
-    let vault: WasmVault | null = null;
+    let received: WasmVault | null = null;
     try {
-      vault = await rewrapKey(dek, fromB64(keyBlob), pass);
-      const saved = await api.putKey(token, tokenId, toB64(vault.keyBlob), etag);
+      await loadCrypto();
+      received = openKeyring(WasmVault.fromExportedKey(dek, fromB64(keyBlob)), keyring);
+      // The previous owner knew this key: the drive gets a new one under the new passphrase.
+      let done: { vault: WasmVault; etag: string };
+      if (needsNewKey) done = await takeOver(token, tokenId, received, pass, etag);
+      else {
+        const vault = await rewrapVault(received, pass);
+        try {
+          done = { vault, etag: (await api.putKey(token, tokenId, toB64(vault.keyBlob), etag)).etag };
+        } catch (err) {
+          vault.free();
+          throw err;
+        }
+      }
       dek.fill(0);
       await api.dismissHandover(token, tokenId).catch(() => {});
-      store.set(tokenId, { vault, etag: saved.etag });
-      vault = null;
+      store.set(tokenId, done);
       await qc.invalidateQueries({ queryKey: ["handover", token, tokenId] });
+      await qc.invalidateQueries({ queryKey: ["key", token, tokenId] });
     } catch (err) {
       setError(errorText(err, t("common.error")));
     } finally {
-      vault?.free();
+      received?.free();
       setBusy(false);
     }
   }

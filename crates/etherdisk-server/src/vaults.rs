@@ -155,6 +155,16 @@ struct KeyResponse {
     key_blob: Vec<u8>,
     /// Pass back as `previous_etag` when replacing the blob.
     etag: String,
+    /// The drive's older keys, sealed under the current one (null: never changed hands).
+    #[serde(with = "b64::option")]
+    keyring: Option<Vec<u8>>,
+    /// The current key was made by another wallet (the drive changed hands): the caller
+    /// should choose their own passphrase and make a new key (`rotate`).
+    needs_new_key: bool,
+}
+
+fn needs_new_key(rotated_by: &Option<String>, caller: &Address) -> bool {
+    rotated_by.as_ref().is_some_and(|by| *by != format!("{caller:#x}"))
 }
 
 pub(crate) fn etag(blob: &[u8]) -> String {
@@ -163,12 +173,13 @@ pub(crate) fn etag(blob: &[u8]) -> String {
 
 async fn get_key(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<KeyResponse>> {
     let (_, token) = owned(&st, &user, &token_id).await?;
-    let blob: Vec<u8> = sqlx::query_scalar("SELECT key_blob FROM vault_keys WHERE token_id = ?")
-        .bind(&token)
-        .fetch_optional(&st.db)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    Ok(Json(KeyResponse { etag: etag(&blob), key_blob: blob }))
+    let (blob, keyring, rotated_by): (Vec<u8>, Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT key_blob, keyring, rotated_by FROM vault_keys WHERE token_id = ?")
+            .bind(&token)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    Ok(Json(KeyResponse { etag: etag(&blob), needs_new_key: needs_new_key(&rotated_by, &user.0), key_blob: blob, keyring }))
 }
 
 #[derive(Deserialize)]
@@ -178,7 +189,16 @@ struct PutKeyRequest {
     /// `null` to initialize a fresh vault; the current etag to change the passphrase.
     /// Guards against overwriting a blob the client has not seen (lost DEK = lost files).
     previous_etag: Option<String>,
+    /// The blob wraps a new drive key (`rotate`): `keyring` holds the older keys. The
+    /// caller becomes the key's maker; recovery keys of the old key stop being served.
+    #[serde(default)]
+    rotate: bool,
+    #[serde(default, with = "b64::option")]
+    keyring: Option<Vec<u8>>,
 }
+
+/// A sealed keyring: nonce (24) + tag (16) + 32 bytes per older key.
+const MAX_KEYRING: usize = 40 + 32 * 1024;
 
 async fn put_key(
     State(st): State<AppState>,
@@ -191,11 +211,18 @@ async fn put_key(
         return Err(AppError::bad("not a vault key blob"));
     }
 
+    if req.rotate != req.keyring.is_some() || req.keyring.as_ref().is_some_and(|k| k.len() < 40 || k.len() > MAX_KEYRING) {
+        return Err(AppError::bad("a new key comes with its keyring, and only then"));
+    }
+
     let mut tx = st.db.begin().await?;
     let current: Option<Vec<u8>> = sqlx::query_scalar("SELECT key_blob FROM vault_keys WHERE token_id = ?")
         .bind(&token)
         .fetch_optional(&mut *tx)
         .await?;
+    if req.rotate && current.is_none() {
+        return Err(AppError::conflict("vault is not initialized"));
+    }
     match (&current, &req.previous_etag) {
         (None, None) => {}
         (Some(cur), Some(prev)) if etag(cur) == *prev => {}
@@ -204,17 +231,47 @@ async fn put_key(
     }
     // The UPSERT keeps this atomic with the check above (SQLite serializes writers;
     // a concurrent writer makes this transaction fail instead of overwriting).
-    sqlx::query(
-        "INSERT INTO vault_keys (token_id, key_blob, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT (token_id) DO UPDATE SET key_blob = excluded.key_blob, updated_at = excluded.updated_at",
-    )
-    .bind(&token)
-    .bind(&req.key_blob)
-    .bind(now())
-    .execute(&mut *tx)
-    .await?;
+    let me = format!("{:#x}", user.0);
+    if current.is_none() {
+        // Two first set-ups racing: the second gets a conflict, not an error.
+        let n = sqlx::query(
+            "INSERT INTO vault_keys (token_id, key_blob, updated_at, rotated_by) VALUES (?, ?, ?, ?) ON CONFLICT (token_id) DO NOTHING",
+        )
+        .bind(&token)
+        .bind(&req.key_blob)
+        .bind(now())
+        .bind(&me)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::conflict("key blob changed; reload it first"));
+        }
+    } else if req.rotate {
+        sqlx::query("UPDATE vault_keys SET key_blob = ?, keyring = ?, rotated_by = ?, updated_at = ? WHERE token_id = ?")
+            .bind(&req.key_blob)
+            .bind(&req.keyring)
+            .bind(&me)
+            .bind(now())
+            .bind(&token)
+            .execute(&mut *tx)
+            .await?;
+        // Wrapped the old key: useless now, and its words must not open the new one.
+        sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(&token).execute(&mut *tx).await?;
+    } else {
+        // A new passphrase for the same key. A drive from before rotation adopts its owner.
+        sqlx::query("UPDATE vault_keys SET key_blob = ?, rotated_by = COALESCE(rotated_by, ?), updated_at = ? WHERE token_id = ?")
+            .bind(&req.key_blob)
+            .bind(&me)
+            .bind(now())
+            .bind(&token)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
-    Ok(Json(KeyResponse { etag: etag(&req.key_blob), key_blob: req.key_blob }))
+    let keyring: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT keyring FROM vault_keys WHERE token_id = ?").bind(&token).fetch_one(&st.db).await?;
+    Ok(Json(KeyResponse { etag: etag(&req.key_blob), key_blob: req.key_blob, keyring, needs_new_key: false }))
 }
 
 #[derive(Serialize, Deserialize)]

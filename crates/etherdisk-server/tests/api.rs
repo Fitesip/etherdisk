@@ -807,6 +807,57 @@ async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
     assert_eq!(app.get("/api/ideas", Some(&ts)).await.json().as_array().unwrap().len(), 0);
 }
 
+// ------------------------------------------------------------ key rotation
+
+#[tokio::test]
+async fn a_new_owner_is_asked_for_a_new_key() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
+    let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
+    assert_eq!((key["needs_new_key"].as_bool(), key["keyring"].is_null()), (Some(false), true), "the maker's own key");
+
+    // Alice saves a recovery key, then the drive moves to bob.
+    let rblob = vault.wrap_for_recovery(&etherdisk_crypto::RecoveryKey::generate().unwrap()).unwrap();
+    app.json(Method::PUT, "/api/vaults/1/recovery", Some(&ta), json!({ "blob": b64(&rblob) })).await;
+    app.chain.transfer(1, bob.address());
+    let tb = app.login(&bob).await;
+    let key = app.get("/api/vaults/1/key", Some(&tb)).await.json();
+    assert_eq!(key["needs_new_key"], true);
+    let etag = key["etag"].as_str().unwrap().to_owned();
+
+    // Bob makes a new key: it must come with its keyring, and replaces the blob atomically.
+    let next = vault.rotate().unwrap();
+    let new_blob = next.rewrap("bob's own").unwrap();
+    let ring = next.seal_keyring().unwrap();
+    let put = |body: Value| {
+        let app = &app;
+        let tb = tb.clone();
+        async move { app.json(Method::PUT, "/api/vaults/1/key", Some(&tb), body).await }
+    };
+    assert_eq!(put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "rotate": true })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "keyring": b64(&ring) })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(json!({ "key_blob": b64(&new_blob), "previous_etag": "stale", "rotate": true, "keyring": b64(&ring) })).await.status,
+        StatusCode::CONFLICT
+    );
+    let r = put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "rotate": true, "keyring": b64(&ring) })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
+    let key = app.get("/api/vaults/1/key", Some(&tb)).await.json();
+    assert_eq!((key["needs_new_key"].as_bool(), key["keyring"].clone()), (Some(false), json!(b64(&ring))));
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0, "a recovery key of the old drive key is gone");
+
+    // A passphrase change keeps the keyring; the drive back at alice's asks her again.
+    let r = put(json!({ "key_blob": b64(&next.rewrap("again").unwrap()), "previous_etag": key["etag"] })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(app.get("/api/vaults/1/key", Some(&tb)).await.json()["keyring"], json!(b64(&ring)));
+    app.chain.transfer(1, alice.address());
+    assert_eq!(app.get("/api/vaults/1/key", Some(&ta)).await.json()["needs_new_key"], true);
+}
+
 // ------------------------------------------------------------ recovery key
 
 #[tokio::test]

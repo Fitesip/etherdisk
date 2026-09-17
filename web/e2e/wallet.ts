@@ -58,7 +58,9 @@ export async function signIn(page: Page) {
 
 export const PASSPHRASE = "Good#Pass1";
 
-/** Mints a 1 GB drive and sets it up; leaves the page inside the (unlocked) drive. */
+/**
+ * Mints a 1 GB drive and sets it up; leaves the page inside the (unlocked) drive.
+ */
 export async function mintAndSetUp(page: Page): Promise<string> {
   const before = await page.locator('a[href^="/drive/"]').count();
   await page.getByRole("button", { name: /Mint for 0\.0005 ETH/ }).click();
@@ -66,7 +68,10 @@ export async function mintAndSetUp(page: Page): Promise<string> {
   const link = page.locator('a[href^="/drive/"]').last();
   const href = (await link.getAttribute("href"))!;
   await link.click();
-  await page.getByPlaceholder("Passphrase", { exact: true }).fill(PASSPHRASE);
+  // Wait for this drive's setup form: during the navigation another drive's unlock form
+  // (also a "Passphrase" field) can still be on screen for a moment.
+  await expect(page.getByRole("heading", { name: /^Set up / })).toBeVisible();
+  await page.locator('input[placeholder="Passphrase"][autocomplete="new-password"]').fill(PASSPHRASE);
   await page.getByPlaceholder("Repeat passphrase").fill(PASSPHRASE);
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Create drive" }).click();

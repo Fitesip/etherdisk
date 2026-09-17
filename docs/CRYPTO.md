@@ -47,13 +47,16 @@ systems gives the same key.
 passphrase ──Argon2id(salt, params)──▶ KEK ──XChaCha20-Poly1305──▶ wrapped DEK  (key blob, on server)
 recovery words ──HKDF──▶ recovery KEK ──XChaCha20-Poly1305──▶ wrapped DEK  (recovery blob, on server)
 
-DEK (32 random bytes, one per drive)
- ├─ HKDF(salt = file_salt, info "etherdisk/file/v1")  ──▶ file key   (one per file / thumbnail)
- └─ HKDF(salt = none,      info "etherdisk/metadata/v1") ──▶ metadata key
+DEK (32 random bytes; the drive's current key)
+ ├─ HKDF(salt = file_salt, info "etherdisk/file/v1")      ──▶ file key   (one per file / thumbnail)
+ ├─ HKDF(salt = none,      info "etherdisk/metadata/v1")  ──▶ metadata key
+ ├─ HKDF(salt = none,      info "etherdisk/key-id/v1")[..8] ──▶ key id (public label)
+ └─ HKDF(salt = none,      info "etherdisk/keyring/v1")   ──▶ keyring key: seals the drive's older DEKs
 ```
 
-The DEK (data-encryption key) is generated once per drive and never changes: changing the
-passphrase or adding a recovery key only re-wraps it. Files are never re-encrypted.
+A drive gets a new DEK when it changes hands (§8a); older DEKs are kept, sealed under the
+current one, to read older files. Changing the passphrase or adding a recovery key only
+re-wraps the current DEK. Files are never re-encrypted.
 
 ## 4. Key blob (passphrase)
 
@@ -169,6 +172,34 @@ owner later unlocks with their passphrase and seals the DEK. The new owner opens
 inbox signature and immediately sets their own passphrase (the DEK is re-wrapped; see §12,
 limitation A). A transfer made in the app with "send the key" unchecked records no request.
 
+## 8a. A new key for a new owner
+
+The previous owner knew the drive's DEK. So when a drive changes hands, its new owner
+replaces it before using the drive:
+
+- The server records which wallet made the current DEK (`rotated_by`). If the drive's owner
+  is another wallet, the key response says `needs_new_key`, and the app asks the new owner
+  for their own passphrase right after unlocking (with the old passphrase, a recovery key or
+  a handed-over key) — before showing any files.
+- The client makes a fresh random DEK, appends the old one to the drive's list of older
+  keys, wraps the new DEK with the new passphrase and stores it with the **keyring**:
+
+```
+keyring = nonce (24) ‖ XChaCha20-Poly1305(HKDF(DEK, "etherdisk/keyring/v1"), nonce,
+                                          older DEK_0 ‖ older DEK_1 ‖ …   (oldest first),
+                                          aad = "etherdisk/keyring/v1" ‖ key id of DEK)
+```
+
+  The AAD binds the keyring to the current key, so it can't be swapped with another drive's
+  or an older generation's. The server replaces key blob and keyring in one step, guarded by
+  the etag, and drops recovery blobs (they wrapped the old DEK).
+- New files and new metadata use the new DEK. Each file's metadata records the **key id**
+  (8 bytes, hex) of the DEK its content and thumbnail use; files from before key ids have
+  none and use the drive's first DEK. Metadata is opened by trying the current DEK, then the
+  older ones (newest first).
+- The previous owner, who knows only the old DEK, can't read anything added since, even with
+  the ciphertext. Files that came with the drive stay under the old DEK — they had them anyway.
+
 ## 9. Recovery key
 
 24 BIP-39 words = 32 random bytes of entropy (+ checksum).
@@ -218,14 +249,12 @@ they change) but no names, types or contents.
 
 ## 12. Known limitations and open questions
 
-**A. The drive key survives a transfer.** The DEK never changes, and the previous owner
-knew it (they could have saved it, or their old passphrase with an old key blob). After a
-transfer the server stops serving them the ciphertext, so this only matters if the
-ciphertext leaks (server compromise or collusion). Then the previous owner can read the
-files that came with the drive — which they owned anyway — **and files the new owner adds
-later**, since those use the same DEK. Fix under consideration: on receiving a drive, the
-new owner generates a new DEK for new files (old files stay under the old DEK or are
-re-encrypted in the background).
+**A. Files that came with a drive stay under the old key.** Since §8a, what a new owner adds
+is out of the previous owner's reach; the files that were on the drive when it changed hands
+keep their old DEK, which the previous owner knows. With leaked ciphertext they could still
+read those (they owned them before). Re-encrypting them in the background would close this.
+A new owner who opens the drive but never sets a passphrase (the app doesn't let them in
+until they do) uploads nothing under the old key.
 
 **B. Inbox keys depend on deterministic signatures.** Wallets that sign non-deterministically
 (some MPC or smart-contract wallets, e.g. a Safe) derive a different inbox key each time, so

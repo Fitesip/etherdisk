@@ -15,6 +15,9 @@ export interface FileMeta {
   /** base64 of the 44-byte content header: derives the file key for share links. */
   header: string;
   thumbHeader?: string;
+  /** Id of the drive key the content and thumbnail are encrypted with (hex). Missing on
+   *  files from before drive keys were replaced: those use the drive's first key. */
+  keyId?: string;
 }
 
 export interface FolderMeta {

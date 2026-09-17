@@ -23,5 +23,5 @@ pub use file::{
     chunk_location, decrypt_file, encrypt_file, encrypted_len, plaintext_len, ChunkLocation, FileDecryptor,
     FileEncryptor, FileHeader, FileKey, DEFAULT_CHUNK_SIZE, HEADER_LEN, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, TAG_LEN,
 };
-pub use keys::{KdfParams, Vault, KEY_BLOB_LEN, RECOVERY_BLOB_LEN};
+pub use keys::{KdfParams, Vault, KEY_BLOB_LEN, KEY_ID_LEN, RECOVERY_BLOB_LEN};
 pub use recovery::{RecoveryKey, RECOVERY_WORDS};

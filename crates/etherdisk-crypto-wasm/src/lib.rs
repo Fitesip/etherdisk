@@ -8,6 +8,18 @@ fn err(e: vc::Error) -> JsError {
     JsError::new(&e.to_string())
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn key_id_bytes(key_id: Option<String>) -> Result<Option<Vec<u8>>, JsError> {
+    let Some(id) = key_id else { return Ok(None) };
+    if id.len() != vc::KEY_ID_LEN * 2 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(JsError::new("bad key id"));
+    }
+    Ok(Some((0..id.len()).step_by(2).map(|i| u8::from_str_radix(&id[i..i + 2], 16).unwrap()).collect()))
+}
+
 fn key32(bytes: &[u8]) -> Result<vc::FileKey, JsError> {
     let arr: [u8; 32] = bytes.try_into().map_err(|_| JsError::new("file key must be 32 bytes"))?;
     Ok(vc::FileKey::from_bytes(arr))
@@ -86,11 +98,43 @@ impl WasmVault {
         self.inner.open_metadata(sealed, aad).map_err(err)
     }
 
-    /// Key of an existing file, from its 44-byte header (e.g. to build a share link).
-    #[wasm_bindgen(js_name = fileKey)]
-    pub fn file_key(&self, header: &[u8]) -> Result<Vec<u8>, JsError> {
+    /// Key of an existing file, from its 44-byte header and the id of the drive key it was
+    /// encrypted with (`keyId` in its metadata; none for files from before key ids).
+    #[wasm_bindgen(js_name = fileKeyFor)]
+    pub fn file_key_for(&self, header: &[u8], key_id: Option<String>) -> Result<Vec<u8>, JsError> {
         let parsed = vc::FileHeader::parse(header).map_err(err)?;
-        Ok(self.inner.file_key(&parsed.file_salt).as_bytes().to_vec())
+        let id = key_id_bytes(key_id)?;
+        Ok(self.inner.file_key_for(&parsed.file_salt, id.as_deref()).map_err(err)?.as_bytes().to_vec())
+    }
+
+    /// Hex id of the current drive key: record it with every new file.
+    #[wasm_bindgen(getter, js_name = keyId)]
+    pub fn key_id(&self) -> String {
+        hex(&self.inner.key_id())
+    }
+
+    /// How many keys the drive had before the current one.
+    #[wasm_bindgen(getter, js_name = olderKeys)]
+    pub fn older_keys(&self) -> u32 {
+        self.inner.older_keys() as u32
+    }
+
+    /// A new drive key (the current one becomes an older key). The result still carries the
+    /// old `keyBlob`: wrap it with a passphrase (`changePassphrase`) before storing it.
+    pub fn rotate(&self) -> Result<WasmVault, JsError> {
+        Ok(WasmVault { inner: self.inner.rotate().map_err(err)?, key_blob: self.key_blob.clone() })
+    }
+
+    /// The older keys sealed under the current one; store it next to the key blob.
+    #[wasm_bindgen(js_name = sealKeyring)]
+    pub fn seal_keyring(&self) -> Result<Vec<u8>, JsError> {
+        self.inner.seal_keyring().map_err(err)
+    }
+
+    /// Loads the older keys from `sealKeyring` output.
+    #[wasm_bindgen(js_name = openKeyring)]
+    pub fn open_keyring(&mut self, sealed: &[u8]) -> Result<(), JsError> {
+        self.inner.open_keyring(sealed).map_err(err)
     }
 }
 
@@ -130,9 +174,9 @@ impl WasmFileEncryptor {
 
     /// Continues an interrupted upload at chunk `next_index` with the file's original
     /// header. Only feed the same plaintext as before (see `FileEncryptor::resume`).
-    pub fn resume(vault: &WasmVault, header: &[u8], next_index: u32) -> Result<WasmFileEncryptor, JsError> {
+    pub fn resume(vault: &WasmVault, header: &[u8], next_index: u32, key_id: Option<String>) -> Result<WasmFileEncryptor, JsError> {
         let header = vc::FileHeader::parse(header).map_err(err)?;
-        let key = vault.inner.file_key(&header.file_salt);
+        let key = vault.inner.file_key_for(&header.file_salt, key_id_bytes(key_id)?.as_deref()).map_err(err)?;
         Ok(WasmFileEncryptor { inner: vc::FileEncryptor::resume(&key, header, next_index.into()), key })
     }
 

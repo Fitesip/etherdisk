@@ -100,8 +100,8 @@ export async function createShare(token: string, tokenId: string, vault: WasmVau
         type: m.type,
         size: m.size,
         encSize: item.row.size,
-        key: toB64(vault.fileKey(fromB64(m.header))),
-        ...(m.thumbHeader && { thumbKey: toB64(vault.fileKey(fromB64(m.thumbHeader))) }),
+        key: toB64(vault.fileKeyFor(fromB64(m.header), m.keyId)),
+        ...(m.thumbHeader && { thumbKey: toB64(vault.fileKeyFor(fromB64(m.thumbHeader), m.keyId)) }),
       },
     ];
   });

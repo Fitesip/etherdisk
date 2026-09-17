@@ -1,7 +1,7 @@
 // Passphrase operations (Argon2id) in a Web Worker, so the page doesn't freeze while
 // unlocking. Falls back to the main thread if workers are unavailable.
 
-import { loadCrypto, nextFrame, WasmVault } from "./crypto";
+import { fromB64, loadCrypto, nextFrame, WasmVault } from "./crypto";
 
 type Op = { op: "create"; passphrase: string } | { op: "unlock"; keyBlob: Uint8Array; passphrase: string } | { op: "rewrap"; dek: Uint8Array; keyBlob: Uint8Array; passphrase: string };
 interface Result {
@@ -85,17 +85,37 @@ export async function unlockVault(keyBlob: Uint8Array, passphrase: string): Prom
   return toVault(await run({ op: "unlock", keyBlob, passphrase }));
 }
 
+/** Loads a drive's older keys (from the server's key response) into an unlocked vault. */
+export function openKeyring(vault: WasmVault, keyring: string | null | undefined): WasmVault {
+  if (keyring) vault.openKeyring(fromB64(keyring));
+  return vault;
+}
+
 /** The same drive key wrapped with a new passphrase: a new vault (free the old one). */
 export async function rewrapVault(vault: WasmVault, passphrase: string): Promise<WasmVault> {
   const dek = vault.exportKey();
+  // Only the current key crosses to the worker; the older ones follow sealed under it.
+  const ring = vault.olderKeys > 0 ? vault.sealKeyring() : null;
   try {
-    return toVault(await run({ op: "rewrap", dek, keyBlob: vault.keyBlob, passphrase }));
+    const next = await toVault(await run({ op: "rewrap", dek, keyBlob: vault.keyBlob, passphrase }));
+    if (ring) next.openKeyring(ring);
+    return next;
   } finally {
     dek.fill(0);
   }
 }
 
-/** Same, starting from a raw key (a key handed over by the previous owner). */
-export async function rewrapKey(dek: Uint8Array, keyBlob: Uint8Array, passphrase: string): Promise<WasmVault> {
-  return toVault(await run({ op: "rewrap", dek, keyBlob, passphrase }));
+/**
+ * Makes the drive the caller's own after it changed hands: a new drive key (the previous
+ * owner never had it) wrapped with `passphrase`. Returns the new vault and its sealed
+ * keyring for `api.putKey(..., keyring)`.
+ */
+export async function makeNewKey(vault: WasmVault, passphrase: string): Promise<{ vault: WasmVault; keyring: Uint8Array }> {
+  const rotated = vault.rotate();
+  try {
+    const next = await rewrapVault(rotated, passphrase);
+    return { vault: next, keyring: next.sealKeyring() };
+  } finally {
+    rotated.free();
+  }
 }

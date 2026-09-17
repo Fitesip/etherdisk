@@ -7,13 +7,15 @@ import { useState, type FormEvent } from "react";
 import { useT } from "@/i18n";
 import { api } from "@/lib/api";
 import { fromB64, toB64 } from "@/lib/crypto";
-import { createVault, unlockVault } from "@/lib/kdf";
+import type { WasmVault } from "@/lib/crypto";
+import { createVault, openKeyring, unlockVault } from "@/lib/kdf";
 import { passphraseValid } from "@/lib/passphrase";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { PassphraseRules } from "../passphrase-rules";
 import { Button, Card, Notice, PasswordInput } from "../ui";
 import { ResetDialog } from "./dialogs";
+import { NewKeyForm } from "./new-key";
 import { RecoverForm } from "./recovery";
 
 function Shell({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
@@ -94,6 +96,8 @@ export function UnlockForm({
   name,
   keyBlob,
   etag,
+  keyring,
+  needsNewKey,
   hasRecovery,
 }: {
   token: string;
@@ -101,6 +105,9 @@ export function UnlockForm({
   name: string;
   keyBlob: string;
   etag: string;
+  keyring: string | null;
+  /** Another wallet made the drive key: after unlocking, the owner makes a new one. */
+  needsNewKey: boolean;
   /** The owner saved a recovery key: offer it for a forgotten passphrase. */
   hasRecovery: boolean;
 }) {
@@ -111,9 +118,22 @@ export function UnlockForm({
   const [wrong, setWrong] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [recovering, setRecovering] = useState(false);
+  const [takingOver, setTakingOver] = useState<WasmVault | null>(null);
 
+  if (takingOver) return <NewKeyForm token={token} tokenId={tokenId} name={name} vault={takingOver} etag={etag} />;
   if (recovering)
-    return <RecoverForm token={token} tokenId={tokenId} name={name} keyBlob={keyBlob} etag={etag} onCancel={() => setRecovering(false)} />;
+    return (
+      <RecoverForm
+        token={token}
+        tokenId={tokenId}
+        name={name}
+        keyBlob={keyBlob}
+        etag={etag}
+        keyring={keyring}
+        needsNewKey={needsNewKey}
+        onCancel={() => setRecovering(false)}
+      />
+    );
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -121,7 +141,9 @@ export function UnlockForm({
     setBusy(true);
     setWrong(false);
     try {
-      unlocked.set(tokenId, { vault: await unlockVault(fromB64(keyBlob), pass), etag });
+      const vault = openKeyring(await unlockVault(fromB64(keyBlob), pass), keyring);
+      if (needsNewKey) setTakingOver(vault);
+      else unlocked.set(tokenId, { vault, etag });
     } catch {
       setWrong(true);
       setBusy(false);

@@ -446,3 +446,73 @@ fn a_new_passphrase_is_never_wrapped_weaker_than_the_default() {
     let handed = Vault::from_exported_dek(&v.export_dek()[..], &weak_blob).unwrap();
     assert!(m_cost(&handed.rewrap("mine now").unwrap()) >= KdfParams::DEFAULT.m_cost_kib);
 }
+
+// ------------------------------------------------------------ key rotation
+
+fn encrypt_new(v: &Vault, plain: &[u8]) -> Vec<u8> {
+    let h = FileHeader::generate(CS).unwrap();
+    encrypt_file(&v.file_key(&h.file_salt), h, plain).unwrap()
+}
+
+fn decrypt_as(v: &Vault, enc: &[u8], key_id: Option<&[u8]>) -> Result<Vec<u8>> {
+    let h = FileHeader::parse(enc)?;
+    decrypt_file(&v.file_key_for(&h.file_salt, key_id)?, enc)
+}
+
+#[test]
+fn a_new_owner_gets_a_key_the_previous_owner_never_had() {
+    // The previous owner's drive: a file from before key ids existed, and its metadata.
+    let (prev, _) = vault("previous owner");
+    let old_file = encrypt_new(&prev, &data(50));
+    let old_meta = prev.seal_metadata(b"old.txt", b"obj-1").unwrap();
+
+    // The new owner received the same DEK and rotates.
+    let received = Vault::from_exported_dek(&prev.export_dek()[..], &vault("x").1).unwrap();
+    let mine = received.rotate().unwrap();
+    assert_ne!(mine.key_id(), prev.key_id());
+    assert_eq!(mine.older_keys(), 1);
+    let new_file = encrypt_new(&mine, &data(70));
+    let new_meta = mine.seal_metadata(b"new.txt", b"obj-2").unwrap();
+
+    // The new owner reads both; old files by the first key (no id recorded) or its id.
+    assert_eq!(decrypt_as(&mine, &old_file, None).unwrap(), data(50));
+    assert_eq!(decrypt_as(&mine, &old_file, Some(&prev.key_id())).unwrap(), data(50));
+    assert_eq!(decrypt_as(&mine, &new_file, Some(&mine.key_id())).unwrap(), data(70));
+    assert_eq!(mine.open_metadata(&old_meta, b"obj-1").unwrap(), b"old.txt");
+    assert_eq!(mine.open_metadata(&new_meta, b"obj-2").unwrap(), b"new.txt");
+
+    // The previous owner, who knows the old key, can't read anything added since.
+    assert!(prev.open_metadata(&new_meta, b"obj-2").is_err());
+    assert!(decrypt_as(&prev, &new_file, None).is_err());
+    assert_eq!(prev.file_key_for(&[0; 16], Some(&mine.key_id())).err(), Some(Error::Format("unknown key id")));
+}
+
+#[test]
+fn keyring_travels_sealed_under_the_current_key() {
+    let (first, _) = vault("a");
+    let old_file = encrypt_new(&first, &data(10));
+    let second = first.rotate().unwrap();
+    let third = second.rotate().unwrap();
+    let mid_file = encrypt_new(&second, &data(20));
+    let ring = third.seal_keyring().unwrap();
+
+    // Another device: only the current key (from the key blob) and the sealed keyring.
+    let (_, blob) = vault("b");
+    let mut other = Vault::from_exported_dek(&third.export_dek()[..], &blob).unwrap();
+    assert!(decrypt_as(&other, &old_file, None).is_err(), "without the keyring old files are closed");
+    other.open_keyring(&ring).unwrap();
+    assert_eq!(other.older_keys(), 2);
+    assert_eq!(decrypt_as(&other, &old_file, None).unwrap(), data(10), "no id = the drive's first key");
+    assert_eq!(decrypt_as(&other, &mid_file, Some(&second.key_id())).unwrap(), data(20));
+
+    // A keyring only opens under the key it was sealed for, and can't be altered.
+    let mut wrong = Vault::from_exported_dek(&second.export_dek()[..], &blob).unwrap();
+    assert!(wrong.open_keyring(&ring).is_err());
+    let mut bad = ring.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(other.open_keyring(&bad).is_err());
+    // An empty keyring (a drive that never changed hands) is fine too.
+    let mut fresh = Vault::from_exported_dek(&first.export_dek()[..], &blob).unwrap();
+    fresh.open_keyring(&first.seal_keyring().unwrap()).unwrap();
+    assert_eq!(fresh.older_keys(), 0);
+}

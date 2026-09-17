@@ -65,6 +65,15 @@ export interface VaultInfo {
   fill: string | null;
 }
 
+export interface DriveKey {
+  key_blob: string;
+  etag: string;
+  /** Older drive keys, sealed under the current one; null if the drive never changed hands. */
+  keyring: string | null;
+  /** The current key was made by another wallet: choose a passphrase and make a new key. */
+  needs_new_key: boolean;
+}
+
 export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill">;
 
 export interface ObjectRow {
@@ -162,11 +171,15 @@ export const api = {
 
   vaults: (token: string) => json<VaultInfo[]>(request("/vaults", { token })),
   vault: (token: string, id: string) => json<VaultInfo>(request(`/vaults/${id}`, { token })),
-  getKey: (token: string, id: string) =>
-    json<{ key_blob: string; etag: string }>(request(`/vaults/${id}/key`, { token })),
-  putKey: (token: string, id: string, keyBlob: string, previousEtag: string | null) =>
-    json<{ key_blob: string; etag: string }>(
-      request(`/vaults/${id}/key`, { method: "PUT", token, json: { key_blob: keyBlob, previous_etag: previousEtag } }),
+  getKey: (token: string, id: string) => json<DriveKey>(request(`/vaults/${id}/key`, { token })),
+  /** `keyring` set: the blob wraps a new drive key (see `kdf.makeNewKey`). */
+  putKey: (token: string, id: string, keyBlob: string, previousEtag: string | null, keyring?: string) =>
+    json<DriveKey>(
+      request(`/vaults/${id}/key`, {
+        method: "PUT",
+        token,
+        json: { key_blob: keyBlob, previous_etag: previousEtag, ...(keyring && { rotate: true, keyring }) },
+      }),
     ),
   getRecovery: (token: string, id: string) =>
     orNull(json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { token }))),

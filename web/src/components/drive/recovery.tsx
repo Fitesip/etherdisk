@@ -11,7 +11,8 @@ import { api } from "@/lib/api";
 import { CONTRACT_ADDRESS } from "@/lib/config";
 import { checkRecoveryWords, fromB64, loadCrypto, newRecoveryWords, toB64, WasmVault } from "@/lib/crypto";
 import { formatDate } from "@/lib/format";
-import { rewrapVault } from "@/lib/kdf";
+import { takeOver } from "@/lib/drive-key";
+import { openKeyring, rewrapVault } from "@/lib/kdf";
 import { passphraseValid } from "@/lib/passphrase";
 import { useStored, writeStored } from "@/lib/storage";
 import { useUnlocked } from "@/lib/unlocked";
@@ -316,6 +317,8 @@ export function RecoverForm({
   name,
   keyBlob,
   etag,
+  keyring,
+  needsNewKey,
   onCancel,
 }: {
   token: string;
@@ -323,6 +326,8 @@ export function RecoverForm({
   name: string;
   keyBlob: string;
   etag: string;
+  keyring: string | null;
+  needsNewKey: boolean;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -353,13 +358,18 @@ export function RecoverForm({
         throw new Error(t("recovery.wrongKey"));
       }
       recovered = opened;
-      const vault = await rewrapVault(opened, pass);
-      try {
-        const put = await api.putKey(token, tokenId, toB64(vault.keyBlob), etag);
-        unlocked.set(tokenId, { vault, etag: put.etag });
-      } catch (err) {
-        vault.free();
-        throw err;
+      openKeyring(opened, keyring);
+      if (needsNewKey) {
+        unlocked.set(tokenId, await takeOver(token, tokenId, opened, pass, etag));
+      } else {
+        const vault = await rewrapVault(opened, pass);
+        try {
+          const put = await api.putKey(token, tokenId, toB64(vault.keyBlob), etag);
+          unlocked.set(tokenId, { vault, etag: put.etag });
+        } catch (err) {
+          vault.free();
+          throw err;
+        }
       }
       await qc.invalidateQueries({ queryKey: ["key", token, tokenId] });
     } catch (err) {

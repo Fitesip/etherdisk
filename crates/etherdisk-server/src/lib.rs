@@ -156,13 +156,17 @@ pub(crate) mod b64 {
     /// Same, for optional fields (null when absent).
     pub mod option {
         use base64::{engine::general_purpose::STANDARD, Engine};
-        use serde::Serializer;
+        use serde::{Deserialize, Deserializer, Serializer};
 
         pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
             match v {
                 Some(b) => s.serialize_str(&STANDARD.encode(b)),
                 None => s.serialize_none(),
             }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+            Option::<String>::deserialize(d)?.map(|s| STANDARD.decode(s).map_err(serde::de::Error::custom)).transpose()
         }
     }
 }

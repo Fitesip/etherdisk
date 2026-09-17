@@ -266,6 +266,11 @@ export const en = {
     transfer: "Transfer drive",
     format: "Format drive",
   },
+  newKey: {
+    title: "Make {name} yours",
+    text: "This drive came from another wallet. Choose your own passphrase: the drive also gets a new key, so its previous owner can't read anything you add. Files already on it stay readable for you.",
+    submit: "Save and open",
+  },
   recovery: {
     title: "Recovery key",
     text: "24 words that open this drive if you forget its passphrase. They work only together with the wallet that owns the drive.",

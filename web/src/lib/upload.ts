@@ -118,6 +118,7 @@ export async function uploadFile(a: UploadArgs): Promise<void> {
       mtime: file.lastModified,
       header: toB64(header),
       ...(thumb && { thumbHeader: toB64(thumb.header) }),
+      keyId: vault.keyId,
     };
     await api.createFile(a.token, a.tokenId, {
       id,
@@ -182,7 +183,7 @@ export async function resumeUpload(a: UploadArgs, r: ResumeTarget): Promise<void
   const check = Math.min(done, chunks) - 1;
   const [off, len, last] = chunkLocation(check, cs, BigInt(r.encSize));
   const stored = await api.contentRange(a.token, a.tokenId, r.id, Number(off), Number(off + len) - 1);
-  const verifier = WasmFileEncryptor.resume(vault, header, check);
+  const verifier = WasmFileEncryptor.resume(vault, header, check, r.meta.keyId);
   try {
     const plain = new Uint8Array(await file.slice(check * cs, Math.min((check + 1) * cs, file.size)).arrayBuffer());
     const again = verifier.encryptChunk(plain, last === 1n);
@@ -193,7 +194,7 @@ export async function resumeUpload(a: UploadArgs, r: ResumeTarget): Promise<void
 
   a.onProgress(r.received / r.encSize);
   if (r.received < r.encSize) {
-    const enc = WasmFileEncryptor.resume(vault, header, done);
+    const enc = WasmFileEncryptor.resume(vault, header, done, r.meta.keyId);
     try {
       await sendChunks(a, r.id, enc, cs, done, r.received, r.encSize);
     } finally {
@@ -201,9 +202,10 @@ export async function resumeUpload(a: UploadArgs, r: ResumeTarget): Promise<void
     }
   }
 
-  // The thumbnail (if any) is made again with a fresh header, so its nonce is new.
+  // The thumbnail (if any) is made again with a fresh header, so its nonce is new. It shares
+  // the file's key: if the drive got a new key since the upload began, go without one.
   if (r.hadThumbnail) {
-    const thumb = await thumbnailFor(vault, file, r.meta.type, cs);
+    const thumb = r.meta.keyId === vault.keyId ? await thumbnailFor(vault, file, r.meta.type, cs) : null;
     const meta: FileMeta = { ...r.meta };
     delete meta.thumbHeader;
     if (thumb) meta.thumbHeader = toB64(thumb.header);
