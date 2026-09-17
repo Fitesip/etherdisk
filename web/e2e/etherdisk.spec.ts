@@ -9,6 +9,9 @@ test("landing shows the tiers from the contract", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Cloud storage you buy once/ })).toBeVisible();
   await expect(page.getByText("0.0005 ETH", { exact: true })).toBeVisible();
   await expect(page.getByText("Best value per GB")).toBeVisible();
+  // A tier that isn't on sale yet is listed, without a way to buy it.
+  await expect(page.getByText("8 GB", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coming soon").first()).toBeVisible();
 });
 
 test("drive: upload, search, trash with undo, password link", async ({ page, browser }) => {

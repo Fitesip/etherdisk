@@ -39,7 +39,9 @@ for (let i = 0; ; i++) {
 }
 
 if ((await rpc("eth_getCode", [CONTRACT, "latest"])) === "0x") {
-  execFileSync(tool("forge"), ["create", "src/Etherdisk.sol:Etherdisk", "--rpc-url", RPC, "--private-key", DEPLOYER_KEY, "--broadcast", "--constructor-args", DEPLOYER], {
+  // The testnet tiers, plus 8 GB listed but not on sale ("coming soon").
+  const tiers = ["[1,2,4,8]", "[500000000000000,750000000000000,1000000000000000,2000000000000000]", "[true,true,true,false]"];
+  execFileSync(tool("forge"), ["create", "src/Etherdisk.sol:Etherdisk", "--rpc-url", RPC, "--private-key", DEPLOYER_KEY, "--broadcast", "--constructor-args", DEPLOYER, ...tiers], {
     cwd: join(repo, "contracts"),
     stdio: "inherit",
   });

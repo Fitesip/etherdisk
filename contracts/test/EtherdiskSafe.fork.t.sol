@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test, Vm} from "forge-std/Test.sol";
 import {Etherdisk} from "../src/Etherdisk.sol";
+import {TestTiers} from "./TestTiers.sol";
 
 /// Mint payments reach a real Safe (v1.4.1) owner within the payout gas limit.
 /// Runs on a mainnet fork: MAINNET_RPC_URL=<url> forge test --match-contract Safe
@@ -21,7 +22,7 @@ contract EtherdiskSafeForkTest is Test {
 
     function test_mintPaysASafeOwner() public {
         assertGt(SAFE.code.length, 0, "not a contract on this fork");
-        Etherdisk disk = new Etherdisk(SAFE);
+        Etherdisk disk = TestTiers.deploy(SAFE);
         // A fresh address: well-known labels like "alice" already hold code on mainnet.
         address alice = address(uint160(uint256(keccak256("etherdisk safe fork minter"))));
         assertEq(alice.code.length, 0);

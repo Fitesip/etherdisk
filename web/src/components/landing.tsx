@@ -21,6 +21,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, typ
 import { formatEther } from "viem";
 
 import { useT, type MessageKey } from "@/i18n";
+import { formatCapacity } from "@/lib/format";
 import { useTiers } from "@/lib/tiers";
 
 import { Logo } from "./header";
@@ -489,8 +490,8 @@ function Tiers() {
   const t = useT();
   const { tiers, isLoading } = useTiers();
   const active = tiers.filter((x) => x.active);
-  // Highlight the cheapest per GB; a fact from the contract, not a marketing pick.
-  const perGb = (x: (typeof active)[number]) => Number(x.price) / x.capacityGb;
+  // Highlight the cheapest per GB on sale; a fact from the contract, not a marketing pick.
+  const perGb = (x: (typeof tiers)[number]) => Number(x.price) / x.capacityGb;
   const best = active.length > 1 ? active.reduce((a, b) => (perGb(b) < perGb(a) ? b : a)).id : -1;
 
   return (
@@ -504,22 +505,29 @@ function Tiers() {
           <Spinner className="mx-auto mt-12" />
         ) : (
           <div className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-3">
-            {active.map((tier, i) => {
+            {tiers.map((tier, i) => {
               const hot = tier.id === best;
+              const soon = !tier.active;
               return (
                 <Reveal key={tier.id} delay={i * 100}>
                   <div
                     className={cn(
-                      "relative flex h-full flex-col rounded-2xl border bg-card p-6 transition-transform duration-300 hover:-translate-y-1",
+                      "relative flex h-full flex-col rounded-2xl border bg-card p-6 transition-transform duration-300",
+                      soon ? "border-dashed border-border opacity-70" : "hover:-translate-y-1",
                       hot ? "border-accent shadow-xl shadow-accent/15" : "border-border",
                     )}
                   >
+                    {soon && (
+                      <span className="absolute -top-3 left-6 rounded-full border border-border bg-bg px-2.5 py-0.5 text-xs font-medium text-muted">
+                        {t("drives.inactive")}
+                      </span>
+                    )}
                     {hot && (
                       <span className="absolute -top-3 left-6 rounded-full bg-accent px-2.5 py-0.5 text-xs font-medium text-accent-fg">
                         {t("landing.bestValue")}
                       </span>
                     )}
-                    <div className="text-4xl font-semibold tracking-tight">{t("drives.capacity", { gb: tier.capacityGb })}</div>
+                    <div className="text-4xl font-semibold tracking-tight">{t("drives.capacity", { size: formatCapacity(tier.capacityGb) })}</div>
                     <div className="mt-2 font-mono text-sm">{formatEther(tier.price)} ETH</div>
                     <div className="mt-1 text-xs text-muted">
                       {t("landing.perGb", { price: formatEther(tier.price / BigInt(tier.capacityGb)) })}
@@ -532,15 +540,21 @@ function Tiers() {
                         </li>
                       ))}
                     </ul>
-                    <Link
-                      href="/drive"
-                      className={cn(
-                        "mt-8 inline-flex h-10 items-center justify-center rounded-lg text-sm font-medium transition",
-                        hot ? "bg-accent text-accent-fg hover:opacity-90" : "border border-border hover:bg-bg-subtle",
-                      )}
-                    >
-                      {t("landing.mintCta")}
-                    </Link>
+                    {soon ? (
+                      <span className="mt-8 inline-flex h-10 items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted">
+                        {t("drives.inactive")}
+                      </span>
+                    ) : (
+                      <Link
+                        href="/drive"
+                        className={cn(
+                          "mt-8 inline-flex h-10 items-center justify-center rounded-lg text-sm font-medium transition",
+                          hot ? "bg-accent text-accent-fg hover:opacity-90" : "border border-border hover:bg-bg-subtle",
+                        )}
+                      >
+                        {t("landing.mintCta")}
+                      </Link>
+                    )}
                   </div>
                 </Reveal>
               );

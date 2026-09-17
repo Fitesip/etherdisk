@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Etherdisk} from "../src/Etherdisk.sol";
+import {TestTiers} from "./TestTiers.sol";
 
 /// An owner that refuses ETH: its payments stay in the contract.
 contract Refuser {
@@ -104,7 +105,7 @@ contract EtherdiskInvariantTest is Test {
     Handler handler;
 
     function setUp() public {
-        disk = new Etherdisk(makeAddr("owner"));
+        disk = TestTiers.deploy(makeAddr("owner"));
         handler = new Handler(disk);
         targetContract(address(handler));
     }

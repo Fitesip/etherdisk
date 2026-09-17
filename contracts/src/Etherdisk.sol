@@ -25,6 +25,9 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     Tier[] private _tiers;
     mapping(uint256 tokenId => uint256 tierId) private _tokenTier;
     uint256 private _nextTokenId = 1;
+    /// Wallets the owner trusts to open and close sales of a tier (e.g. moderators), so a
+    /// multisig owner doesn't have to sign every such switch. They can't change prices.
+    mapping(address => bool) public isOperator;
 
     /// Enough for an EOA or a multisig's `receive`; bounds what an owner contract can cost minters.
     uint256 private constant PAYOUT_GAS = 50_000;
@@ -32,6 +35,7 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     event TierAdded(uint256 indexed tierId, uint32 capacityGb, uint256 price);
     event TierPriceUpdated(uint256 indexed tierId, uint256 price);
     event TierActiveUpdated(uint256 indexed tierId, bool active);
+    event OperatorSet(address indexed operator, bool enabled);
     event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
     /// The owner couldn't take a mint payment (e.g. a contract without `receive`): kept for `withdraw`.
     event PaymentHeld(address indexed owner, uint256 amount);
@@ -43,12 +47,25 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     error WithdrawFailed();
     error RenounceDisabled();
     error ZeroAddress();
+    error NotOperator();
+    error TiersMismatch();
 
-    constructor(address initialOwner) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
-        // Test tiers. Larger tiers (8/16/32/64/128/512/1024 GB) are added later via addTier.
-        _addTier(1, 0.0005 ether);
-        _addTier(2, 0.00075 ether);
-        _addTier(4, 0.001 ether);
+    /// @param capacitiesGb, prices, active  the initial tiers (same length); an inactive tier
+    ///        is listed but can't be bought yet ("coming soon").
+    constructor(address initialOwner, uint32[] memory capacitiesGb, uint256[] memory prices, bool[] memory active)
+        ERC721("Etherdisk", "DISK")
+        Ownable(initialOwner)
+    {
+        if (prices.length != capacitiesGb.length || active.length != capacitiesGb.length) revert TiersMismatch();
+        for (uint256 i; i < capacitiesGb.length; i++) {
+            _tiers.push(Tier(0, 0, false));
+            _setTier(i, capacitiesGb[i], prices[i], active[i]);
+        }
+    }
+
+    modifier onlyOperatorOrOwner() {
+        if (!isOperator[msg.sender] && msg.sender != owner()) revert NotOperator();
+        _;
     }
 
     // ---------------------------------------------------------------- mint
@@ -114,9 +131,16 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
         emit TierPriceUpdated(tierId, price);
     }
 
-    function setTierActive(uint256 tierId, bool active) external onlyOwner {
+    /// Opens or closes sales of a tier; the owner or an operator.
+    function setTierActive(uint256 tierId, bool active) external onlyOperatorOrOwner {
         _getTier(tierId).active = active;
         emit TierActiveUpdated(tierId, active);
+    }
+
+    function setOperator(address operator, bool enabled) external onlyOwner {
+        if (operator == address(0)) revert ZeroAddress();
+        isOperator[operator] = enabled;
+        emit OperatorSet(operator, enabled);
     }
 
     /// Disabled: without an owner, prices could never change and held payments would be stuck.
@@ -149,10 +173,16 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     }
 
     function _addTier(uint32 capacityGb, uint256 price) private returns (uint256 tierId) {
-        if (capacityGb == 0) revert ZeroCapacity();
         tierId = _tiers.length;
-        _tiers.push(Tier(capacityGb, price, true));
+        _tiers.push(Tier(0, 0, false));
+        _setTier(tierId, capacityGb, price, true);
+    }
+
+    function _setTier(uint256 tierId, uint32 capacityGb, uint256 price, bool active) private {
+        if (capacityGb == 0) revert ZeroCapacity();
+        _tiers[tierId] = Tier(capacityGb, price, active);
         emit TierAdded(tierId, capacityGb, price);
+        if (!active) emit TierActiveUpdated(tierId, false);
     }
 
     function _getTier(uint256 tierId) private view returns (Tier storage) {

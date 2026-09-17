@@ -10,14 +10,14 @@ import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { useT } from "@/i18n";
 import { api, type VaultInfo } from "@/lib/api";
 import { vaultNft } from "@/lib/contract";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatCapacity } from "@/lib/format";
 import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { DriveTile } from "./drive/dialogs";
 import { InboxHint, OutgoingHandovers } from "./handover";
 import { RequireSession } from "./require-session";
-import { Button, Card, Notice, Spinner } from "./ui";
+import { Button, Card, cn, Notice, Spinner } from "./ui";
 
 export const vaultsKey = (token: string) => ["vaults", token];
 
@@ -58,9 +58,12 @@ function MintCard({ tier, onMinted }: { tier: Tier; onMinted: () => void }) {
 
   const busy = write.isPending || receipt.isLoading;
   return (
-    <Card className="flex flex-col gap-4 p-5">
+    <Card className={cn("relative flex flex-col gap-4 p-5", !tier.active && "opacity-70")}>
+      {!tier.active && (
+        <span className="absolute top-4 right-4 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted">{t("drives.inactive")}</span>
+      )}
       <div>
-        <div className="text-2xl font-semibold tracking-tight">{t("drives.capacity", { gb: tier.capacityGb })}</div>
+        <div className="text-2xl font-semibold tracking-tight">{t("drives.capacity", { size: formatCapacity(tier.capacityGb) })}</div>
         <div className="font-mono text-sm text-muted">{formatEther(tier.price)} ETH</div>
       </div>
       <Button

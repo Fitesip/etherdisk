@@ -123,8 +123,8 @@ export const en = {
     minting: "Confirm in wallet…",
     mintPending: "Minting…",
     minted: "Drive minted",
-    inactive: "Unavailable",
-    capacity: "{gb} GB",
+    inactive: "Coming soon",
+    capacity: "{size}",
   },
   vault: {
     setupTitle: "Set up {name}",
