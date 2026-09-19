@@ -303,7 +303,7 @@ impl Vault {
         if plain.len() % 32 != 0 {
             return Err(Error::Format("bad keyring"));
         }
-        self.older = plain.chunks_exact(32).map(|c| Dek(c.try_into().unwrap())).collect();
+        self.older = plain.as_chunks::<32>().0.iter().map(|c| Dek(*c)).collect();
         Ok(())
     }
 
