@@ -2,11 +2,15 @@
 //! The contract is the source of truth; the server only caches it briefly.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::rpc::client::ClientBuilder;
+use alloy::transports::http::Http;
+use alloy::transports::layers::{FallbackLayer, RetryBackoffLayer};
 use alloy::sol;
 use async_trait::async_trait;
 
@@ -43,9 +47,24 @@ pub struct RpcChain {
     pub contract: IEtherdisk::IEtherdiskInstance<DynProvider>,
 }
 
+/// Every method the server calls. Sent to one endpoint at a time (best-ranked first, the
+/// next on failure), never to all at once: public endpoints rate-limit hard.
+const RPC_METHODS: [&str; 5] = ["eth_call", "eth_getLogs", "eth_blockNumber", "eth_chainId", "eth_getBlockByNumber"];
+
 impl RpcChain {
-    pub fn new(rpc_url: &str, contract: Address) -> anyhow::Result<Self> {
-        let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?).erased();
+    /// `rpc_urls`: one or more endpoints for the same chain. Endpoints are ranked by
+    /// success rate and latency; a failing one is skipped, and "too many requests"
+    /// answers are retried with a backoff.
+    pub fn new(rpc_urls: &[String], contract: Address) -> anyhow::Result<Self> {
+        let transports =
+            rpc_urls.iter().map(|u| Ok(Http::new(u.parse()?))).collect::<anyhow::Result<Vec<_>>>()?;
+        let count = NonZeroUsize::new(transports.len()).ok_or_else(|| anyhow::anyhow!("RPC_URL is empty"))?;
+        let fallback = FallbackLayer::default()
+            .with_active_transport_count(count)
+            .with_sequential_methods(RPC_METHODS.iter().map(|m| m.to_string()).collect());
+        let transport = tower::ServiceBuilder::new().layer(fallback).service(transports);
+        let client = ClientBuilder::default().layer(RetryBackoffLayer::new(5, 500, 300)).transport(transport, false);
+        let provider = ProviderBuilder::new().connect_client(client).erased();
         Ok(Self { contract: IEtherdisk::new(contract, provider.clone()), provider })
     }
 }

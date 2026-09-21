@@ -351,3 +351,168 @@ fn default_chunk_roundtrip_multi_mib() {
     assert_eq!(enc.len() as u64, encrypted_len(plain.len() as u64, DEFAULT_CHUNK_SIZE));
     assert_eq!(decrypt_file(&key, &enc).unwrap(), plain);
 }
+
+// ------------------------------------------------------------ recovery key
+
+// BIP-39 test vector: 32 zero bytes of entropy.
+const ZERO_WORDS: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+     abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+
+#[test]
+fn recovery_key_opens_the_drive_and_sets_a_new_passphrase() {
+    let (v, blob) = vault("forgotten");
+    let enc = encrypt(&v, &data(100));
+    let key = RecoveryKey::generate().unwrap();
+    let words = key.to_words();
+    assert_eq!(words.split(' ').count(), RECOVERY_WORDS);
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    assert_eq!(rblob.len(), RECOVERY_BLOB_LEN);
+
+    // Later, from the written-down words only.
+    let typed = RecoveryKey::from_words(&words).unwrap();
+    let recovered = Vault::recover(&rblob, &typed, &blob).unwrap();
+    assert_eq!(decrypt(&recovered, &enc).unwrap(), data(100));
+    let new_blob = recovered.rewrap("brand new").unwrap();
+    let reopened = Vault::unlock(&new_blob, "brand new").unwrap();
+    assert_eq!(decrypt(&reopened, &enc).unwrap(), data(100));
+    // The recovery blob keeps working after the passphrase changed: same DEK.
+    assert!(Vault::recover(&rblob, &typed, &new_blob).is_ok());
+}
+
+#[test]
+fn recovery_words_follow_bip39_and_forgive_formatting() {
+    let key = RecoveryKey::from_words(ZERO_WORDS).unwrap();
+    assert_eq!(&*key.to_words(), &ZERO_WORDS.split_whitespace().collect::<Vec<_>>().join(" "));
+    // Numbering, punctuation, case, line breaks and four-letter prefixes are fine.
+    let messy = ZERO_WORDS
+        .split_whitespace()
+        .enumerate()
+        .map(|(i, w)| format!("{}. {}", i + 1, if i % 2 == 0 { w[..4].to_uppercase() } else { w.to_string() }))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    assert_eq!(RecoveryKey::from_words(&messy).unwrap().to_words(), key.to_words());
+}
+
+#[test]
+fn recovery_words_report_what_is_wrong() {
+    let words: Vec<&str> = ZERO_WORDS.split_whitespace().collect();
+    let with = |i: usize, w: &str| {
+        let mut v = words.clone();
+        v[i] = w;
+        v.join(" ")
+    };
+    assert_eq!(RecoveryKey::from_words(&with(4, "notaword")).err(), Some(Error::RecoveryWord(5)));
+    assert_eq!(RecoveryKey::from_words(&with(4, "ab")).err(), Some(Error::RecoveryWord(5)), "ambiguous prefix");
+    assert_eq!(RecoveryKey::from_words(&with(23, "abandon")).err(), Some(Error::RecoveryChecksum));
+    assert!(matches!(RecoveryKey::from_words(&words[..23].join(" ")), Err(Error::Argument(_))));
+    assert!(matches!(RecoveryKey::from_words(""), Err(Error::Argument(_))));
+}
+
+#[test]
+fn recovery_blob_rejects_other_keys_and_tampering() {
+    let (v, blob) = vault("pass");
+    let key = RecoveryKey::generate().unwrap();
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    let other = RecoveryKey::generate().unwrap();
+    assert_eq!(Vault::recover(&rblob, &other, &blob).err(), Some(Error::Unlock));
+    for i in [0, 4, 10, rblob.len() - 1] {
+        let mut bad = rblob.clone();
+        bad[i] ^= 1;
+        assert!(Vault::recover(&bad, &key, &blob).is_err(), "byte {i}");
+    }
+    assert!(matches!(Vault::recover(&rblob[1..], &key, &blob), Err(Error::Format(_))));
+    // Two wraps of the same DEK differ (fresh nonce).
+    assert_ne!(v.wrap_for_recovery(&key).unwrap(), rblob);
+}
+
+#[test]
+fn a_new_passphrase_is_never_wrapped_weaker_than_the_default() {
+    // A hostile server hands out a key blob with tiny Argon2 parameters, e.g. as the
+    // "current" blob during recovery: it doesn't need to unlock, only to be parsed.
+    let (v, _) = vault("real");
+    let key = RecoveryKey::generate().unwrap();
+    let rblob = v.wrap_for_recovery(&key).unwrap();
+    let (_, weak_blob) = vault("whatever"); // FAST: 8 KiB, 1 pass
+    let m_cost = |b: &[u8]| u32::from_le_bytes(b[5..9].try_into().unwrap());
+    let t_cost = |b: &[u8]| u32::from_le_bytes(b[9..13].try_into().unwrap());
+    assert_eq!(m_cost(&weak_blob), 8);
+
+    let recovered = Vault::recover(&rblob, &key, &weak_blob).unwrap();
+    let new_blob = recovered.rewrap("chosen after recovery").unwrap();
+    assert!(m_cost(&new_blob) >= KdfParams::DEFAULT.m_cost_kib && t_cost(&new_blob) >= KdfParams::DEFAULT.t_cost);
+    assert!(Vault::unlock(&new_blob, "chosen after recovery").is_ok());
+
+    // Same for a key handed over by the previous owner.
+    let handed = Vault::from_exported_dek(&v.export_dek()[..], &weak_blob).unwrap();
+    assert!(m_cost(&handed.rewrap("mine now").unwrap()) >= KdfParams::DEFAULT.m_cost_kib);
+}
+
+// ------------------------------------------------------------ key rotation
+
+fn encrypt_new(v: &Vault, plain: &[u8]) -> Vec<u8> {
+    let h = FileHeader::generate(CS).unwrap();
+    encrypt_file(&v.file_key(&h.file_salt), h, plain).unwrap()
+}
+
+fn decrypt_as(v: &Vault, enc: &[u8], key_id: Option<&[u8]>) -> Result<Vec<u8>> {
+    let h = FileHeader::parse(enc)?;
+    decrypt_file(&v.file_key_for(&h.file_salt, key_id)?, enc)
+}
+
+#[test]
+fn a_new_owner_gets_a_key_the_previous_owner_never_had() {
+    // The previous owner's drive: a file from before key ids existed, and its metadata.
+    let (prev, _) = vault("previous owner");
+    let old_file = encrypt_new(&prev, &data(50));
+    let old_meta = prev.seal_metadata(b"old.txt", b"obj-1").unwrap();
+
+    // The new owner received the same DEK and rotates.
+    let received = Vault::from_exported_dek(&prev.export_dek()[..], &vault("x").1).unwrap();
+    let mine = received.rotate().unwrap();
+    assert_ne!(mine.key_id(), prev.key_id());
+    assert_eq!(mine.older_keys(), 1);
+    let new_file = encrypt_new(&mine, &data(70));
+    let new_meta = mine.seal_metadata(b"new.txt", b"obj-2").unwrap();
+
+    // The new owner reads both; old files by the first key (no id recorded) or its id.
+    assert_eq!(decrypt_as(&mine, &old_file, None).unwrap(), data(50));
+    assert_eq!(decrypt_as(&mine, &old_file, Some(&prev.key_id())).unwrap(), data(50));
+    assert_eq!(decrypt_as(&mine, &new_file, Some(&mine.key_id())).unwrap(), data(70));
+    assert_eq!(mine.open_metadata(&old_meta, b"obj-1").unwrap(), b"old.txt");
+    assert_eq!(mine.open_metadata(&new_meta, b"obj-2").unwrap(), b"new.txt");
+
+    // The previous owner, who knows the old key, can't read anything added since.
+    assert!(prev.open_metadata(&new_meta, b"obj-2").is_err());
+    assert!(decrypt_as(&prev, &new_file, None).is_err());
+    assert_eq!(prev.file_key_for(&[0; 16], Some(&mine.key_id())).err(), Some(Error::Format("unknown key id")));
+}
+
+#[test]
+fn keyring_travels_sealed_under_the_current_key() {
+    let (first, _) = vault("a");
+    let old_file = encrypt_new(&first, &data(10));
+    let second = first.rotate().unwrap();
+    let third = second.rotate().unwrap();
+    let mid_file = encrypt_new(&second, &data(20));
+    let ring = third.seal_keyring().unwrap();
+
+    // Another device: only the current key (from the key blob) and the sealed keyring.
+    let (_, blob) = vault("b");
+    let mut other = Vault::from_exported_dek(&third.export_dek()[..], &blob).unwrap();
+    assert!(decrypt_as(&other, &old_file, None).is_err(), "without the keyring old files are closed");
+    other.open_keyring(&ring).unwrap();
+    assert_eq!(other.older_keys(), 2);
+    assert_eq!(decrypt_as(&other, &old_file, None).unwrap(), data(10), "no id = the drive's first key");
+    assert_eq!(decrypt_as(&other, &mid_file, Some(&second.key_id())).unwrap(), data(20));
+
+    // A keyring only opens under the key it was sealed for, and can't be altered.
+    let mut wrong = Vault::from_exported_dek(&second.export_dek()[..], &blob).unwrap();
+    assert!(wrong.open_keyring(&ring).is_err());
+    let mut bad = ring.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(other.open_keyring(&bad).is_err());
+    // An empty keyring (a drive that never changed hands) is fine too.
+    let mut fresh = Vault::from_exported_dek(&first.export_dek()[..], &blob).unwrap();
+    fresh.open_keyring(&first.seal_keyring().unwrap()).unwrap();
+    assert_eq!(fresh.older_keys(), 0);
+}

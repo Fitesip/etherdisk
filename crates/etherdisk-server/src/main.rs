@@ -9,7 +9,8 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use etherdisk_server::chain::{Ownership, RpcChain};
-use etherdisk_server::storage::LocalStore;
+use etherdisk_server::monitor::Monitor;
+use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{connect_db, ideas, indexer, objects, AppState, Config};
 
 const OWNER_CACHE_TTL: Duration = Duration::from_secs(10);
@@ -28,12 +29,16 @@ async fn main() -> anyhow::Result<()> {
     }
     let db = connect_db(&config.database_url).await?;
     etherdisk_server::bind_deployment(&db, config.contract_address, config.chain_id).await?;
-    let store = Arc::new(LocalStore::new(&config.data_dir)?);
-    let rpc = Arc::new(RpcChain::new(&config.rpc_url, config.contract_address)?);
+    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await?);
+    for v in store.info().await? {
+        tracing::info!(volume = %v.id, path = %v.root.display(), free_gb = v.available_bytes >> 30, total_gb = v.total_bytes >> 30, drives = v.vaults, "storage volume");
+    }
+    let rpc = Arc::new(RpcChain::new(&config.rpc_urls, config.contract_address)?);
     let chain = Ownership::new(rpc.clone(), OWNER_CACHE_TTL);
-    let state = AppState::new(db, store, chain, config.clone());
+    let state = AppState::new(db, store.clone(), chain, config.clone());
 
-    tokio::spawn(indexer::run(state.clone(), rpc));
+    tokio::spawn(indexer::run(state.clone(), rpc.clone()));
+    tokio::spawn(Arc::new(Monitor::new(state.clone(), store, rpc)).run());
     tokio::spawn({
         let st = state.clone();
         async move {

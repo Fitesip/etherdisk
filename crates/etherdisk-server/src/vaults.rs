@@ -1,6 +1,6 @@
 //! Vaults (one per token): listing, the wrapped key blob, and reset.
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
@@ -16,6 +16,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults", get(list))
         .route("/vaults/{token_id}", get(one))
         .route("/vaults/{token_id}/key", get(get_key).put(put_key))
+        .route("/vaults/{token_id}/recovery", get(get_recovery).put(put_recovery).delete(delete_recovery))
         .route("/vaults/{token_id}/reset", post(reset))
         .route("/vaults/{token_id}/profile", put(put_profile))
 }
@@ -48,6 +49,8 @@ pub struct VaultInfo {
     used_bytes: u64,
     /// Whether a passphrase/key blob has been set up.
     initialized: bool,
+    /// When the current owner saved a recovery key, if they did.
+    recovery_at: Option<i64>,
     #[serde(flatten)]
     profile: Profile,
 }
@@ -63,12 +66,20 @@ pub struct Profile {
 
 pub const MAX_NAME_CHARS: usize = 64;
 
-async fn info(st: &AppState, id: U256) -> AppResult<VaultInfo> {
+/// `owner`: the caller, who holds the token (recovery keys are per holder).
+async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     let token = id.to_string();
     let initialized: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM vault_keys WHERE token_id = ?)")
         .bind(&token)
         .fetch_one(&st.db)
         .await?;
+    let recovery_at: Option<i64> = sqlx::query_scalar(
+        "SELECT r.created_at FROM vault_recovery r WHERE r.token_id = ? AND r.created_by = ?",
+    )
+    .bind(&token)
+    .bind(format!("{owner:#x}"))
+    .fetch_optional(&st.db)
+    .await?;
     let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill FROM vault_profiles WHERE token_id = ?")
         .bind(&token)
         .fetch_optional(&st.db)
@@ -79,6 +90,7 @@ async fn info(st: &AppState, id: U256) -> AppResult<VaultInfo> {
         capacity_bytes: st.chain.capacity_bytes(id).await?,
         used_bytes: used_bytes(st, &token).await?,
         initialized,
+        recovery_at,
         token_id: token,
     })
 }
@@ -87,14 +99,14 @@ async fn info(st: &AppState, id: U256) -> AppResult<VaultInfo> {
 async fn list(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<VaultInfo>>> {
     let mut out = Vec::new();
     for id in st.chain.tokens_of_owner(user.0).await? {
-        out.push(info(&st, id).await?);
+        out.push(info(&st, id, user.0).await?);
     }
     Ok(Json(out))
 }
 
 async fn one(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<VaultInfo>> {
     let (id, _) = owned(&st, &user, &token_id).await?;
-    Ok(Json(info(&st, id).await?))
+    Ok(Json(info(&st, id, user.0).await?))
 }
 
 fn clean_name(name: Option<String>) -> AppResult<Option<String>> {
@@ -134,7 +146,7 @@ async fn put_profile(
     .bind(now())
     .execute(&st.db)
     .await?;
-    Ok(Json(info(&st, id).await?))
+    Ok(Json(info(&st, id, user.0).await?))
 }
 
 #[derive(Serialize)]
@@ -143,6 +155,16 @@ struct KeyResponse {
     key_blob: Vec<u8>,
     /// Pass back as `previous_etag` when replacing the blob.
     etag: String,
+    /// The drive's older keys, sealed under the current one (null: never changed hands).
+    #[serde(with = "b64::option")]
+    keyring: Option<Vec<u8>>,
+    /// The current key was made by another wallet (the drive changed hands): the caller
+    /// should choose their own passphrase and make a new key (`rotate`).
+    needs_new_key: bool,
+}
+
+fn needs_new_key(rotated_by: &Option<String>, caller: &Address) -> bool {
+    rotated_by.as_ref().is_some_and(|by| *by != format!("{caller:#x}"))
 }
 
 pub(crate) fn etag(blob: &[u8]) -> String {
@@ -151,12 +173,13 @@ pub(crate) fn etag(blob: &[u8]) -> String {
 
 async fn get_key(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<KeyResponse>> {
     let (_, token) = owned(&st, &user, &token_id).await?;
-    let blob: Vec<u8> = sqlx::query_scalar("SELECT key_blob FROM vault_keys WHERE token_id = ?")
-        .bind(&token)
-        .fetch_optional(&st.db)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    Ok(Json(KeyResponse { etag: etag(&blob), key_blob: blob }))
+    let (blob, keyring, rotated_by): (Vec<u8>, Option<Vec<u8>>, Option<String>) =
+        sqlx::query_as("SELECT key_blob, keyring, rotated_by FROM vault_keys WHERE token_id = ?")
+            .bind(&token)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    Ok(Json(KeyResponse { etag: etag(&blob), needs_new_key: needs_new_key(&rotated_by, &user.0), key_blob: blob, keyring }))
 }
 
 #[derive(Deserialize)]
@@ -166,7 +189,16 @@ struct PutKeyRequest {
     /// `null` to initialize a fresh vault; the current etag to change the passphrase.
     /// Guards against overwriting a blob the client has not seen (lost DEK = lost files).
     previous_etag: Option<String>,
+    /// The blob wraps a new drive key (`rotate`): `keyring` holds the older keys. The
+    /// caller becomes the key's maker; recovery keys of the old key stop being served.
+    #[serde(default)]
+    rotate: bool,
+    #[serde(default, with = "b64::option")]
+    keyring: Option<Vec<u8>>,
 }
+
+/// A sealed keyring: nonce (24) + tag (16) + 32 bytes per older key.
+const MAX_KEYRING: usize = 40 + 32 * 1024;
 
 async fn put_key(
     State(st): State<AppState>,
@@ -179,11 +211,18 @@ async fn put_key(
         return Err(AppError::bad("not a vault key blob"));
     }
 
+    if req.rotate != req.keyring.is_some() || req.keyring.as_ref().is_some_and(|k| k.len() < 40 || k.len() > MAX_KEYRING) {
+        return Err(AppError::bad("a new key comes with its keyring, and only then"));
+    }
+
     let mut tx = st.db.begin().await?;
     let current: Option<Vec<u8>> = sqlx::query_scalar("SELECT key_blob FROM vault_keys WHERE token_id = ?")
         .bind(&token)
         .fetch_optional(&mut *tx)
         .await?;
+    if req.rotate && current.is_none() {
+        return Err(AppError::conflict("vault is not initialized"));
+    }
     match (&current, &req.previous_etag) {
         (None, None) => {}
         (Some(cur), Some(prev)) if etag(cur) == *prev => {}
@@ -192,17 +231,118 @@ async fn put_key(
     }
     // The UPSERT keeps this atomic with the check above (SQLite serializes writers;
     // a concurrent writer makes this transaction fail instead of overwriting).
+    let me = format!("{:#x}", user.0);
+    if current.is_none() {
+        // Two first set-ups racing: the second gets a conflict, not an error.
+        let n = sqlx::query(
+            "INSERT INTO vault_keys (token_id, key_blob, updated_at, rotated_by) VALUES (?, ?, ?, ?) ON CONFLICT (token_id) DO NOTHING",
+        )
+        .bind(&token)
+        .bind(&req.key_blob)
+        .bind(now())
+        .bind(&me)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::conflict("key blob changed; reload it first"));
+        }
+    } else if req.rotate {
+        sqlx::query("UPDATE vault_keys SET key_blob = ?, keyring = ?, rotated_by = ?, updated_at = ? WHERE token_id = ?")
+            .bind(&req.key_blob)
+            .bind(&req.keyring)
+            .bind(&me)
+            .bind(now())
+            .bind(&token)
+            .execute(&mut *tx)
+            .await?;
+        // Wrapped the old key: useless now, and its words must not open the new one.
+        sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(&token).execute(&mut *tx).await?;
+    } else {
+        // A new passphrase for the same key. A drive from before rotation adopts its owner.
+        sqlx::query("UPDATE vault_keys SET key_blob = ?, rotated_by = COALESCE(rotated_by, ?), updated_at = ? WHERE token_id = ?")
+            .bind(&req.key_blob)
+            .bind(&me)
+            .bind(now())
+            .bind(&token)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    let keyring: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT keyring FROM vault_keys WHERE token_id = ?").bind(&token).fetch_one(&st.db).await?;
+    Ok(Json(KeyResponse { etag: etag(&req.key_blob), key_blob: req.key_blob, keyring, needs_new_key: false }))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Recovery {
+    /// The drive key wrapped under the recovery words (`Vault::wrap_for_recovery`).
+    #[serde(with = "b64")]
+    blob: Vec<u8>,
+    #[serde(default, skip_deserializing)]
+    created_at: i64,
+}
+
+/// The caller's recovery blob, to open the drive with the words when the passphrase is lost.
+async fn get_recovery(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Recovery>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let row: Option<(Vec<u8>, i64)> =
+        sqlx::query_as("SELECT blob, created_at FROM vault_recovery WHERE token_id = ? AND created_by = ?")
+            .bind(&token)
+            .bind(format!("{:#x}", user.0))
+            .fetch_optional(&st.db)
+            .await?;
+    let (blob, created_at) = row.ok_or(AppError::NotFound)?;
+    Ok(Json(Recovery { blob, created_at }))
+}
+
+/// Saves (or replaces: the previous words stop working) the caller's recovery blob.
+async fn put_recovery(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(token_id): Path<String>,
+    Json(req): Json<Recovery>,
+) -> AppResult<Json<Recovery>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    if req.blob.len() != etherdisk_crypto::RECOVERY_BLOB_LEN || !req.blob.starts_with(b"EDR1") {
+        return Err(AppError::bad("not a recovery blob"));
+    }
+    let initialized: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM vault_keys WHERE token_id = ?)")
+        .bind(&token)
+        .fetch_one(&st.db)
+        .await?;
+    if !initialized {
+        return Err(AppError::conflict("vault is not initialized"));
+    }
+    let created_at = now();
     sqlx::query(
-        "INSERT INTO vault_keys (token_id, key_blob, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT (token_id) DO UPDATE SET key_blob = excluded.key_blob, updated_at = excluded.updated_at",
+        "INSERT INTO vault_recovery (token_id, blob, created_by, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET blob = excluded.blob, created_by = excluded.created_by, created_at = excluded.created_at",
     )
     .bind(&token)
-    .bind(&req.key_blob)
-    .bind(now())
-    .execute(&mut *tx)
+    .bind(&req.blob)
+    .bind(format!("{:#x}", user.0))
+    .bind(created_at)
+    .execute(&st.db)
     .await?;
-    tx.commit().await?;
-    Ok(Json(KeyResponse { etag: etag(&req.key_blob), key_blob: req.key_blob }))
+    Ok(Json(Recovery { blob: req.blob, created_at }))
+}
+
+async fn delete_recovery(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(&token).execute(&st.db).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Indexer hook: the previous holder's recovery key must not open the drive for its new
+/// owner's files. Keeps a key the new owner already saved (the indexer may lag behind).
+pub async fn on_transfer(st: &AppState, to: Address, token: &str) -> AppResult<()> {
+    sqlx::query("DELETE FROM vault_recovery WHERE token_id = ? AND created_by <> ?")
+        .bind(token)
+        .bind(format!("{to:#x}"))
+        .execute(&st.db)
+        .await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -234,6 +374,7 @@ async fn wipe(st: &AppState, token: &str) -> AppResult<()> {
     sqlx::query("DELETE FROM vault_keys WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM handover_skips WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     tx.commit().await?;
     st.store.delete_vault(token).await?;
     Ok(())

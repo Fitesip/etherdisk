@@ -1,8 +1,8 @@
-import { createConfig, http } from "wagmi";
+import { createConfig, fallback, http } from "wagmi";
 import { sepolia } from "wagmi/chains";
 import { injected, walletConnect } from "wagmi/connectors";
 
-import { RPC_URL, WC_PROJECT_ID } from "./config";
+import { RPC_URLS, WC_PROJECT_ID } from "./config";
 
 // Browser wallets (MetaMask, Rabby, ...) are discovered via EIP-6963 automatically;
 // `injected()` is the fallback for wallets that don't announce themselves.
@@ -24,7 +24,8 @@ export const wagmiConfig = createConfig({
         ]
       : []),
   ],
-  transports: { [sepolia.id]: http(RPC_URL) },
+  // Several endpoints: the next one takes over when one fails.
+  transports: { [sepolia.id]: RPC_URLS.length ? fallback(RPC_URLS.map((url) => http(url))) : http() },
   ssr: true,
 });
 

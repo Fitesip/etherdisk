@@ -67,7 +67,8 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
     staleTime: 0,
   });
   // "Stay unlocked on reload": bring the kept key back instead of asking for the passphrase.
-  const kept = !!address && !unlocked && !!key.data && hasKept(address, tokenId);
+  // Not for a drive that changed hands: its new owner makes a new key first.
+  const kept = !!address && !unlocked && !!key.data && !key.data.needs_new_key && hasKept(address, tokenId);
   // A key sent by the previous owner replaces the passphrase form (kept behind a button).
   const handover = useQuery({
     queryKey: ["handover", token, tokenId],
@@ -77,7 +78,7 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
   const [usePassphrase, setUsePassphrase] = useState(false);
   const restore = useQuery({
     queryKey: ["restore", address, tokenId, key.data?.etag],
-    queryFn: () => store.restore(tokenId, key.data!.etag),
+    queryFn: () => store.restore(tokenId, key.data!.etag, key.data!.keyring),
     enabled: kept,
     gcTime: 0,
     retry: false,
@@ -99,7 +100,14 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
   else if (key.data && !(kept && restore.isPending))
     body = (
       <>
-        <IncomingHandover token={token} tokenId={tokenId} keyBlob={key.data.key_blob} etag={key.data.etag} />
+        <IncomingHandover
+          token={token}
+          tokenId={tokenId}
+          keyBlob={key.data.key_blob}
+          etag={key.data.etag}
+          keyring={key.data.keyring}
+          needsNewKey={key.data.needs_new_key}
+        />
         {handover.data?.sealed && !usePassphrase ? (
           <div className="mt-4 text-center">
             <Button variant="ghost" size="sm" onClick={() => setUsePassphrase(true)}>
@@ -107,7 +115,16 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
             </Button>
           </div>
         ) : (
-          <UnlockForm token={token} tokenId={tokenId} name={name} keyBlob={key.data.key_blob} etag={key.data.etag} />
+          <UnlockForm
+            token={token}
+            tokenId={tokenId}
+            name={name}
+            keyBlob={key.data.key_blob}
+            etag={key.data.etag}
+            keyring={key.data.keyring}
+            needsNewKey={key.data.needs_new_key}
+            hasRecovery={!!vault.recovery_at}
+          />
         )}
       </>
     );

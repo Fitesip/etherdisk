@@ -19,7 +19,7 @@ export interface StreamSource {
 export const ownerSource = (token: string, tokenId: string, vault: WasmVault, row: ObjectRow, meta: FileMeta): StreamSource => ({
   url: contentUrl(tokenId, row.id),
   token,
-  key: vault.fileKey(fromB64(meta.header)),
+  key: vault.fileKeyFor(fromB64(meta.header), meta.keyId),
   encSize: row.size,
   name: meta.name,
   type: meta.type,

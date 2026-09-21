@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 import {EtherdiskArt} from "./EtherdiskArt.sol";
 
@@ -12,8 +13,9 @@ import {EtherdiskArt} from "./EtherdiskArt.sol";
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
 ///         Transfers are plain ERC-721 transfers (no restrictions).
 ///         Mint payments go straight to the contract owner; if that transfer fails they stay
-///         here for `withdraw`.
-contract Etherdisk is ERC721Enumerable, Ownable {
+///         here for `withdraw`. Ownership moves in two steps (the new owner accepts), and it
+///         can't be renounced: a typo or a slip can't leave the contract without an owner.
+contract Etherdisk is ERC721Enumerable, Ownable2Step {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
         uint256 price; // wei, can be updated for future mints
@@ -23,6 +25,9 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     Tier[] private _tiers;
     mapping(uint256 tokenId => uint256 tierId) private _tokenTier;
     uint256 private _nextTokenId = 1;
+    /// Wallets the owner trusts to open and close sales of a tier (e.g. moderators), so a
+    /// multisig owner doesn't have to sign every such switch. They can't change prices.
+    mapping(address => bool) public isOperator;
 
     /// Enough for an EOA or a multisig's `receive`; bounds what an owner contract can cost minters.
     uint256 private constant PAYOUT_GAS = 50_000;
@@ -30,6 +35,7 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     event TierAdded(uint256 indexed tierId, uint32 capacityGb, uint256 price);
     event TierPriceUpdated(uint256 indexed tierId, uint256 price);
     event TierActiveUpdated(uint256 indexed tierId, bool active);
+    event OperatorSet(address indexed operator, bool enabled);
     event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
     /// The owner couldn't take a mint payment (e.g. a contract without `receive`): kept for `withdraw`.
     event PaymentHeld(address indexed owner, uint256 amount);
@@ -39,12 +45,27 @@ contract Etherdisk is ERC721Enumerable, Ownable {
     error WrongPayment();
     error ZeroCapacity();
     error WithdrawFailed();
+    error RenounceDisabled();
+    error ZeroAddress();
+    error NotOperator();
+    error TiersMismatch();
 
-    constructor(address initialOwner) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
-        // Test tiers. Larger tiers (8/16/32/64/128/512/1024 GB) are added later via addTier.
-        _addTier(1, 0.0005 ether);
-        _addTier(2, 0.00075 ether);
-        _addTier(4, 0.001 ether);
+    /// @param capacitiesGb, prices, active  the initial tiers (same length); an inactive tier
+    ///        is listed but can't be bought yet ("coming soon").
+    constructor(address initialOwner, uint32[] memory capacitiesGb, uint256[] memory prices, bool[] memory active)
+        ERC721("Etherdisk", "DISK")
+        Ownable(initialOwner)
+    {
+        if (prices.length != capacitiesGb.length || active.length != capacitiesGb.length) revert TiersMismatch();
+        for (uint256 i; i < capacitiesGb.length; i++) {
+            _tiers.push(Tier(0, 0, false));
+            _setTier(i, capacitiesGb[i], prices[i], active[i]);
+        }
+    }
+
+    modifier onlyOperatorOrOwner() {
+        if (!isOperator[msg.sender] && msg.sender != owner()) revert NotOperator();
+        _;
     }
 
     // ---------------------------------------------------------------- mint
@@ -56,8 +77,9 @@ contract Etherdisk is ERC721Enumerable, Ownable {
 
         tokenId = _nextTokenId++;
         _tokenTier[tokenId] = tierId;
-        _safeMint(msg.sender, tokenId);
+        // Logged before the receiver's callback, so a re-entering minter can't reorder events.
         emit DriveMinted(tokenId, msg.sender, tierId);
+        _safeMint(msg.sender, tokenId);
         _payOwner(msg.value);
     }
 
@@ -109,53 +131,62 @@ contract Etherdisk is ERC721Enumerable, Ownable {
         emit TierPriceUpdated(tierId, price);
     }
 
-    function setTierActive(uint256 tierId, bool active) external onlyOwner {
+    /// Opens or closes sales of a tier; the owner or an operator.
+    function setTierActive(uint256 tierId, bool active) external onlyOperatorOrOwner {
         _getTier(tierId).active = active;
         emit TierActiveUpdated(tierId, active);
     }
 
+    function setOperator(address operator, bool enabled) external onlyOwner {
+        if (operator == address(0)) revert ZeroAddress();
+        isOperator[operator] = enabled;
+        emit OperatorSet(operator, enabled);
+    }
+
+    /// Disabled: without an owner, prices could never change and held payments would be stuck.
+    function renounceOwnership() public view override onlyOwner {
+        revert RenounceDisabled();
+    }
+
     function withdraw(address payable to) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
         (bool ok,) = to.call{value: address(this).balance}("");
         if (!ok) revert WithdrawFailed();
     }
 
     // ---------------------------------------------------------------- internal
 
-    /// Forwards a mint payment to the owner. Never reverts: a failed transfer (or no owner
-    /// after `renounceOwnership`) leaves the payment in the contract.
+    /// Forwards a mint payment to the owner. Never reverts: a failed transfer leaves the
+    /// payment in the contract for `withdraw`.
     function _payOwner(uint256 amount) private {
         address payable to = payable(owner());
-        if (amount == 0 || to == address(0)) return;
-        (bool ok,) = to.call{value: amount, gas: PAYOUT_GAS}("");
-        if (!ok) emit PaymentHeld(to, amount);
+        if (amount == 0) return;
+        // The destination is the owner, not the caller. Return data is not copied, so the
+        // receiver can't make minting expensive with a huge answer.
+        bool ok;
+        assembly ("memory-safe") {
+            ok := call(PAYOUT_GAS, to, amount, 0, 0, 0, 0)
+        }
+        // The event can only follow the transfer's result.
+        // forge-lint: disable-next-line(reentrancy-events)
+        if (!ok) emit PaymentHeld(to, amount); // slither-disable-line reentrancy-events
     }
 
     function _addTier(uint32 capacityGb, uint256 price) private returns (uint256 tierId) {
-        if (capacityGb == 0) revert ZeroCapacity();
         tierId = _tiers.length;
-        _tiers.push(Tier(capacityGb, price, true));
+        _tiers.push(Tier(0, 0, false));
+        _setTier(tierId, capacityGb, price, true);
+    }
+
+    function _setTier(uint256 tierId, uint32 capacityGb, uint256 price, bool active) private {
+        if (capacityGb == 0) revert ZeroCapacity();
+        _tiers[tierId] = Tier(capacityGb, price, active);
         emit TierAdded(tierId, capacityGb, price);
+        if (!active) emit TierActiveUpdated(tierId, false);
     }
 
     function _getTier(uint256 tierId) private view returns (Tier storage) {
         if (tierId >= _tiers.length) revert InvalidTier();
         return _tiers[tierId];
-    }
-
-    // ERC721Enumerable requires these overrides (OpenZeppelin v5).
-    function _update(address to, uint256 tokenId, address auth)
-        internal
-        override(ERC721Enumerable)
-        returns (address)
-    {
-        return super._update(to, tokenId, auth);
-    }
-
-    function _increaseBalance(address account, uint128 value) internal override(ERC721Enumerable) {
-        super._increaseBalance(account, value);
-    }
-
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721Enumerable) returns (bool) {
-        return super.supportsInterface(interfaceId);
     }
 }

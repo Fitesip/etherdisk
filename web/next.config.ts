@@ -15,7 +15,7 @@ const origin = (url: string | undefined) => {
 const connect = [
   "'self'",
   origin(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"),
-  origin(process.env.NEXT_PUBLIC_RPC_URL || sepolia.rpcUrls.default.http[0]),
+  ...(process.env.NEXT_PUBLIC_RPC_URL || sepolia.rpcUrls.default.http[0]).split(",").map((u) => origin(u.trim())),
   // WalletConnect relay and verify API.
   "https://*.walletconnect.com",
   "wss://*.walletconnect.com",

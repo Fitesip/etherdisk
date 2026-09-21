@@ -6,6 +6,7 @@ export {
   WasmFileDecryptor,
   WasmFileEncryptor,
   WasmVault,
+  checkRecoveryWords,
   chunkLocation,
   decryptWithKey,
   defaultChunkSize,
@@ -15,6 +16,7 @@ export {
   inboxOpen,
   inboxPublicKey,
   inboxSeal,
+  newRecoveryWords,
   plaintextLen,
 } from "@/wasm/etherdisk_crypto_wasm";
 

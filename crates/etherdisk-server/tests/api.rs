@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use etherdisk_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
 use etherdisk_server::chain::{Chain, Ownership};
-use etherdisk_server::storage::LocalStore;
+use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
 // ------------------------------------------------------------ fixtures
@@ -70,12 +70,16 @@ struct App {
 }
 
 async fn app() -> App {
+    app_with(|_| {}).await
+}
+
+async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     let data_dir = tempfile::tempdir().unwrap();
-    let config = Config {
+    let mut config = Config {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
-        data_dir: data_dir.path().join("blobs"),
-        rpc_url: String::new(),
+        data_dirs: vec![data_dir.path().join("blobs")],
+        rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
         chain_id: CHAIN_ID,
         start_block: 0,
@@ -85,9 +89,21 @@ async fn app() -> App {
         cors_origins: vec![],
         session_ttl_secs: 3600,
         trust_proxy: false,
+        telegram_bot_token: None,
+        telegram_chat_id: None,
+        telegram_api_url: String::new(),
+        alert_thresholds: etherdisk_server::monitor::Thresholds {
+            free_percent: 15,
+            critical_percent: 5,
+            indexer_lag_blocks: 300,
+            errors_per_check: 20,
+        },
+        monitor_interval_secs: 60,
+        ideas_admins: Vec::new(),
     };
+    tweak(&mut config);
     let db = connect_db(&config.database_url).await.unwrap();
-    let store = Arc::new(LocalStore::new(&config.data_dir).unwrap());
+    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
     let chain = Arc::new(FakeChain::default());
     // TTL 0: every request sees the fake chain's current state.
     let state = AppState::new(db, store, Ownership::new(chain.clone(), Duration::ZERO), config);
@@ -767,6 +783,140 @@ async fn ideas_board_one_vote_per_nft() {
     assert_eq!(app.get("/api/ideas", Some(&tadm)).await.json().as_array().unwrap().len(), 2, "the admin still sees it");
     assert_eq!(vote(tb.clone(), sign_vote(&bob, id2, "for").await, id2).await.status, StatusCode::NOT_FOUND);
     assert!(app.get("/api/ideas/me", Some(&tadm)).await.json()["admin"].as_bool().unwrap());
+}
+
+#[tokio::test]
+async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
+    let (moderator, author, stranger) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
+    let app = app_with(|c| c.ideas_admins = vec![moderator.address()]).await;
+    // The contract owner is someone else (a multisig, say).
+    *app.chain.admin.lock().unwrap() = Address::repeat_byte(0x5a);
+    app.chain.mint(1, author.address(), 1);
+    let (tm, ta, ts) = (app.login(&moderator).await, app.login(&author).await, app.login(&stranger).await);
+    let id = app.json(Method::POST, "/api/ideas", Some(&ta), json!({ "title": "Dark mode" })).await.json()["id"].as_i64().unwrap();
+
+    assert!(app.get("/api/ideas/me", Some(&tm)).await.json()["admin"].as_bool().unwrap());
+    assert!(!app.get("/api/ideas/me", Some(&ts)).await.json()["admin"].as_bool().unwrap());
+    let patch = |t: String| {
+        let app = &app;
+        async move { app.json(Method::PATCH, &format!("/api/ideas/{id}"), Some(&t), json!({ "hidden": true })).await.status }
+    };
+    assert_eq!(patch(ts.clone()).await, StatusCode::FORBIDDEN);
+    assert_eq!(patch(tm.clone()).await, StatusCode::NO_CONTENT);
+    assert_eq!(app.get("/api/ideas", Some(&tm)).await.json().as_array().unwrap().len(), 1, "a moderator sees hidden ideas");
+    assert_eq!(app.get("/api/ideas", Some(&ts)).await.json().as_array().unwrap().len(), 0);
+}
+
+// ------------------------------------------------------------ key rotation
+
+#[tokio::test]
+async fn a_new_owner_is_asked_for_a_new_key() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
+    let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
+    assert_eq!((key["needs_new_key"].as_bool(), key["keyring"].is_null()), (Some(false), true), "the maker's own key");
+
+    // Alice saves a recovery key, then the drive moves to bob.
+    let rblob = vault.wrap_for_recovery(&etherdisk_crypto::RecoveryKey::generate().unwrap()).unwrap();
+    app.json(Method::PUT, "/api/vaults/1/recovery", Some(&ta), json!({ "blob": b64(&rblob) })).await;
+    app.chain.transfer(1, bob.address());
+    let tb = app.login(&bob).await;
+    let key = app.get("/api/vaults/1/key", Some(&tb)).await.json();
+    assert_eq!(key["needs_new_key"], true);
+    let etag = key["etag"].as_str().unwrap().to_owned();
+
+    // Bob makes a new key: it must come with its keyring, and replaces the blob atomically.
+    let next = vault.rotate().unwrap();
+    let new_blob = next.rewrap("bob's own").unwrap();
+    let ring = next.seal_keyring().unwrap();
+    let put = |body: Value| {
+        let app = &app;
+        let tb = tb.clone();
+        async move { app.json(Method::PUT, "/api/vaults/1/key", Some(&tb), body).await }
+    };
+    assert_eq!(put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "rotate": true })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "keyring": b64(&ring) })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(json!({ "key_blob": b64(&new_blob), "previous_etag": "stale", "rotate": true, "keyring": b64(&ring) })).await.status,
+        StatusCode::CONFLICT
+    );
+    let r = put(json!({ "key_blob": b64(&new_blob), "previous_etag": etag, "rotate": true, "keyring": b64(&ring) })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
+    let key = app.get("/api/vaults/1/key", Some(&tb)).await.json();
+    assert_eq!((key["needs_new_key"].as_bool(), key["keyring"].clone()), (Some(false), json!(b64(&ring))));
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0, "a recovery key of the old drive key is gone");
+
+    // A passphrase change keeps the keyring; the drive back at alice's asks her again.
+    let r = put(json!({ "key_blob": b64(&next.rewrap("again").unwrap()), "previous_etag": key["etag"] })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(app.get("/api/vaults/1/key", Some(&tb)).await.json()["keyring"], json!(b64(&ring)));
+    app.chain.transfer(1, alice.address());
+    assert_eq!(app.get("/api/vaults/1/key", Some(&ta)).await.json()["needs_new_key"], true);
+}
+
+// ------------------------------------------------------------ recovery key
+
+#[tokio::test]
+async fn recovery_key_is_per_holder_and_dropped_on_transfer() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.chain.mint(1, alice.address(), 1);
+    let ta = app.login(&alice).await;
+    let url = "/api/vaults/1/recovery";
+    let key = etherdisk_crypto::RecoveryKey::generate().unwrap();
+    let put = |t: String, blob: Vec<u8>| {
+        let app = &app;
+        async move { app.json(Method::PUT, url, Some(&t), json!({ "blob": b64(&blob) })).await.status }
+    };
+
+    // Only for a set-up drive, and only a well-formed blob.
+    let (scratch, _) = Vault::create_with_params("x", FAST).unwrap();
+    assert_eq!(put(ta.clone(), scratch.wrap_for_recovery(&key).unwrap()).await, StatusCode::CONFLICT);
+    let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
+    let blob = vault.wrap_for_recovery(&key).unwrap();
+    assert_eq!(put(ta.clone(), blob[1..].to_vec()).await, StatusCode::BAD_REQUEST);
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::NOT_FOUND);
+    assert!(app.get("/api/vaults/1", Some(&ta)).await.json()["recovery_at"].is_null());
+
+    assert_eq!(put(ta.clone(), blob.clone()).await, StatusCode::OK);
+    let r = app.get(url, Some(&ta)).await.json();
+    assert_eq!(r["blob"], b64(&blob));
+    assert!(r["created_at"].as_i64().unwrap() > 0);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.json()["recovery_at"], r["created_at"]);
+
+    // Bob owns no drive here: he gets nothing.
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get(url, Some(&tb)).await.status, StatusCode::FORBIDDEN);
+
+    // After a transfer alice can't read it, and bob doesn't see alice's key as his.
+    app.chain.transfer(1, bob.address());
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.get(url, Some(&tb)).await.status, StatusCode::NOT_FOUND);
+    assert!(app.get("/api/vaults/1", Some(&tb)).await.json()["recovery_at"].is_null());
+    // Bob saves his own before the indexer catches up: the transfer keeps it.
+    let bobs = vault.wrap_for_recovery(&etherdisk_crypto::RecoveryKey::generate().unwrap()).unwrap();
+    assert_eq!(put(tb.clone(), bobs.clone()).await, StatusCode::OK);
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get(url, Some(&tb)).await.json()["blob"], b64(&bobs));
+
+    // A transfer back to alice drops bob's key.
+    app.chain.transfer(1, alice.address());
+    indexer::on_transfer(&app.state, bob.address(), alice.address(), U256::from(1)).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0);
+
+    // Deleting, and formatting the drive, remove it too.
+    assert_eq!(put(ta.clone(), blob.clone()).await, StatusCode::OK);
+    assert_eq!(app.req(Method::DELETE, url, Some(&ta), Body::empty(), "", &[]).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.get(url, Some(&ta)).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(put(ta.clone(), blob).await, StatusCode::OK);
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&ta), json!({ "confirm": "DELETE" })).await;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(n, 0);
 }
 
 // ------------------------------------------------------------ key handover

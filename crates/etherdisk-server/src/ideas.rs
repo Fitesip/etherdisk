@@ -6,7 +6,9 @@
 //!   new holder decides afresh. Authors don't vote on their own ideas.
 //! - Each vote is a wallet signature over a fixed message (like Snapshot). The server
 //!   checks it and keeps it, so anyone can audit the tally via `GET /ideas/{id}/votes`.
-//! - The contract owner moderates: sets a status or hides an idea.
+//! - Admins moderate: set a status or hide an idea. Admins are the wallets in
+//!   `IDEAS_ADMINS` and the contract owner (when it is a multisig, which can't sign in,
+//!   list the moderators' own wallets in `IDEAS_ADMINS`).
 
 use std::collections::BTreeMap;
 
@@ -66,6 +68,13 @@ pub async fn drop_stale_votes(st: &AppState) -> AppResult<u64> {
     Ok(dropped)
 }
 
+async fn is_admin(st: &AppState, who: Address) -> AppResult<bool> {
+    if st.config.ideas_admins.contains(&who) {
+        return Ok(true);
+    }
+    st.chain.is_admin(who).await
+}
+
 fn lower(a: &Address) -> String {
     format!("{a:#x}")
 }
@@ -86,7 +95,7 @@ struct Idea {
 /// Public list, best score (for minus against) first. Hidden ideas only for the admin.
 async fn list(State(st): State<AppState>, user: Option<AuthUser>) -> AppResult<Json<Vec<Idea>>> {
     let admin = match &user {
-        Some(u) => st.chain.is_admin(u.0).await?,
+        Some(u) => is_admin(&st, u.0).await?,
         None => false,
     };
     let rows = sqlx::query_as::<_, Idea>(
@@ -120,7 +129,7 @@ async fn me(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Me>> {
             sqlx::query_as("SELECT idea_id, choice FROM idea_votes WHERE token_id = ?").bind(id).fetch_all(&st.db).await?;
         votes.extend(rows);
     }
-    Ok(Json(Me { tokens: ids.len(), admin: st.chain.is_admin(user.0).await?, votes }))
+    Ok(Json(Me { tokens: ids.len(), admin: is_admin(&st, user.0).await?, votes }))
 }
 
 #[derive(Deserialize)]
@@ -259,7 +268,7 @@ struct Moderate {
 
 /// Admin only: set a status ("planned", "done", ...) or hide/unhide.
 async fn moderate(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, Json(req): Json<Moderate>) -> AppResult<StatusCode> {
-    if !st.chain.is_admin(user.0).await? {
+    if !is_admin(&st, user.0).await? {
         return Err(AppError::Forbidden);
     }
     if let Some(s) = &req.status {

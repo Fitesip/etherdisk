@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { ALICE, BOB, installWallet, mintAndSetUp, signIn, upload } from "./wallet";
+import { ALICE, BOB, installWallet, mintAndSetUp, PASSPHRASE, signIn, upload } from "./wallet";
 
 const text = (name: string, content: string) => ({ name, mimeType: "text/plain", buffer: Buffer.from(content) });
 
@@ -9,6 +9,9 @@ test("landing shows the tiers from the contract", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Cloud storage you buy once/ })).toBeVisible();
   await expect(page.getByText("0.0005 ETH", { exact: true })).toBeVisible();
   await expect(page.getByText("Best value per GB")).toBeVisible();
+  // A tier that isn't on sale yet is listed, without a way to buy it.
+  await expect(page.getByText("8 GB", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coming soon").first()).toBeVisible();
 });
 
 test("drive: upload, search, trash with undo, password link", async ({ page, browser }) => {
@@ -103,6 +106,12 @@ test("transfer with the drive key: the new owner opens the files", async ({ brow
   await bob.getByRole("button", { name: "Save and open drive" }).click();
   await bob.getByRole("button", { name: /for-bob\.txt/ }).click();
   await expect(bob.locator("dialog[open] pre")).toHaveText("the secret plan");
+
+  // The drive now has a key alice never had; bob's own files and hers both open.
+  await bob.keyboard.press("Escape");
+  await upload(bob, [text("bobs.txt", "added by bob")]);
+  await bob.getByRole("button", { name: /bobs\.txt/ }).click();
+  await expect(bob.locator("dialog[open] pre")).toHaveText("added by bob");
 });
 
 test("ideas: propose, vote for and against, not on your own idea", async ({ page, browser }) => {
@@ -133,4 +142,120 @@ test("ideas: propose, vote for and against, not on your own idea", async ({ page
   await expect(score(-1)).toBeVisible();
   await his.getByRole("button", { name: "You voted against" }).click();
   await expect(score(0)).toBeVisible();
+});
+
+test("recovery key: save the words, forget the passphrase, open the drive with them", async ({ page }) => {
+  await installWallet(page, ALICE);
+  await signIn(page);
+  await mintAndSetUp(page);
+  await upload(page, [text("keep-me.txt", "still here")]);
+
+  // The drive suggests a recovery key; the words come with a download.
+  await page.getByRole("button", { name: "Create recovery key" }).click();
+  const dialog = page.locator("dialog[open]");
+  const items = dialog.locator("ol li span:last-child");
+  await expect(items).toHaveCount(24);
+  const words = await items.allTextContents();
+  const [file] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download" }).click()]);
+  expect(file.suggestedFilename()).toMatch(/^etherdisk-recovery-drive-\d+\.txt$/);
+  const sheet = await new Promise<string>((resolve) => file.createReadStream().then((s) => {
+    let out = "";
+    s.on("data", (c) => (out += c));
+    s.on("end", () => resolve(out));
+  }));
+  expect(sheet).toContain(`24. ${words[23]}`);
+
+  // Closing before the check warns that the downloaded words don't work yet; reopening
+  // shows the same words, so the file stays valid.
+  await page.keyboard.press("Escape");
+  await expect(dialog.getByText(/isn't saved yet/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Close anyway" }).click();
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Create recovery key" }).click();
+  await expect(items).toHaveCount(24);
+  expect(await items.allTextContents()).toEqual(words);
+
+  // Asked back for three of them; a wrong answer is caught.
+  await dialog.getByRole("button", { name: "I saved them" }).click();
+  const fields = dialog.getByLabel(/^Word \d+$/);
+  await expect(fields).toHaveCount(3);
+  for (let i = 0; i < 3; i++) await fields.nth(i).fill("wrong");
+  await dialog.getByRole("button", { name: "Save recovery key" }).click();
+  await expect(dialog.getByText(/not what's in your copy/)).toBeVisible();
+  const labels = dialog.locator("label");
+  for (let i = 0; i < 3; i++) {
+    const n = Number((await labels.nth(i).innerText()).match(/\d+/)![0]);
+    await labels.nth(i).locator("input").fill(words[n - 1]);
+  }
+  await dialog.getByRole("button", { name: "Save recovery key" }).click();
+  await expect(page.getByRole("button", { name: "Create recovery key" })).toHaveCount(0);
+
+  // Passphrase forgotten: lock, then open with the words and a new passphrase.
+  await page.getByRole("button", { name: "Drive menu" }).click();
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page.getByRole("button", { name: /Forgot the passphrase/ }).click();
+  const box = page.getByLabel("Recovery words");
+  await box.fill(words.slice(0, 23).join(" "));
+  await expect(page.getByText("24 valid words")).toHaveCount(0);
+  await box.fill(words.map((w, i) => `${i + 1}. ${w.toUpperCase()}`).join("\n"));
+  await expect(page.getByText("24 valid words")).toBeVisible();
+  await page.getByPlaceholder("New passphrase").fill("Fresh#Pass9");
+  await page.getByPlaceholder("Repeat passphrase").fill("Fresh#Pass9");
+  await page.getByRole("button", { name: "Open the drive" }).click();
+  await page.getByRole("button", { name: /keep-me\.txt/ }).click();
+  await expect(page.locator("dialog[open] pre")).toHaveText("still here");
+
+  // The new passphrase works; the old one doesn't.
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Drive menu" }).click();
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill("Good#Pass1");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByText("Wrong passphrase")).toBeVisible();
+  await page.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill("Fresh#Pass9");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Upload" })).toBeVisible();
+});
+
+test("transfer with the passphrase: the new owner makes the drive theirs", async ({ browser }) => {
+  const alice = await (await browser.newContext()).newPage();
+  await installWallet(alice, ALICE);
+  await signIn(alice);
+  const tokenId = await mintAndSetUp(alice);
+  await upload(alice, [text("told.txt", "shared by passphrase")]);
+  await expect(alice.getByText("told.txt").first()).toBeVisible();
+  await alice.getByRole("button", { name: "Drive menu" }).click();
+  await alice.getByRole("button", { name: "Drive settings" }).click();
+  await alice.getByRole("button", { name: "Transfer drive" }).click();
+  const dialog = alice.locator("dialog[open]");
+  await dialog.getByPlaceholder("0x…").fill(BOB);
+  await dialog.locator("input:not([type=checkbox])").last().fill("TRANSFER");
+  await dialog.getByRole("checkbox").uncheck();
+  await dialog.getByRole("button", { name: "Transfer drive" }).click();
+  await expect(alice).toHaveURL(/\/drive$/);
+
+  // Bob unlocks with alice's passphrase and is asked for his own before seeing the files.
+  const bob = await (await browser.newContext()).newPage();
+  await installWallet(bob, BOB);
+  await signIn(bob);
+  await bob.goto(`/drive/${tokenId}`);
+  await bob.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill(PASSPHRASE);
+  await bob.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(bob.getByRole("heading", { name: /yours$/ })).toBeVisible();
+  await bob.getByPlaceholder("New passphrase").fill("Mine#Now7");
+  await bob.getByPlaceholder("Repeat passphrase").fill("Mine#Now7");
+  await bob.getByRole("button", { name: "Save and open" }).click();
+  await bob.getByRole("button", { name: /told\.txt/ }).click();
+  await expect(bob.locator("dialog[open] pre")).toHaveText("shared by passphrase");
+
+  // Alice's passphrase no longer opens it; bob's does, without asking again.
+  await bob.keyboard.press("Escape");
+  await bob.getByRole("button", { name: "Drive menu" }).click();
+  await bob.getByRole("button", { name: "Lock", exact: true }).click();
+  await bob.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill(PASSPHRASE);
+  await bob.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(bob.getByText("Wrong passphrase")).toBeVisible();
+  await bob.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill("Mine#Now7");
+  await bob.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(bob.getByRole("button", { name: /told\.txt/ })).toBeVisible();
 });

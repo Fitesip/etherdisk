@@ -9,6 +9,7 @@ use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::file::FileKey;
+use crate::recovery::RecoveryKey;
 use crate::{Error, Result};
 
 const BLOB_MAGIC: &[u8; 4] = b"NVK1";
@@ -20,6 +21,13 @@ const WRAPPED_DEK_LEN: usize = 32 + 16;
 
 /// Size of the serialized wrapped-DEK blob stored on the server.
 pub const KEY_BLOB_LEN: usize = HEADER_LEN + NONCE_LEN + WRAPPED_DEK_LEN;
+
+const RECOVERY_MAGIC: &[u8; 4] = b"EDR1";
+const RECOVERY_VERSION: u8 = 1;
+const RECOVERY_HEADER_LEN: usize = 4 + 1; // magic, version (authenticated as AAD)
+
+/// Size of the DEK wrapped under a recovery key (`Vault::wrap_for_recovery`).
+pub const RECOVERY_BLOB_LEN: usize = RECOVERY_HEADER_LEN + NONCE_LEN + WRAPPED_DEK_LEN;
 
 pub(crate) fn random<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
@@ -45,6 +53,17 @@ impl KdfParams {
     const MAX_T: u32 = 16;
     const MAX_P: u32 = 16;
 
+    /// At least the defaults, component-wise. A key blob's parameters are only authenticated
+    /// once it unlocks; a blob that is just read for its parameters (recovery, a handed-over
+    /// key) may come from a hostile server that wants the new passphrase wrapped weakly.
+    fn at_least_default(self) -> Self {
+        Self {
+            m_cost_kib: self.m_cost_kib.max(Self::DEFAULT.m_cost_kib),
+            t_cost: self.t_cost.max(Self::DEFAULT.t_cost),
+            parallelism: self.parallelism.max(Self::DEFAULT.parallelism),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if self.m_cost_kib > Self::MAX_M_KIB || self.t_cost > Self::MAX_T || self.parallelism > Self::MAX_P {
             return Err(Error::Format("kdf parameters out of range"));
@@ -56,10 +75,33 @@ impl KdfParams {
 #[derive(Zeroize, ZeroizeOnDrop)]
 struct Dek([u8; 32]);
 
-/// An unlocked vault: holds the data-encryption key in memory (zeroized on drop).
+/// Length of a key id (see `Vault::key_id`).
+pub const KEY_ID_LEN: usize = 8;
+
+/// An unlocked vault: holds the data-encryption keys in memory (zeroized on drop).
+///
+/// A drive's key is replaced when the drive changes hands (`rotate`), so the previous
+/// owner can't read what the new one adds. Older keys stay in `older` (oldest first) to
+/// read older files; they travel sealed under the current key (`seal_keyring`).
 pub struct Vault {
     dek: Dek,
+    older: Vec<Dek>,
     params: KdfParams,
+}
+
+fn hkdf(dek: &Dek, salt: Option<&[u8]>, info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let mut out = Zeroizing::new([0u8; 32]);
+    Hkdf::<Sha256>::new(salt, &dek.0).expand(info, &mut *out).expect("32 bytes is a valid HKDF length");
+    out
+}
+
+fn key_id_of(dek: &Dek) -> [u8; KEY_ID_LEN] {
+    hkdf(dek, None, b"etherdisk/key-id/v1")[..KEY_ID_LEN].try_into().unwrap()
+}
+
+fn open_metadata_with(dek: &Dek, nonce: &[u8], ct: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    let key = hkdf(dek, None, b"etherdisk/metadata/v1");
+    XChaCha20Poly1305::new(Key::from_slice(&key[..])).decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad }).ok()
 }
 
 /// Validates a key blob header and returns its KDF parameters.
@@ -85,7 +127,7 @@ impl Vault {
     pub fn create_with_params(passphrase: &str, params: KdfParams) -> Result<(Vault, Vec<u8>)> {
         let dek = Dek(random()?);
         let blob = wrap_dek(&dek, passphrase, params)?;
-        Ok((Vault { dek, params }, blob))
+        Ok((Vault { dek, older: Vec::new(), params }, blob))
     }
 
     pub fn unlock(blob: &[u8], passphrase: &str) -> Result<Vault> {
@@ -105,7 +147,7 @@ impl Vault {
             .map_err(|_| Error::Unlock)?;
         let plain = Zeroizing::new(plain);
         let dek: [u8; 32] = plain[..].try_into().map_err(|_| Error::Format("bad DEK length"))?;
-        Ok(Vault { dek: Dek(dek), params })
+        Ok(Vault { dek: Dek(dek), older: Vec::new(), params })
     }
 
     /// The raw data-encryption key, to keep a vault unlocked across page reloads.
@@ -120,25 +162,86 @@ impl Vault {
     pub fn from_exported_dek(dek: &[u8], blob: &[u8]) -> Result<Vault> {
         let params = blob_params(blob)?;
         let dek: [u8; 32] = dek.try_into().map_err(|_| Error::Argument("DEK must be 32 bytes"))?;
-        Ok(Vault { dek: Dek(dek), params })
+        Ok(Vault { dek: Dek(dek), older: Vec::new(), params })
     }
 
     /// Wraps the same DEK under a new passphrase (new salt and nonce). Existing files stay valid.
+    /// Never weaker than the default KDF parameters, whatever blob the vault came from.
     pub fn rewrap(&self, new_passphrase: &str) -> Result<Vec<u8>> {
-        wrap_dek(&self.dek, new_passphrase, self.params)
+        wrap_dek(&self.dek, new_passphrase, self.params.at_least_default())
     }
 
-    /// Per-file key, derived from the DEK and the file's public random salt.
-    /// Safe to hand out for sharing: it does not reveal the DEK or other files' keys.
+    /// Wraps the DEK under a recovery key; store the blob next to the key blob. Anyone with
+    /// the words and this blob can open the drive, so it is dropped when the drive changes hands.
+    pub fn wrap_for_recovery(&self, key: &RecoveryKey) -> Result<Vec<u8>> {
+        let nonce: [u8; NONCE_LEN] = random()?;
+        let mut out = Vec::with_capacity(RECOVERY_BLOB_LEN);
+        out.extend_from_slice(RECOVERY_MAGIC);
+        out.push(RECOVERY_VERSION);
+        let kek = key.kek();
+        let ct = XChaCha20Poly1305::new(Key::from_slice(&kek[..]))
+            .encrypt(XNonce::from_slice(&nonce), Payload { msg: &self.dek.0, aad: &out })
+            .map_err(|_| Error::Auth)?;
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ct);
+        debug_assert_eq!(out.len(), RECOVERY_BLOB_LEN);
+        Ok(out)
+    }
+
+    /// Opens a vault with its recovery key. `key_blob` (the current passphrase blob)
+    /// supplies the KDF parameters that the new passphrase is wrapped with.
+    pub fn recover(recovery_blob: &[u8], key: &RecoveryKey, key_blob: &[u8]) -> Result<Vault> {
+        let params = blob_params(key_blob)?;
+        if recovery_blob.len() != RECOVERY_BLOB_LEN || &recovery_blob[..4] != RECOVERY_MAGIC {
+            return Err(Error::Format("bad recovery blob"));
+        }
+        if recovery_blob[4] != RECOVERY_VERSION {
+            return Err(Error::Format("unsupported recovery blob version"));
+        }
+        let (header, rest) = recovery_blob.split_at(RECOVERY_HEADER_LEN);
+        let (nonce, wrapped) = rest.split_at(NONCE_LEN);
+        let kek = key.kek();
+        let plain = XChaCha20Poly1305::new(Key::from_slice(&kek[..]))
+            .decrypt(XNonce::from_slice(nonce), Payload { msg: wrapped, aad: header })
+            .map_err(|_| Error::Unlock)?;
+        let plain = Zeroizing::new(plain);
+        let dek: [u8; 32] = plain[..].try_into().map_err(|_| Error::Format("bad DEK length"))?;
+        Ok(Vault { dek: Dek(dek), older: Vec::new(), params })
+    }
+
+    /// Id of the current key: what new files and their metadata are encrypted with.
+    pub fn key_id(&self) -> [u8; KEY_ID_LEN] {
+        key_id_of(&self.dek)
+    }
+
+    /// The key a file was encrypted with: by its key id, or the drive's first key for
+    /// files from before keys were replaced (no id recorded).
+    fn dek_for(&self, key_id: Option<&[u8]>) -> Result<&Dek> {
+        match key_id {
+            None => Ok(self.older.first().unwrap_or(&self.dek)),
+            Some(id) => std::iter::once(&self.dek)
+                .chain(self.older.iter().rev())
+                .find(|d| key_id_of(d)[..] == *id)
+                .ok_or(Error::Format("unknown key id")),
+        }
+    }
+
+    /// Per-file key of a new file, derived from the current DEK and the file's public random
+    /// salt. Safe to hand out for sharing: it does not reveal the DEK or other files' keys.
     pub fn file_key(&self, file_salt: &[u8; 16]) -> FileKey {
-        FileKey::from_bytes(*self.hkdf(Some(file_salt), b"etherdisk/file/v1"))
+        FileKey::from_bytes(*hkdf(&self.dek, Some(file_salt), b"etherdisk/file/v1"))
     }
 
-    /// Encrypts a small blob (file names, MIME types, folder tree, ...).
+    /// Per-file key of an existing file, encrypted under the key `key_id` (see `dek_for`).
+    pub fn file_key_for(&self, file_salt: &[u8; 16], key_id: Option<&[u8]>) -> Result<FileKey> {
+        Ok(FileKey::from_bytes(*hkdf(self.dek_for(key_id)?, Some(file_salt), b"etherdisk/file/v1")))
+    }
+
+    /// Encrypts a small blob (file names, MIME types, folder tree, ...) with the current key.
     /// `aad` should bind the blob to its context (e.g. vault id + object id)
     /// so the server cannot swap manifests between objects.
     pub fn seal_metadata(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        let key = self.hkdf(None, b"etherdisk/metadata/v1");
+        let key = hkdf(&self.dek, None, b"etherdisk/metadata/v1");
         let nonce: [u8; NONCE_LEN] = random()?;
         let ct = XChaCha20Poly1305::new(Key::from_slice(&key[..]))
             .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad })
@@ -148,21 +251,71 @@ impl Vault {
         Ok(out)
     }
 
+    /// Opens metadata sealed with any of the drive's keys (newest first).
     pub fn open_metadata(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         if sealed.len() < NONCE_LEN + 16 {
             return Err(Error::Format("sealed data too short"));
         }
-        let key = self.hkdf(None, b"etherdisk/metadata/v1");
         let (nonce, ct) = sealed.split_at(NONCE_LEN);
-        XChaCha20Poly1305::new(Key::from_slice(&key[..]))
-            .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad })
-            .map_err(|_| Error::Auth)
+        std::iter::once(&self.dek)
+            .chain(self.older.iter().rev())
+            .find_map(|d| open_metadata_with(d, nonce, ct, aad))
+            .ok_or(Error::Auth)
     }
 
-    fn hkdf(&self, salt: Option<&[u8]>, info: &[u8]) -> Zeroizing<[u8; 32]> {
-        let mut out = Zeroizing::new([0u8; 32]);
-        Hkdf::<Sha256>::new(salt, &self.dek.0).expand(info, &mut *out).expect("32 bytes is a valid HKDF length");
-        out
+    /// A new current key; the current one joins the older keys. Wrap the result with a
+    /// passphrase (`rewrap`) and store its `seal_keyring` next to the new key blob.
+    pub fn rotate(&self) -> Result<Vault> {
+        let mut older: Vec<Dek> = self.older.iter().map(|d| Dek(d.0)).collect();
+        older.push(Dek(self.dek.0));
+        Ok(Vault { dek: Dek(random()?), older, params: self.params })
+    }
+
+    /// The older keys, sealed under the current one. Bound to the current key's id, so it
+    /// can't be swapped for another drive's or another generation's keyring.
+    pub fn seal_keyring(&self) -> Result<Vec<u8>> {
+        let mut plain = Zeroizing::new(Vec::with_capacity(self.older.len() * 32));
+        for d in &self.older {
+            plain.extend_from_slice(&d.0);
+        }
+        let key = hkdf(&self.dek, None, b"etherdisk/keyring/v1");
+        let nonce: [u8; NONCE_LEN] = random()?;
+        let ct = XChaCha20Poly1305::new(Key::from_slice(&key[..]))
+            .encrypt(XNonce::from_slice(&nonce), Payload { msg: &plain, aad: &self.keyring_aad() })
+            .map_err(|_| Error::Auth)?;
+        let mut out = nonce.to_vec();
+        out.extend_from_slice(&ct);
+        Ok(out)
+    }
+
+    /// Loads the older keys from `seal_keyring` output (replacing any loaded before).
+    pub fn open_keyring(&mut self, sealed: &[u8]) -> Result<()> {
+        if sealed.len() < NONCE_LEN + 16 {
+            return Err(Error::Format("keyring too short"));
+        }
+        let (nonce, ct) = sealed.split_at(NONCE_LEN);
+        let key = hkdf(&self.dek, None, b"etherdisk/keyring/v1");
+        let plain = Zeroizing::new(
+            XChaCha20Poly1305::new(Key::from_slice(&key[..]))
+                .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: &self.keyring_aad() })
+                .map_err(|_| Error::Auth)?,
+        );
+        if plain.len() % 32 != 0 {
+            return Err(Error::Format("bad keyring"));
+        }
+        self.older = plain.as_chunks::<32>().0.iter().map(|c| Dek(*c)).collect();
+        Ok(())
+    }
+
+    fn keyring_aad(&self) -> Vec<u8> {
+        let mut aad = b"etherdisk/keyring/v1".to_vec();
+        aad.extend_from_slice(&self.key_id());
+        aad
+    }
+
+    /// Number of keys the drive has had before the current one.
+    pub fn older_keys(&self) -> usize {
+        self.older.len()
     }
 }
 

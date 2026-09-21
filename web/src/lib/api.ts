@@ -57,10 +57,21 @@ export interface VaultInfo {
   capacity_bytes: number;
   used_bytes: number;
   initialized: boolean;
+  /** When this owner saved a recovery key (unix seconds), or null. */
+  recovery_at: number | null;
   /** Owner-chosen look; null = defaults. Plaintext on the server. */
   name: string | null;
   stroke: string | null;
   fill: string | null;
+}
+
+export interface DriveKey {
+  key_blob: string;
+  etag: string;
+  /** Older drive keys, sealed under the current one; null if the drive never changed hands. */
+  keyring: string | null;
+  /** The current key was made by another wallet: choose a passphrase and make a new key. */
+  needs_new_key: boolean;
 }
 
 export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill">;
@@ -160,12 +171,21 @@ export const api = {
 
   vaults: (token: string) => json<VaultInfo[]>(request("/vaults", { token })),
   vault: (token: string, id: string) => json<VaultInfo>(request(`/vaults/${id}`, { token })),
-  getKey: (token: string, id: string) =>
-    json<{ key_blob: string; etag: string }>(request(`/vaults/${id}/key`, { token })),
-  putKey: (token: string, id: string, keyBlob: string, previousEtag: string | null) =>
-    json<{ key_blob: string; etag: string }>(
-      request(`/vaults/${id}/key`, { method: "PUT", token, json: { key_blob: keyBlob, previous_etag: previousEtag } }),
+  getKey: (token: string, id: string) => json<DriveKey>(request(`/vaults/${id}/key`, { token })),
+  /** `keyring` set: the blob wraps a new drive key (see `kdf.makeNewKey`). */
+  putKey: (token: string, id: string, keyBlob: string, previousEtag: string | null, keyring?: string) =>
+    json<DriveKey>(
+      request(`/vaults/${id}/key`, {
+        method: "PUT",
+        token,
+        json: { key_blob: keyBlob, previous_etag: previousEtag, ...(keyring && { rotate: true, keyring }) },
+      }),
     ),
+  getRecovery: (token: string, id: string) =>
+    orNull(json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { token }))),
+  putRecovery: (token: string, id: string, blob: string) =>
+    json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { method: "PUT", token, json: { blob } })),
+  deleteRecovery: (token: string, id: string) => empty(request(`/vaults/${id}/recovery`, { method: "DELETE", token })),
   setProfile: (token: string, id: string, profile: VaultProfile) =>
     json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),
   reset: (token: string, id: string) =>

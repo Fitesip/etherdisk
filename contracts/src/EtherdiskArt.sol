@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -10,14 +10,29 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 library EtherdiskArt {
     using Strings for uint256;
 
-    /// @dev Accent color per capacity; larger tiers cycle through the rest.
+    /// @dev Accent color: one per power of two, so six consecutive sizes (64 GB … 2 TB on
+    ///      mainnet, 1 … 32 GB on a testnet) all differ.
     function _color(uint32 capacityGb) private pure returns (string memory) {
-        if (capacityGb <= 1) return "#6366f1";
-        if (capacityGb <= 2) return "#10b981";
-        if (capacityGb <= 4) return "#f59e0b";
-        if (capacityGb <= 16) return "#ec4899";
-        if (capacityGb <= 128) return "#0ea5e9";
+        uint256 i = _log2(capacityGb) % 6;
+        if (i == 0) return "#6366f1";
+        if (i == 1) return "#10b981";
+        if (i == 2) return "#f59e0b";
+        if (i == 3) return "#ec4899";
+        if (i == 4) return "#0ea5e9";
         return "#a855f7";
+    }
+
+    function _log2(uint32 x) private pure returns (uint256 n) {
+        while (x > 1) {
+            x >>= 1;
+            n++;
+        }
+    }
+
+    /// @dev Tracks on the platter: more for bigger drives (4 … 10).
+    function _rings(uint32 capacityGb) private pure returns (uint256) {
+        uint256 n = _log2(capacityGb);
+        return n < 6 ? 4 : n > 12 ? 10 : n - 2;
     }
 
     /// @dev "512 GB", or "1 TB" from 1024 GB up (whole terabytes only).
@@ -28,56 +43,62 @@ library EtherdiskArt {
         return string.concat(uint256(capacityGb).toString(), " GB");
     }
 
+    /// @notice An opened hard drive: the name and number on a strip in the tier color, the
+    ///         capacity on the platter's hub.
     function svg(uint256 tokenId, uint32 capacityGb) internal pure returns (string memory) {
         string memory c = _color(capacityGb);
-        string memory id = tokenId.toString();
-        string memory background = string.concat(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" font-family="ui-sans-serif,system-ui,sans-serif">',
-            '<defs><radialGradient id="g" cx="80%" cy="0%" r="90%"><stop offset="0" stop-color="',
-            c,
-            '" stop-opacity=".55"/><stop offset="1" stop-color="#0b0b0d" stop-opacity="0"/></radialGradient>',
-            '<pattern id="d" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity=".07"/></pattern></defs>',
-            '<rect width="400" height="400" fill="#0b0b0d"/><rect width="400" height="400" fill="url(#d)"/><rect width="400" height="400" fill="url(#g)"/>'
-        );
-        return string.concat(background, _card(c, id, capacityGb), "</svg>");
+        return string.concat(_chassis(c, tokenId.toString()), _platter(c, capacityGb), _arm(c), "</svg>");
     }
 
-    function _card(string memory c, string memory id, uint32 capacityGb) private pure returns (string memory) {
-        return string.concat(_header(c, id), _footer(c, capacityGb));
-    }
-
-    /// @dev Card frame, drive icon, number.
-    function _header(string memory c, string memory id) private pure returns (string memory) {
-        string memory frame = string.concat(
-            '<rect x="40" y="96" width="320" height="208" rx="24" fill="#141417" stroke="',
-            c,
-            '" stroke-opacity=".6" stroke-width="2"/><rect x="68" y="124" width="56" height="56" rx="14" fill="',
-            c,
-            '"/><rect x="80" y="146" width="32" height="14" rx="4" fill="none" stroke="#fff" stroke-width="2.5"/>',
-            '<circle cx="104" cy="153" r="2" fill="#fff"/>'
-        );
+    function _chassis(string memory c, string memory id) private pure returns (string memory) {
         return string.concat(
-            frame,
-            '<text x="140" y="148" fill="#ececf1" font-size="20" font-weight="600">Drive #',
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" font-family="ui-sans-serif,system-ui,sans-serif">',
+            '<defs><linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2a30"/><stop offset="1" stop-color="#141417"/></linearGradient>',
+            '<radialGradient id="p" cx="45%" cy="40%" r="70%"><stop offset="0" stop-color="#3a3a42"/><stop offset="1" stop-color="#16161a"/></radialGradient></defs>',
+            '<rect width="400" height="400" fill="#0b0b0d"/><rect x="70" y="28" width="260" height="344" rx="18" fill="url(#m)" stroke="#fff" stroke-opacity=".1"/>',
+            '<path d="M88 28h224a18 18 0 0 1 18 18v22H70V46a18 18 0 0 1 18-18z" fill="',
+            c,
+            '"/><text x="92" y="54" fill="#fff" font-size="12" font-weight="700" letter-spacing="3">ETHERDISK</text>',
+            '<text x="308" y="54" text-anchor="end" fill="#fff" font-size="12" font-family="ui-monospace,monospace">#',
             id,
-            '</text><text x="140" y="172" fill="#8e8e99" font-size="13">Etherdisk</text>'
-        );
-    }
-
-    /// @dev Capacity and the "encrypted" caption with a lock.
-    function _footer(string memory c, uint32 capacityGb) private pure returns (string memory) {
-        string memory capacity = string.concat(
-            '<text x="68" y="252" fill="#ececf1" font-size="44" font-weight="700" letter-spacing="-1">',
-            _capacityLabel(capacityGb),
             "</text>"
         );
+    }
+
+    function _platter(string memory c, uint32 capacityGb) private pure returns (string memory out) {
+        out = string.concat('<circle cx="200" cy="220" r="118" fill="url(#p)" stroke="', c, '" stroke-width="2"/>');
+        uint256 n = _rings(capacityGb);
+        for (uint256 i; i < n; i++) {
+            bool accent = i % 3 == 0;
+            out = string.concat(
+                out,
+                '<circle cx="200" cy="220" r="',
+                (108 - 7 * i).toString(),
+                '" fill="none" stroke="',
+                accent ? c : "#fff",
+                accent ? '" stroke-opacity=".35"/>' : '" stroke-opacity=".07"/>'
+            );
+        }
+        string memory label = _capacityLabel(capacityGb);
+        out = string.concat(
+            out,
+            '<circle cx="200" cy="220" r="40" fill="#0b0b0d" stroke="',
+            c,
+            '" stroke-width="3"/><text x="200" y="227" text-anchor="middle" fill="#fff" font-size="',
+            bytes(label).length > 5 ? "17" : "19",
+            '" font-weight="800">',
+            label,
+            "</text>"
+        );
+    }
+
+    /// @dev The read arm and two screws.
+    function _arm(string memory c) private pure returns (string memory) {
         return string.concat(
-            capacity,
-            '<rect x="68" y="270" width="10" height="8" rx="2" fill="',
+            '<path d="M302 350L262 268" stroke="#c9ccd3" stroke-width="7" stroke-linecap="round"/>',
+            '<circle cx="302" cy="350" r="13" fill="#c9ccd3"/><circle cx="262" cy="268" r="4" fill="',
             c,
-            '"/><path d="M70 270v-3a3 3 0 0 1 6 0v3" fill="none" stroke="',
-            c,
-            '" stroke-width="1.6"/><text x="86" y="278" fill="#8e8e99" font-size="12">End-to-end encrypted storage</text>'
+            '"/><circle cx="88" cy="354" r="5" fill="#3a3a42" stroke="#0b0b0d"/><circle cx="312" cy="86" r="5" fill="#3a3a42" stroke="#0b0b0d"/>'
         );
     }
 

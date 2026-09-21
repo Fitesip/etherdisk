@@ -127,9 +127,10 @@ export function TypeIcon({ meta, className = "h-5 w-5" }: { meta: Item["meta"]; 
 export function Thumb({ ctx, item, className, iconClassName }: { ctx: DriveCtx; item: Item; className?: string; iconClassName?: string }) {
   const meta = item.meta;
   const thumbHeader = isFileMeta(meta) ? meta.thumbHeader : undefined;
+  const keyId = isFileMeta(meta) ? meta.keyId : undefined;
   const url = useThumbnail(thumbHeader && item.row.thumb_size ? `${ctx.tokenId}:${item.row.id}` : null, async () => ({
     data: await api.thumbnail(ctx.token, ctx.tokenId, item.row.id),
-    key: ctx.vault.fileKey(fromB64(thumbHeader!)),
+    key: ctx.vault.fileKeyFor(fromB64(thumbHeader!), keyId),
   }));
   return (
     <div className={cn("grid shrink-0 place-items-center overflow-hidden bg-bg-subtle", className ?? "h-10 w-10 rounded-md")}>

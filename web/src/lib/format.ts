@@ -15,6 +15,9 @@ export function formatDate(unixSecondsOrMs: number): string {
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** A tier's size as the contract labels it: "512 GB", or whole terabytes from 1024 GB. */
+export const formatCapacity = (gb: number) => (gb >= 1024 && gb % 1024 === 0 ? `${gb / 1024} TB` : `${gb} GB`);
+
 export const shortAddress = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 const EXT_TYPES: Record<string, string> = {

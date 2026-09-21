@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Etherdisk} from "../src/Etherdisk.sol";
+import {TestTiers} from "./TestTiers.sol";
 import {EtherdiskArt} from "../src/EtherdiskArt.sol";
 
 /// Exposes the library's internal functions to tests.
@@ -26,7 +27,7 @@ contract EtherdiskTest is Test {
     address bob = makeAddr("bob");
 
     function setUp() public {
-        disk = new Etherdisk(admin);
+        disk = TestTiers.deploy(admin);
         vm.deal(alice, 10 ether);
         vm.deal(bob, 10 ether);
     }
@@ -140,20 +141,27 @@ contract EtherdiskTest is Test {
         assertEq(admin.balance, 0.001 ether);
         assertEq(address(disk).balance, 0);
 
-        // A new owner gets the next payments.
+        // A new owner gets the next payments once they accepted.
         vm.prank(admin);
         disk.transferOwnership(bob);
+        vm.prank(alice);
+        disk.mint{value: 0.0005 ether}(0);
+        assertEq(admin.balance, 0.0015 ether, "still the owner until bob accepts");
+        vm.prank(bob);
+        disk.acceptOwnership();
         uint256 before = bob.balance;
         vm.prank(alice);
         disk.mint{value: 0.0005 ether}(0);
         assertEq(bob.balance, before + 0.0005 ether);
-        assertEq(admin.balance, 0.001 ether);
+        assertEq(admin.balance, 0.0015 ether);
     }
 
     function test_paymentStaysWhenTheOwnerRefusesIt() public {
         Rejecter rejecter = new Rejecter();
         vm.prank(admin);
         disk.transferOwnership(address(rejecter));
+        vm.prank(address(rejecter));
+        disk.acceptOwnership();
 
         // Minting still works; the payment waits in the contract.
         vm.expectEmit(address(disk));
@@ -170,12 +178,32 @@ contract EtherdiskTest is Test {
         assertEq(address(disk).balance, 0);
     }
 
-    function test_paymentStaysWithoutAnOwner() public {
+    function test_withdrawToZeroAddressReverts() public {
         vm.prank(admin);
+        vm.expectRevert(Etherdisk.ZeroAddress.selector);
+        disk.withdraw(payable(address(0)));
+    }
+
+    function test_ownershipNeedsAcceptingAndCantBeRenounced() public {
+        // A typo in the address changes nothing: only the named wallet can accept.
+        vm.prank(admin);
+        disk.transferOwnership(bob);
+        assertEq(disk.owner(), admin);
+        assertEq(disk.pendingOwner(), bob);
+        vm.prank(alice);
+        vm.expectRevert();
+        disk.acceptOwnership();
+        vm.prank(bob);
+        disk.acceptOwnership();
+        assertEq(disk.owner(), bob);
+
+        vm.prank(bob);
+        vm.expectRevert(Etherdisk.RenounceDisabled.selector);
         disk.renounceOwnership();
         vm.prank(alice);
-        disk.mint{value: 0.0005 ether}(0);
-        assertEq(address(disk).balance, 0.0005 ether);
+        vm.expectRevert();
+        disk.renounceOwnership();
+        assertEq(disk.owner(), bob);
     }
 
     function test_tierOfNonexistentTokenReverts() public {
@@ -215,15 +243,107 @@ contract EtherdiskTest is Test {
         disk.tokenURI(42);
     }
 
-    function test_svgShowsDriveAndCapacity() public {
+    function _count(string memory haystack, string memory needle) internal pure returns (uint256 n) {
+        bytes memory h = bytes(haystack);
+        bytes memory nd = bytes(needle);
+        for (uint256 i; i + nd.length <= h.length; i++) {
+            bool same = true;
+            for (uint256 k; k < nd.length && same; k++) {
+                same = h[i + k] == nd[k];
+            }
+            if (same) n++;
+        }
+    }
+
+    function test_svgShowsNumberCapacityAndTierColor() public {
         ArtHarness art = new ArtHarness();
         string memory s = art.svg(7, 4);
         assertTrue(_has(s, "<svg"));
-        assertTrue(_has(s, "Drive #7"));
-        assertTrue(_has(s, ">Etherdisk<"));
+        assertTrue(_has(s, ">ETHERDISK<"));
+        assertTrue(_has(s, ">#7<"));
         assertTrue(_has(s, ">4 GB<"));
         assertTrue(_has(s, "#f59e0b"));
         assertTrue(_has(art.svg(1, 2048), ">2 TB<"));
         assertTrue(_has(art.svg(1, 1536), ">1536 GB<"));
+    }
+
+    /// The mainnet sizes get six different colors and more tracks as they grow.
+    function test_mainnetTiersLookDifferent() public {
+        ArtHarness art = new ArtHarness();
+        string[6] memory colors = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#0ea5e9", "#a855f7"];
+        uint32[6] memory sizes = [uint32(64), 128, 256, 512, 1024, 2048];
+        uint256 lastRings;
+        for (uint256 i; i < 6; i++) {
+            string memory s = art.svg(1, sizes[i]);
+            assertTrue(_has(s, colors[i]), "tier color");
+            uint256 rings = _count(s, 'cx="200" cy="220" r="') - 2; // minus the platter and the hub
+            assertGe(rings, lastRings, "tracks don't shrink");
+            lastRings = rings;
+        }
+        assertEq(lastRings, 9);
+    }
+
+    function test_tiersComeFromTheConstructor() public {
+        uint32[] memory caps = new uint32[](6);
+        uint256[] memory prices = new uint256[](6);
+        bool[] memory active = new bool[](6);
+        for (uint256 i; i < 6; i++) {
+            caps[i] = uint32(64 << i);
+            prices[i] = (i + 1) * 0.01 ether;
+            active[i] = i < 3;
+        }
+        Etherdisk main = new Etherdisk(admin, caps, prices, active);
+        assertEq(main.tierCount(), 6);
+        assertEq(main.getTier(5).capacityGb, 2048);
+        assertTrue(main.getTier(2).active);
+        assertFalse(main.getTier(3).active, "512 GB: coming soon");
+
+        vm.prank(alice);
+        main.mint{value: 0.03 ether}(2);
+        vm.prank(alice);
+        vm.expectRevert(Etherdisk.TierInactive.selector);
+        main.mint{value: 0.04 ether}(3);
+
+        bool[] memory short = new bool[](5);
+        vm.expectRevert(Etherdisk.TiersMismatch.selector);
+        new Etherdisk(admin, caps, prices, short);
+        caps[0] = 0;
+        vm.expectRevert(Etherdisk.ZeroCapacity.selector);
+        new Etherdisk(admin, caps, prices, active);
+    }
+
+    function test_operatorsOpenAndCloseSalesOnly() public {
+        address moderator = makeAddr("moderator");
+        vm.prank(moderator);
+        vm.expectRevert(Etherdisk.NotOperator.selector);
+        disk.setTierActive(0, false);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        disk.setOperator(moderator, true);
+        vm.prank(admin);
+        disk.setOperator(moderator, true);
+        assertTrue(disk.isOperator(moderator));
+
+        vm.prank(moderator);
+        disk.setTierActive(0, false);
+        assertFalse(disk.getTier(0).active);
+        vm.prank(moderator);
+        disk.setTierActive(0, true);
+        // Prices, tiers and money stay with the owner.
+        vm.startPrank(moderator);
+        vm.expectRevert();
+        disk.setTierPrice(0, 1);
+        vm.expectRevert();
+        disk.addTier(8, 1 ether);
+        vm.expectRevert();
+        disk.withdraw(payable(moderator));
+        vm.stopPrank();
+
+        vm.prank(admin);
+        disk.setOperator(moderator, false);
+        vm.prank(moderator);
+        vm.expectRevert(Etherdisk.NotOperator.selector);
+        disk.setTierActive(0, false);
     }
 }

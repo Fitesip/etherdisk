@@ -21,6 +21,7 @@ import { useUnlocked } from "@/lib/unlocked";
 import { useToast } from "../toast";
 import { Button, cn, Dialog, Input, Notice } from "../ui";
 import { ChangePassphraseForm, DriveLookForm, LinksList, ResetDialog, type DriveCtx } from "./dialogs";
+import { RecoverySettings } from "./recovery";
 
 const CONFIRM_WORD = "TRANSFER";
 
@@ -250,6 +251,7 @@ export function DriveSettingsPanel({ token, info }: { token: string; info: Vault
               }}
             />
           </div>
+          <RecoverySettings ctx={ctx} recoveryAt={info.recovery_at} />
           <div className="pt-5">
             <p className="mb-3 text-sm font-medium">{t("driveSettings.passphrase")}</p>
             <p className="mb-4 text-sm text-muted">{t("vault.changePassphraseText")}</p>
