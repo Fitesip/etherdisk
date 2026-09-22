@@ -10,6 +10,7 @@ import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { useT } from "@/i18n";
 import { api, type VaultInfo } from "@/lib/api";
 import { vaultNft } from "@/lib/contract";
+import { IS_TESTNET } from "@/lib/chain";
 import { formatBytes, formatCapacity } from "@/lib/format";
 import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
@@ -121,7 +122,7 @@ function Drives({ token }: { token: string }) {
           <Sparkles className="h-4 w-4 text-accent" />
           {t("drives.mintTitle")}
         </h2>
-        <p className="mt-1 text-sm text-muted">{t("drives.mintText")}</p>
+        <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {tiers.map((tier) => (
             <MintCard key={tier.id} tier={tier} onMinted={() => qc.invalidateQueries({ queryKey: vaultsKey(token) })} />

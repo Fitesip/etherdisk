@@ -21,6 +21,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, typ
 import { formatEther } from "viem";
 
 import { useT, type MessageKey } from "@/i18n";
+import { IS_TESTNET } from "@/lib/chain";
 import { formatCapacity } from "@/lib/format";
 import { useTiers } from "@/lib/tiers";
 
@@ -326,7 +327,7 @@ function Hero() {
               {t("landing.ctaSecondary")}
             </a>
           </div>
-          <p className="animate-fade-up mt-6 text-xs text-muted [animation-delay:320ms]">{t("landing.testnet")}</p>
+          <p className="animate-fade-up mt-6 text-xs text-muted [animation-delay:320ms]">{IS_TESTNET ? t("landing.testnet") : t("landing.mainnet")}</p>
         </div>
 
         <div aria-hidden className="animate-fade-up relative isolate mx-auto my-12 w-full max-w-sm [animation-delay:200ms] sm:my-16">
@@ -342,7 +343,7 @@ function Hero() {
 
 // ------------------------------------------------------------------ sections
 
-const STACK = ["XChaCha20-Poly1305", "Argon2id", "ERC-721", "Rust", "WebAssembly", "Sepolia"];
+const STACK = ["XChaCha20-Poly1305", "Argon2id", "ERC-721", "Rust", "WebAssembly", IS_TESTNET ? "Sepolia" : "Ethereum"];
 
 function Stack() {
   const t = useT();
@@ -499,7 +500,7 @@ function Tiers() {
       <div className="mx-auto max-w-6xl px-4 py-24">
         <Reveal className="text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">{t("landing.tiersTitle")}</h2>
-          <p className="mt-4 text-muted">{t("landing.tiersText")}</p>
+          <p className="mt-4 text-muted">{IS_TESTNET ? t("landing.tiersText") : t("landing.tiersTextMainnet")}</p>
         </Reveal>
         {isLoading ? (
           <Spinner className="mx-auto mt-12" />

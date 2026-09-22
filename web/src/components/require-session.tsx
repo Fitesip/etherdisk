@@ -23,7 +23,7 @@ function Panel({ icon, title, text, children }: { icon: ReactNode; title: string
   );
 }
 
-/** Renders children only for a connected wallet on Sepolia with a backend session. */
+/** Renders children only for a connected wallet on the app's network with a backend session. */
 export function RequireSession({ children }: { children: (token: string) => ReactNode }) {
   const t = useT();
   const hydrated = useHydrated();

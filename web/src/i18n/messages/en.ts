@@ -51,6 +51,7 @@ export const en = {
     ctaPrimary: "Open your drives",
     ctaSecondary: "How it works",
     testnet: "Live on the Sepolia testnet",
+    mainnet: "Live on Ethereum",
     demo: {
       ready: "Ready to upload",
       encrypting: "Encrypting chunk {n} of {total}",
@@ -101,6 +102,7 @@ export const en = {
     },
     tiersTitle: "Pay once. Keep it.",
     tiersText: "Prices in Sepolia test ETH. No renewals, no per-month fees.",
+    tiersTextMainnet: "Prices in ETH, plus the network fee. No renewals, no per-month fees.",
     bestValue: "Best value per GB",
     perGb: "{price} ETH per GB",
     mintCta: "Mint this drive",
@@ -119,6 +121,7 @@ export const en = {
     unlocked: "Unlocked",
     mintTitle: "Get a new drive",
     mintText: "Each drive is an ERC-721 token on Sepolia. Need test ETH? Use a Sepolia faucet.",
+    mintTextMainnet: "Each drive is an ERC-721 token on Ethereum. You pay its price plus the network fee.",
     mint: "Mint for {price} ETH",
     minting: "Confirm in wallet…",
     mintPending: "Minting…",

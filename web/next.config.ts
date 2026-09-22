@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
-import { sepolia } from "viem/chains";
+import { mainnet, sepolia } from "viem/chains";
 
 const isDev = process.env.NODE_ENV === "development";
+// Same rule as src/lib/chain.ts: mainnet when NEXT_PUBLIC_CHAIN_ID=1, Sepolia otherwise.
+const chain = process.env.NEXT_PUBLIC_CHAIN_ID === "1" ? mainnet : sepolia;
 const origin = (url: string | undefined) => {
   try {
     return url ? new URL(url).origin : "";
@@ -15,7 +17,7 @@ const origin = (url: string | undefined) => {
 const connect = [
   "'self'",
   origin(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"),
-  ...(process.env.NEXT_PUBLIC_RPC_URL || sepolia.rpcUrls.default.http[0]).split(",").map((u) => origin(u.trim())),
+  ...(process.env.NEXT_PUBLIC_RPC_URL || chain.rpcUrls.default.http[0]).split(",").map((u) => origin(u.trim())),
   // WalletConnect relay and verify API.
   "https://*.walletconnect.com",
   "wss://*.walletconnect.com",
