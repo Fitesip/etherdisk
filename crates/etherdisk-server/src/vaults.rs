@@ -95,17 +95,45 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     })
 }
 
+/// The drives `owner` holds: listed from Transfer events (`token_owners`), each one
+/// confirmed with `ownerOf`, so a lagging indexer can hide a new drive for a moment but
+/// never show someone else's.
+pub(crate) async fn drives_of(st: &AppState, owner: Address) -> AppResult<Vec<U256>> {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT token_id FROM token_owners WHERE owner = ? ORDER BY CAST(token_id AS INTEGER)")
+        .bind(format!("{owner:#x}"))
+        .fetch_all(&st.db)
+        .await?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = parse_token(&id)?;
+        if st.chain.owner_of(id).await? == Some(owner) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
 /// All vaults of the signed-in wallet (rendered as separate disks).
 async fn list(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<VaultInfo>>> {
     let mut out = Vec::new();
-    for id in st.chain.tokens_of_owner(user.0).await? {
+    for id in drives_of(&st, user.0).await? {
         out.push(info(&st, id, user.0).await?);
     }
     Ok(Json(out))
 }
 
+/// One drive of the caller. Also records them as its holder (just checked with ownerOf), so
+/// a drive minted a moment ago is listed before the indexer sees its Transfer event.
 async fn one(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<VaultInfo>> {
-    let (id, _) = owned(&st, &user, &token_id).await?;
+    let (id, token) = owned(&st, &user, &token_id).await?;
+    sqlx::query(
+        "INSERT INTO token_owners (token_id, owner) VALUES (?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET owner = excluded.owner WHERE owner <> excluded.owner",
+    )
+    .bind(&token)
+    .bind(format!("{:#x}", user.0))
+    .execute(&st.db)
+    .await?;
     Ok(Json(info(&st, id, user.0).await?))
 }
 

@@ -23,7 +23,6 @@ sol! {
 
         function ownerOf(uint256 tokenId) external view returns (address);
         function capacityOf(uint256 tokenId) external view returns (uint32);
-        function tokensOfOwner(address account) external view returns (uint256[] memory);
         function owner() external view returns (address);
     }
 }
@@ -37,7 +36,6 @@ pub trait Chain: Send + Sync {
     async fn owner_of(&self, token_id: U256) -> anyhow::Result<Option<Address>>;
     /// Capacity in GB, `None` if the token does not exist.
     async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>>;
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>>;
     /// The contract's admin (`Ownable.owner()`): moderates the ideas board.
     async fn contract_owner(&self) -> anyhow::Result<Address>;
 }
@@ -88,9 +86,6 @@ impl Chain for RpcChain {
         none_if_reverted(self.contract.capacityOf(token_id).call().await)
     }
 
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>> {
-        Ok(self.contract.tokensOfOwner(owner).call().await?)
-    }
 
     async fn contract_owner(&self) -> anyhow::Result<Address> {
         Ok(self.contract.owner().call().await?)
@@ -154,9 +149,6 @@ impl Ownership {
         Ok(gb as u64 * BYTES_PER_GB)
     }
 
-    pub async fn tokens_of_owner(&self, owner: Address) -> AppResult<Vec<U256>> {
-        Ok(self.chain.tokens_of_owner(owner).await?)
-    }
 
     pub async fn is_admin(&self, who: Address) -> AppResult<bool> {
         Ok(self.chain.contract_owner().await? == who)

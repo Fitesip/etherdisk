@@ -5,6 +5,7 @@ import { Lock, LockOpen, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useEffect } from "react";
 import { formatEther } from "viem";
+import { parseEventLogs } from "viem";
 import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 
 import { useT } from "@/i18n";
@@ -48,14 +49,19 @@ function DriveCard({ v }: { v: VaultInfo }) {
   );
 }
 
-function MintCard({ tier, onMinted }: { tier: Tier; onMinted: () => void }) {
+function MintCard({ token, tier, onMinted }: { token: string; tier: Tier; onMinted: () => void }) {
   const t = useT();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash: write.data });
 
+  // The server learns about a new drive from the chain's events a little later. Opening it
+  // right away (the server checks ownerOf) lists it now.
   useEffect(() => {
-    if (receipt.isSuccess) onMinted();
-  }, [receipt.isSuccess, onMinted]);
+    if (!receipt.isSuccess) return;
+    const minted = parseEventLogs({ abi: vaultNft.abi, eventName: "DriveMinted", logs: receipt.data.logs })[0];
+    const seen = minted ? api.vault(token, minted.args.tokenId.toString()).catch(() => null) : Promise.resolve(null);
+    seen.then(onMinted);
+  }, [receipt.isSuccess, receipt.data, token, onMinted]);
 
   const busy = write.isPending || receipt.isLoading;
   return (
@@ -125,7 +131,7 @@ function Drives({ token }: { token: string }) {
         <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {tiers.map((tier) => (
-            <MintCard key={tier.id} tier={tier} onMinted={() => qc.invalidateQueries({ queryKey: vaultsKey(token) })} />
+            <MintCard key={tier.id} token={token} tier={tier} onMinted={() => qc.invalidateQueries({ queryKey: vaultsKey(token) })} />
           ))}
         </div>
       </section>

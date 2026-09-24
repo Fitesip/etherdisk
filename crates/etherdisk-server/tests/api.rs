@@ -48,12 +48,6 @@ impl Chain for FakeChain {
     async fn capacity_gb(&self, id: U256) -> anyhow::Result<Option<u32>> {
         Ok(self.tokens.lock().unwrap().get(&id).map(|t| t.1))
     }
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>> {
-        let mut ids: Vec<U256> =
-            self.tokens.lock().unwrap().iter().filter(|(_, t)| t.0 == owner).map(|(id, _)| *id).collect();
-        ids.sort();
-        Ok(ids)
-    }
     async fn contract_owner(&self) -> anyhow::Result<Address> {
         Ok(*self.admin.lock().unwrap())
     }
@@ -123,6 +117,12 @@ impl Resp {
 }
 
 impl App {
+    /// Mints on the fake chain and records the owner as the indexer would.
+    async fn mint(&self, id: u64, owner: Address, gb: u32) {
+        self.chain.mint(id, owner, gb);
+        indexer::on_transfer(&self.state, Address::ZERO, owner, U256::from(id)).await.unwrap();
+    }
+
     async fn req(&self, method: Method, uri: &str, token: Option<&str>, body: Body, ctype: &str, extra: &[(&str, &str)]) -> Resp {
         let mut b = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, ctype);
         if let Some(t) = token {
@@ -260,8 +260,8 @@ async fn siwe_rejects_replay_wrong_domain_and_unknown_nonce() {
 async fn key_blob_lifecycle_and_ownership() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 4);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 4).await;
     let (ta, tb) = (app.login(&alice).await, app.login(&bob).await);
 
     let list = app.get("/api/vaults", Some(&ta)).await.json();
@@ -303,7 +303,7 @@ async fn key_blob_lifecycle_and_ownership() {
 async fn upload_download_and_range() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let plain: Vec<u8> = (0..1000u32).map(|i| (i * 31) as u8).collect();
@@ -340,7 +340,7 @@ async fn upload_download_and_range() {
 async fn upload_validation_and_rollback() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _blob) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -390,7 +390,7 @@ async fn upload_validation_and_rollback() {
 async fn quota_counts_reservations() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let gb = 1u64 << 30;
     let create = |size: u64| json!({ "id": Uuid::new_v4(), "metadata": "AA==", "size": size });
@@ -407,7 +407,7 @@ async fn quota_counts_reservations() {
 async fn folders_move_and_recursive_delete() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -449,8 +449,8 @@ async fn folders_move_and_recursive_delete() {
 async fn folder_path_for_breadcrumbs() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let folder = |id: Uuid, parent: Option<Uuid>| json!({ "id": id, "parent_id": parent, "metadata": "AA==" });
@@ -471,7 +471,7 @@ async fn folder_path_for_breadcrumbs() {
 async fn vault_profile() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let v = app.get("/api/vaults/1", Some(&t)).await.json();
@@ -512,7 +512,7 @@ async fn database_is_bound_to_one_contract() {
 async fn trash_restore_and_purge() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -574,7 +574,7 @@ async fn trash_restore_and_purge() {
 async fn unfinished_uploads_can_be_listed_and_resumed() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
     let ct = encrypt(&vault, &[7u8; 5000], 1024);
@@ -617,7 +617,7 @@ async fn unfinished_uploads_can_be_listed_and_resumed() {
 async fn share_expiry_and_trashed_files() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_vault, file, _) = setup_vault_with_file(&app, &t, b"shared").await;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -691,10 +691,10 @@ async fn ideas_board_one_vote_per_nft() {
     let signers: Vec<PrivateKeySigner> = (0..5).map(|_| PrivateKeySigner::random()).collect();
     let [alice, bob, carol, admin, nobody] = <[PrivateKeySigner; 5]>::try_from(signers).unwrap();
     *app.chain.admin.lock().unwrap() = admin.address();
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 1);
-    app.chain.mint(3, bob.address(), 1);
-    app.chain.mint(4, carol.address(), 1);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 1).await;
+    app.mint(3, bob.address(), 1).await;
+    app.mint(4, carol.address(), 1).await;
     let (ta, tb, tc) = (app.login(&alice).await, app.login(&bob).await, app.login(&carol).await);
     let (tadm, tn) = (app.login(&admin).await, app.login(&nobody).await);
 
@@ -791,7 +791,7 @@ async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
     let app = app_with(|c| c.ideas_admins = vec![moderator.address()]).await;
     // The contract owner is someone else (a multisig, say).
     *app.chain.admin.lock().unwrap() = Address::repeat_byte(0x5a);
-    app.chain.mint(1, author.address(), 1);
+    app.mint(1, author.address(), 1).await;
     let (tm, ta, ts) = (app.login(&moderator).await, app.login(&author).await, app.login(&stranger).await);
     let id = app.json(Method::POST, "/api/ideas", Some(&ta), json!({ "title": "Dark mode" })).await.json()["id"].as_i64().unwrap();
 
@@ -813,7 +813,7 @@ async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
 async fn a_new_owner_is_asked_for_a_new_key() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
     let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
@@ -858,13 +858,43 @@ async fn a_new_owner_is_asked_for_a_new_key() {
     assert_eq!(app.get("/api/vaults/1/key", Some(&ta)).await.json()["needs_new_key"], true);
 }
 
+// ------------------------------------------------------------ drive lists
+
+#[tokio::test]
+async fn drive_lists_follow_transfer_events_and_ownerof() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(2, alice.address(), 1).await;
+    app.mint(10, alice.address(), 4).await;
+    let (ta, tb) = (app.login(&alice).await, app.login(&bob).await);
+    let ids = |v: Value| v.as_array().unwrap().iter().map(|d| d["token_id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(ids(app.get("/api/vaults", Some(&ta)).await.json()), ["2", "10"], "by number, not as text");
+
+    // The token moves on chain before the indexer sees it: alice stops seeing it at once
+    // (ownerOf), bob sees it once the event is processed.
+    app.chain.transfer(10, bob.address());
+    assert_eq!(ids(app.get("/api/vaults", Some(&ta)).await.json()), ["2"]);
+    assert!(ids(app.get("/api/vaults", Some(&tb)).await.json()).is_empty());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(10)).await.unwrap();
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10"]);
+
+    // A drive just minted: opening it (ownerOf checked) lists it without waiting for the indexer.
+    app.chain.mint(11, bob.address(), 1);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10"]);
+    assert_eq!(app.get("/api/vaults/11", Some(&tb)).await.status, StatusCode::OK);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10", "11"]);
+    // Someone else's drive can't be claimed that way.
+    assert_eq!(app.get("/api/vaults/2", Some(&tb)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10", "11"]);
+}
+
 // ------------------------------------------------------------ recovery key
 
 #[tokio::test]
 async fn recovery_key_is_per_holder_and_dropped_on_transfer() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let url = "/api/vaults/1/recovery";
     let key = etherdisk_crypto::RecoveryKey::generate().unwrap();
@@ -957,7 +987,7 @@ async fn inbox_keys_are_bound_to_the_wallet() {
 async fn drive_key_handover() {
     let app = app().await;
     let (alice, bob, carol, dave) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     setup_vault_with_file(&app, &ta, b"x").await;
     let sealed = b64(&[9u8; etherdisk_server::handover::SEALED_LEN]);
@@ -1027,7 +1057,7 @@ async fn drive_key_handover() {
 async fn transfer_without_the_key_asks_for_nothing() {
     let app = app().await;
     let (alice, bob, carol) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     setup_vault_with_file(&app, &ta, b"x").await;
 
@@ -1056,7 +1086,7 @@ async fn transfer_without_the_key_asks_for_nothing() {
 async fn share_links_and_transfer_revocation() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let (vault, shared, ct) = setup_vault_with_file(&app, &ta, b"shared content").await;
     let (private, _) = upload(&app, &ta, &vault, None, b"private").await;
@@ -1102,7 +1132,7 @@ async fn share_links_and_transfer_revocation() {
 async fn indexer_revokes_links_on_transfer_event() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_, f, _) = setup_vault_with_file(&app, &t, b"x").await;
     let body = json!({ "object_ids": [f], "manifest": "AA==", "owner_metadata": "AA==" });
@@ -1121,7 +1151,7 @@ async fn indexer_revokes_links_on_transfer_event() {
 async fn reset_wipes_everything() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_, f, _) = setup_vault_with_file(&app, &t, b"gone").await;
 
