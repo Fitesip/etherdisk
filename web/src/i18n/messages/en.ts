@@ -126,6 +126,8 @@ export const en = {
     minting: "Confirm in wallet…",
     mintPending: "Minting…",
     minted: "Drive minted",
+    pendingTitle: "Drive #{id}",
+    pendingText: "Minted. Setting it up, a few seconds…",
     inactive: "Coming soon",
     capacity: "{size}",
   },

@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Lock, LockOpen, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatEther } from "viem";
 import { parseEventLogs } from "viem";
 import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
@@ -49,19 +49,40 @@ function DriveCard({ v }: { v: VaultInfo }) {
   );
 }
 
-function MintCard({ token, tier, onMinted }: { token: string; tier: Tier; onMinted: () => void }) {
+/** A drive just minted that the server hasn't listed yet. */
+function PendingDriveCard({ id }: { id: string }) {
+  const t = useT();
+  return (
+    <Card className="flex animate-pulse items-center gap-4 p-4">
+      <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-bg-subtle">
+        <Spinner className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">{t("drives.pendingTitle", { id })}</div>
+        <div className="mt-1 text-xs text-muted">{t("drives.pendingText")}</div>
+        <div className="mt-3 h-1.5 w-2/3 rounded-full bg-bg-subtle" />
+      </div>
+    </Card>
+  );
+}
+
+/** How long "Drive minted" stays. */
+const MINTED_NOTE_MS = 5000;
+
+function MintCard({ tier, onMinted }: { tier: Tier; onMinted: (tokenId: string | null) => void }) {
   const t = useT();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash: write.data });
 
-  // The server learns about a new drive from the chain's events a little later. Opening it
-  // right away (the server checks ownerOf) lists it now.
+  // Hand the new token id to the list, which waits for the server to confirm it.
+  const [noteHiddenFor, setNoteHiddenFor] = useState<string | undefined>();
   useEffect(() => {
     if (!receipt.isSuccess) return;
     const minted = parseEventLogs({ abi: vaultNft.abi, eventName: "DriveMinted", logs: receipt.data.logs })[0];
-    const seen = minted ? api.vault(token, minted.args.tokenId.toString()).catch(() => null) : Promise.resolve(null);
-    seen.then(onMinted);
-  }, [receipt.isSuccess, receipt.data, token, onMinted]);
+    onMinted(minted ? minted.args.tokenId.toString() : null);
+    const timer = setTimeout(() => setNoteHiddenFor(write.data), MINTED_NOTE_MS);
+    return () => clearTimeout(timer);
+  }, [receipt.isSuccess, receipt.data, write.data, onMinted]);
 
   const busy = write.isPending || receipt.isLoading;
   return (
@@ -87,7 +108,7 @@ function MintCard({ token, tier, onMinted }: { token: string; tier: Tier; onMint
               ? t("drives.mintPending")
               : t("drives.mint", { price: formatEther(tier.price) })}
       </Button>
-      {receipt.isSuccess && <p className="text-xs text-success">{t("drives.minted")}</p>}
+      {receipt.isSuccess && noteHiddenFor !== write.data && <p className="animate-fade-up text-xs text-success">{t("drives.minted")}</p>}
       {write.error && <p className="text-xs text-danger">{write.error.message.split("\n")[0]}</p>}
     </Card>
   );
@@ -98,6 +119,28 @@ function Drives({ token }: { token: string }) {
   const qc = useQueryClient();
   const vaults = useQuery({ queryKey: vaultsKey(token), queryFn: () => api.vaults(token) });
   const { tiers } = useTiers();
+  // Drives minted here that the list doesn't show yet: the server confirms a new token with
+  // ownerOf, which a lagging RPC node may not answer at once, so keep asking.
+  const [minted, setMinted] = useState<string[]>([]);
+  const waiting = minted.filter((id) => !vaults.data?.some((v) => v.token_id === id));
+  const onMinted = useCallback(
+    (id: string | null) => {
+      if (id) setMinted((m) => (m.includes(id) ? m : [...m, id]));
+      qc.invalidateQueries({ queryKey: vaultsKey(token) });
+    },
+    [qc, token],
+  );
+  const waitingKey = waiting.join(",");
+  useEffect(() => {
+    if (!waitingKey) return;
+    const check = () =>
+      Promise.all(waitingKey.split(",").map((id) => api.vault(token, id).catch(() => null))).then(() =>
+        qc.invalidateQueries({ queryKey: vaultsKey(token) }),
+      );
+    check();
+    const timer = setInterval(check, 3000);
+    return () => clearInterval(timer);
+  }, [waitingKey, token, qc]);
 
   return (
     <div className="flex flex-col gap-12">
@@ -109,10 +152,13 @@ function Drives({ token }: { token: string }) {
             <Spinner />
           ) : vaults.error ? (
             <Notice tone="danger">{t("errors.network")}</Notice>
-          ) : vaults.data?.length ? (
+          ) : vaults.data?.length || waiting.length ? (
             <div className="grid gap-3 md:grid-cols-2">
-              {vaults.data.map((v) => (
+              {vaults.data?.map((v) => (
                 <DriveCard key={v.token_id} v={v} />
+              ))}
+              {waiting.map((id) => (
+                <PendingDriveCard key={id} id={id} />
               ))}
             </div>
           ) : (
@@ -131,7 +177,7 @@ function Drives({ token }: { token: string }) {
         <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {tiers.map((tier) => (
-            <MintCard key={tier.id} token={token} tier={tier} onMinted={() => qc.invalidateQueries({ queryKey: vaultsKey(token) })} />
+            <MintCard key={tier.id} tier={tier} onMinted={onMinted} />
           ))}
         </div>
       </section>
