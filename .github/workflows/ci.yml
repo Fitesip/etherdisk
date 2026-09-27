@@ -75,6 +75,38 @@ jobs:
           path: contracts/aderyn-report.md
           if-no-files-found: ignore
 
+  docker:
+    name: Docker images and nginx
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Server image
+        run: docker build -f deploy/server.Dockerfile -t etherdisk-server .
+      - name: Web image
+        run: >
+          docker build -f deploy/web.Dockerfile -t etherdisk-web
+          --build-arg NEXT_PUBLIC_CHAIN_ID=1
+          --build-arg NEXT_PUBLIC_API_URL=https://etherdisk.app
+          --build-arg NEXT_PUBLIC_RPC_URL=https://ethereum-rpc.publicnode.com
+          --build-arg NEXT_PUBLIC_CONTRACT_ADDRESS=0x0000000000000000000000000000000000000001 .
+      - name: nginx config
+        run: |
+          mkdir -p /tmp/le/live/etherdisk.app
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=etherdisk.app             -keyout /tmp/le/live/etherdisk.app/privkey.pem -out /tmp/le/live/etherdisk.app/fullchain.pem
+          docker run --rm -v "$PWD/deploy/nginx/etherdisk.conf:/etc/nginx/conf.d/default.conf:ro"             -v /tmp/le:/etc/letsencrypt:ro nginx:1.27-alpine nginx -t
+      - name: Containers start and answer
+        run: |
+          docker run -d --name web -p 3000:3000 etherdisk-web
+          docker run -d --name server -p 8787:8787             -e RPC_URL=https://ethereum-rpc.publicnode.com -e CHAIN_ID=1             -e CONTRACT_ADDRESS=0x0000000000000000000000000000000000000001 -e START_BLOCK=0             -e DATABASE_URL=sqlite:///tmp/etherdisk.db -e DATA_DIR=/tmp/blobs etherdisk-server
+          for i in $(seq 30); do curl -sf localhost:3000/ >/dev/null && curl -sf localhost:8787/api/ideas >/dev/null && break; sleep 2; done
+          curl -sf localhost:3000/ | grep -q Etherdisk
+          curl -sf -o /dev/null localhost:3000/sw.js
+          curl -sf -o /dev/null localhost:3000/crypto/etherdisk_crypto_wasm_bg.wasm
+          curl -sf localhost:8787/api/ideas
+      - name: Container logs
+        if: failure()
+        run: docker logs web; docker logs server
+
   web:
     name: Web (Next.js)
     runs-on: ubuntu-latest

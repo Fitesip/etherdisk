@@ -49,6 +49,8 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // The Docker image runs the self-contained server (deploy/web.Dockerfile sets NEXT_OUTPUT).
+  ...(process.env.NEXT_OUTPUT === "standalone" && { output: "standalone" as const }),
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
