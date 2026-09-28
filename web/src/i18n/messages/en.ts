@@ -109,6 +109,8 @@ export const en = {
     finalTitle: "Your files, your keys, your token.",
     finalText: "Open the app, connect a wallet and mint your first drive in a minute.",
     footer: "Testnet prototype. Do not store anything you cannot afford to lose.",
+    terms: "Terms of Service",
+    privacy: "Privacy Policy",
   },
   drives: {
     title: "Your drives",
@@ -128,6 +130,8 @@ export const en = {
     minted: "Drive minted",
     pendingTitle: "Drive #{id}",
     pendingText: "Minted. Setting it up, a few seconds…",
+    agreeStart: "By buying a drive you agree to the",
+    agreeAnd: "and the",
     inactive: "Coming soon",
     capacity: "{size}",
   },

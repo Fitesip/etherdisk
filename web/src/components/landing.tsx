@@ -617,7 +617,17 @@ export function Landing() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto max-w-6xl px-4 py-6 text-xs text-muted">{t("landing.footer")}</div>
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-6 text-xs text-muted">
+          <span>{IS_TESTNET ? t("landing.footer") : "© Etherdisk"}</span>
+          <span className="flex gap-4">
+            <Link href="/terms" className="hover:text-fg">
+              {t("landing.terms")}
+            </Link>
+            <Link href="/privacy" className="hover:text-fg">
+              {t("landing.privacy")}
+            </Link>
+          </span>
+        </div>
       </footer>
     </div>
   );

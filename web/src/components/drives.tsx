@@ -180,6 +180,17 @@ function Drives({ token }: { token: string }) {
             <MintCard key={tier.id} tier={tier} onMinted={onMinted} />
           ))}
         </div>
+        <p className="mt-3 text-xs text-muted">
+          {t("drives.agreeStart")}{" "}
+          <Link href="/terms" className="underline hover:text-fg">
+            {t("landing.terms")}
+          </Link>{" "}
+          {t("drives.agreeAnd")}{" "}
+          <Link href="/privacy" className="underline hover:text-fg">
+            {t("landing.privacy")}
+          </Link>
+          .
+        </p>
       </section>
     </div>
   );

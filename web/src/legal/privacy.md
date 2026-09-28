@@ -25,7 +25,7 @@ Files are encrypted in your browser before upload. We never receive:
 | **Key handover data**: your inbox public key and its wallet signature, drive keys sealed for a recipient | Handing a drive's key to its next holder | Until the handover is completed or cancelled |
 | **Recovery data**: your drive key encrypted under your recovery words | Opening the drive if you forget the passphrase | Until you remove it, the drive changes hands, or is formatted |
 | **Ideas and votes**, with the wallet signatures behind votes | The ideas board | Public; until removed by moderators |
-| **IP addresses** | Protecting the service from abuse (rate limits) and keeping it running | Rate limits: in memory only, a few minutes. Server logs: [up to N days] |
+| **IP addresses** | Protecting the service from abuse (rate limits) | In memory only, for a few minutes; **not written to our logs** (only critical server errors may record one, kept up to [N] days) |
 
 We don't ask for or keep your name, email, phone number or payment card. Payments are made in ETH on the blockchain.
 

@@ -59,6 +59,8 @@ const nextConfig: NextConfig = {
         loaders: ["@tailwindcss/turbopack"],
         as: "*.css",
       },
+      // Legal texts (src/legal/*.md) are imported as strings.
+      "*.md": { type: "text" },
     },
   },
   async headers() {

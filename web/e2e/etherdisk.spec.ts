@@ -12,6 +12,13 @@ test("landing shows the tiers from the contract", async ({ page }) => {
   // A tier that isn't on sale yet is listed, without a way to buy it.
   await expect(page.getByText("8 GB", { exact: true })).toBeVisible();
   await expect(page.getByText("Coming soon").first()).toBeVisible();
+  // The legal pages, from the footer.
+  await page.getByRole("link", { name: "Terms of Service" }).click();
+  await expect(page.getByRole("heading", { name: "Etherdisk Terms of Service" })).toBeVisible();
+  await page.goto("/");
+  await page.getByRole("link", { name: "Privacy Policy" }).click();
+  await expect(page.getByRole("heading", { name: "Etherdisk Privacy Policy" })).toBeVisible();
+  await expect(page.getByRole("table")).toBeVisible();
 });
 
 test("drive: upload, search, trash with undo, password link", async ({ page, browser }) => {
