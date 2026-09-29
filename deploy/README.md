@@ -5,7 +5,7 @@
 
 ## 1. Подготовка хоста
 
-- Docker с плагином compose, открыты порты 80 и 443, DNS `etherdisk.app` и `www.etherdisk.app` указывают на хост.
+- Docker с плагином compose (2.24 или новее), открыты порты 80 и 443 (если они заняты — см. «Порты 80 и 443 заняты»), DNS `etherdisk.app` и `www.etherdisk.app` указывают на хост.
 - Папки для базы и томов (RAID-массивов). Сервер в контейнере работает от пользователя с UID 10001:
 
 ```bash
@@ -48,6 +48,39 @@ docker compose logs -f server     # лог сервера: тома, монит�
 ```
 
 Обновление после `git pull`: снова `docker compose up -d --build`. `NEXT_PUBLIC_*` вшиваются в образ сайта при сборке: после их изменения нужна пересборка.
+
+## Порты 80 и 443 заняты
+
+Наружу открыт только nginx: сайт (3000) и API (8787) доступны лишь внутри сети compose. Другие порты для nginx — `HTTP_PORT` и `HTTPS_PORT` в `.env`.
+
+Если 80 и 443 держит nginx, уже установленный на хосте, TLS остаётся у него, а он пересылает etherdisk.app в контейнеры:
+
+1. В `deploy/.env`:
+
+   ```
+   COMPOSE_FILE=docker-compose.yml:behind-proxy.yml
+   HTTP_PORT=127.0.0.1:8880
+   ```
+
+   nginx в контейнере тогда слушает только `127.0.0.1:8880`, без TLS (`nginx/etherdisk.behind-proxy.conf`). Порт можно взять любой свободный, но только на `127.0.0.1`: адрес клиента контейнер берёт из `X-Forwarded-For`.
+
+2. `nginx/host-etherdisk.conf` скопировать в `/etc/nginx/sites-available/etherdisk.conf` и включить (порт в `proxy_pass` — тот же, что в `HTTP_PORT`). Пока сертификата нет, оставьте в нём только первый блок `server` (порт 80):
+
+   ```bash
+   sudo ln -s /etc/nginx/sites-available/etherdisk.conf /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+3. Сертификат выпускает certbot хоста (шаг 3 с контейнерным certbot не нужен), потом верните в конфиг остальные блоки и снова `nginx -t` и `reload`:
+
+   ```bash
+   sudo mkdir -p /var/www/certbot
+   sudo certbot certonly --webroot -w /var/www/certbot -d etherdisk.app -d www.etherdisk.app
+   ```
+
+   В этих блоках журнал пишется без IP-адресов, как обещает политика конфиденциальности.
+
+4. `docker compose up -d --build` и проверка: `curl -I https://etherdisk.app`.
 
 ## Резервные копии
 

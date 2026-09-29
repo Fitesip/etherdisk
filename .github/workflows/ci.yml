@@ -93,7 +93,16 @@ jobs:
         run: |
           mkdir -p /tmp/le/live/etherdisk.app
           openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=etherdisk.app             -keyout /tmp/le/live/etherdisk.app/privkey.pem -out /tmp/le/live/etherdisk.app/fullchain.pem
-          docker run --rm -v "$PWD/deploy/nginx/etherdisk.conf:/etc/nginx/conf.d/default.conf:ro"             -v /tmp/le:/etc/letsencrypt:ro nginx:1.27-alpine nginx -t
+          for conf in etherdisk.conf etherdisk.behind-proxy.conf host-etherdisk.conf; do
+            docker run --rm -v "$PWD/deploy/nginx/$conf:/etc/nginx/conf.d/default.conf:ro"               -v /tmp/le:/etc/letsencrypt:ro nginx:1.27-alpine nginx -t
+          done
+      - name: Compose files
+        working-directory: deploy
+        run: |
+          touch server.env
+          docker compose config --quiet
+          COMPOSE_FILE=docker-compose.yml:behind-proxy.yml docker compose config | tee /tmp/compose.txt
+          grep -Eq 'published: "?8880"?' /tmp/compose.txt && ! grep -q 'target: 443' /tmp/compose.txt
       - name: Containers start and answer
         run: |
           docker run -d --name web -p 3000:3000 etherdisk-web
@@ -103,9 +112,16 @@ jobs:
           curl -sf -o /dev/null localhost:3000/sw.js
           curl -sf -o /dev/null localhost:3000/crypto/etherdisk_crypto_wasm_bg.wasm
           curl -sf localhost:8787/api/ideas
+      - name: nginx behind a host proxy routes the app and the API
+        run: |
+          docker network create ed && docker network connect ed web && docker network connect ed server
+          docker run -d --name nginx --network ed -p 127.0.0.1:8880:80             -v "$PWD/deploy/nginx/etherdisk.behind-proxy.conf:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine
+          for i in $(seq 15); do curl -sf localhost:8880/ >/dev/null && break; sleep 1; done
+          curl -sf -H 'X-Forwarded-For: 203.0.113.7' localhost:8880/ | grep -q Etherdisk
+          curl -sf localhost:8880/api/ideas
       - name: Container logs
         if: failure()
-        run: docker logs web; docker logs server
+        run: docker logs web; docker logs server; docker logs nginx || true
 
   web:
     name: Web (Next.js)

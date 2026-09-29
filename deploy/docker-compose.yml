@@ -31,9 +31,11 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
+    # Host ports: HTTP_PORT / HTTPS_PORT in .env (a bare port or ADDRESS:PORT). Only nginx is
+    # published; server (8787) and web (3000) are reachable only inside the compose network.
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./nginx/etherdisk.conf:/etc/nginx/conf.d/default.conf:ro
       - ./letsencrypt:/etc/letsencrypt:ro
