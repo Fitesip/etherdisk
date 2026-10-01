@@ -4,7 +4,7 @@
 #   HTTP_PORT=127.0.0.1:8880
 services:
   nginx:
-    ports: !reset
+    ports: !override
       - "${HTTP_PORT:-127.0.0.1:8880}:80"
     volumes:
       - ./nginx/etherdisk.behind-proxy.conf:/etc/nginx/conf.d/default.conf:ro
