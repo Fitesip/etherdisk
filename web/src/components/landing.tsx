@@ -454,12 +454,6 @@ function NftShowcase() {
 
   return (
     <section className="relative isolate overflow-hidden border-t border-border">
-      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
-        <div
-          className="aurora absolute top-1/4 right-[8%] h-[26rem] w-[26rem] rounded-full opacity-20 blur-3xl transition-[background-color] duration-1000"
-          style={{ backgroundColor: color }}
-        />
-      </div>
       <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 py-24 md:grid-cols-2">
         <Reveal>
           <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{t("landing.nft.title")}</h2>

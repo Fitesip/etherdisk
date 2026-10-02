@@ -86,6 +86,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         telegram_bot_token: None,
         telegram_chat_id: None,
         telegram_api_url: String::new(),
+        telegram_proxy: None,
         alert_thresholds: etherdisk_server::monitor::Thresholds {
             free_percent: 15,
             critical_percent: 5,

@@ -197,9 +197,14 @@ pub struct Telegram {
 }
 
 impl Telegram {
-    pub fn new(api: &str, token: &str, chat: &str) -> Self {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(70)).build().expect("HTTP client");
-        Self { client, base: format!("{}/bot{token}", api.trim_end_matches('/')), chat: chat.to_owned() }
+    /// `proxy`: a URL `reqwest::Proxy::all` accepts (see `Config::telegram_proxy`).
+    pub fn new(api: &str, token: &str, chat: &str, proxy: Option<&str>) -> anyhow::Result<Self> {
+        let mut client = reqwest::Client::builder().timeout(Duration::from_secs(70));
+        if let Some(p) = proxy {
+            client = client.proxy(reqwest::Proxy::all(p).map_err(|_| anyhow::anyhow!("invalid Telegram proxy URL"))?);
+        }
+        let client = client.build()?;
+        Ok(Self { client, base: format!("{}/bot{token}", api.trim_end_matches('/')), chat: chat.to_owned() })
     }
 
     pub async fn send(&self, text: &str) -> anyhow::Result<()> {
@@ -255,10 +260,17 @@ impl Monitor {
     pub fn new(state: AppState, store: Arc<VolumeStore>, rpc: Arc<RpcChain>) -> Self {
         let c = &state.config;
         let telegram = match (&c.telegram_bot_token, &c.telegram_chat_id) {
-            (Some(token), Some(chat)) => {
-                tracing::info!(chat = %chat, "monitor: alerts go to Telegram");
-                Some(Telegram::new(&c.telegram_api_url, token, chat))
-            }
+            (Some(token), Some(chat)) => match Telegram::new(&c.telegram_api_url, token, chat, c.telegram_proxy.as_deref()) {
+                Ok(tg) => {
+                    let via = if c.telegram_proxy.is_some() { " through TELEGRAM_PROXY" } else { "" };
+                    tracing::info!(chat = %chat, "monitor: alerts go to Telegram{via}");
+                    Some(tg)
+                }
+                Err(e) => {
+                    tracing::error!("monitor: {e}: alerts go to the log only");
+                    None
+                }
+            },
             (None, None) => {
                 tracing::info!("monitor: no TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID, alerts go to the log only");
                 None

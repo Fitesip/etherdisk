@@ -29,6 +29,9 @@ pub struct Config {
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub telegram_api_url: String,
+    /// Reach Telegram through this proxy (`TELEGRAM_PROXY`: http://, https://, socks5:// or
+    /// socks5h://, optionally with user:password@). Only Telegram traffic uses it.
+    pub telegram_proxy: Option<String>,
     pub alert_thresholds: crate::monitor::Thresholds,
     pub monitor_interval_secs: u64,
     /// Wallets that moderate the ideas board (`IDEAS_ADMINS`, comma-separated), besides
@@ -59,6 +62,12 @@ impl Config {
             telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty()),
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty()),
             telegram_api_url: var_or("TELEGRAM_API_URL", "https://api.telegram.org"),
+            telegram_proxy: match std::env::var("TELEGRAM_PROXY").ok().filter(|s| !s.is_empty()) {
+                // Checked here so a typo stops the server instead of silencing the alerts.
+                // The error leaves the value out: it may hold a password.
+                Some(p) => Some(reqwest::Proxy::all(&p).map(|_| p).map_err(|_| anyhow::anyhow!("TELEGRAM_PROXY is not a valid proxy URL"))?),
+                None => None,
+            },
             alert_thresholds: crate::monitor::Thresholds {
                 free_percent: parse("ALERT_FREE_PERCENT", &var_or("ALERT_FREE_PERCENT", "15"))?,
                 critical_percent: parse("ALERT_CRITICAL_PERCENT", &var_or("ALERT_CRITICAL_PERCENT", "5"))?,

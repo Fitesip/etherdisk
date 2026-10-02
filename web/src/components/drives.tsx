@@ -17,6 +17,7 @@ import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { DriveTile } from "./drive/dialogs";
+import { DriveArt } from "./drive-art";
 import { InboxHint, OutgoingHandovers } from "./handover";
 import { RequireSession } from "./require-session";
 import { Button, Card, cn, Notice, Spinner } from "./ui";
@@ -69,7 +70,7 @@ function PendingDriveCard({ id }: { id: string }) {
 /** How long "Drive minted" stays. */
 const MINTED_NOTE_MS = 5000;
 
-function MintCard({ tier, onMinted }: { tier: Tier; onMinted: (tokenId: string | null) => void }) {
+function MintCard({ tier, best, onMinted }: { tier: Tier; best: boolean; onMinted: (tokenId: string | null) => void }) {
   const t = useT();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash: write.data });
@@ -86,16 +87,34 @@ function MintCard({ tier, onMinted }: { tier: Tier; onMinted: (tokenId: string |
 
   const busy = write.isPending || receipt.isLoading;
   return (
-    <Card className={cn("relative flex flex-col gap-4 p-5", !tier.active && "opacity-70")}>
-      {!tier.active && (
-        <span className="absolute top-4 right-4 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted">{t("drives.inactive")}</span>
+    <Card
+      className={cn(
+        "group relative flex flex-col gap-4 p-5 transition-transform duration-300",
+        tier.active ? "hover:-translate-y-1" : "border-dashed opacity-70",
+        best && "border-accent shadow-xl shadow-accent/15",
       )}
-      <div>
-        <div className="text-2xl font-semibold tracking-tight">{t("drives.capacity", { size: formatCapacity(tier.capacityGb) })}</div>
-        <div className="font-mono text-sm text-muted">{formatEther(tier.price)} ETH</div>
+    >
+      {!tier.active && (
+        <span className="absolute -top-2.5 left-5 rounded-full border border-border bg-bg px-2 py-0.5 text-[11px] text-muted">{t("drives.inactive")}</span>
+      )}
+      {best && (
+        <span className="absolute -top-2.5 left-5 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-accent-fg">{t("landing.bestValue")}</span>
+      )}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold tracking-tight">{t("drives.capacity", { size: formatCapacity(tier.capacityGb) })}</div>
+          <div className="mt-1 font-mono text-sm">{formatEther(tier.price)} ETH</div>
+          <div className="mt-0.5 text-xs text-muted">{t("landing.perGb", { price: formatEther(tier.price / BigInt(tier.capacityGb)) })}</div>
+        </div>
+        <DriveArt
+          capacityGb={tier.capacityGb}
+          motion={tier.active ? (busy ? "always" : "hover") : "none"}
+          className={cn("h-14 w-14 shrink-0 rounded-xl shadow-lg transition-transform duration-500 group-hover:-rotate-6", !tier.active && "grayscale")}
+        />
       </div>
       <Button
-        variant="primary"
+        variant={best ? "primary" : "secondary"}
+        className="mt-auto"
         disabled={!tier.active}
         loading={busy}
         onClick={() => write.mutate({ ...vaultNft, functionName: "mint", args: [BigInt(tier.id)], value: tier.price })}
@@ -119,6 +138,10 @@ function Drives({ token }: { token: string }) {
   const qc = useQueryClient();
   const vaults = useQuery({ queryKey: vaultsKey(token), queryFn: () => api.vaults(token) });
   const { tiers } = useTiers();
+  // The cheapest per GB on sale, as on the landing page.
+  const onSale = tiers.filter((x) => x.active);
+  const perGb = (x: Tier) => Number(x.price) / x.capacityGb;
+  const best = onSale.length > 1 ? onSale.reduce((a, b) => (perGb(b) < perGb(a) ? b : a)).id : -1;
   // Drives minted here that the list doesn't show yet: the server confirms a new token with
   // ownerOf, which a lagging RPC node may not answer at once, so keep asking.
   const [minted, setMinted] = useState<string[]>([]);
@@ -175,9 +198,9 @@ function Drives({ token }: { token: string }) {
           {t("drives.mintTitle")}
         </h2>
         <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-6 grid gap-4 sm:grid-cols-3">
           {tiers.map((tier) => (
-            <MintCard key={tier.id} tier={tier} onMinted={onMinted} />
+            <MintCard key={tier.id} tier={tier} best={tier.id === best} onMinted={onMinted} />
           ))}
         </div>
         <p className="mt-3 text-xs text-muted">
