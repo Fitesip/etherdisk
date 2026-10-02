@@ -222,6 +222,99 @@ dialog[open]::backdrop {
   opacity: 1;
 }
 
+/* The drive token's picture (<DriveArt>): the platter spins, the read arm seeks. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes seek {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-9deg);
+  }
+  45% {
+    transform: rotate(-3deg);
+  }
+  70% {
+    transform: rotate(-14deg);
+  }
+}
+.drive-art-platter,
+.drive-art-arm {
+  transform-box: view-box;
+}
+.drive-art-platter {
+  transform-origin: 200px 220px;
+}
+.drive-art-arm {
+  transform-origin: 302px 350px;
+}
+.drive-art-always .drive-art-platter,
+.group:hover .drive-art-hover .drive-art-platter {
+  animation: spin 4s linear infinite;
+}
+.drive-art-always .drive-art-arm,
+.group:hover .drive-art-hover .drive-art-arm {
+  animation: seek 5s ease-in-out infinite;
+}
+
+/* Pointer-tilted card with a glare that follows the pointer (--rx/--ry/--gx/--gy). */
+.tilt {
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.tilt-glare {
+  background: radial-gradient(420px circle at var(--gx, 50%) var(--gy, 0%), rgb(255 255 255 / 0.18), transparent 55%);
+}
+
+/* Endless strip (the content is rendered twice; pauses on hover). */
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee {
+  mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+}
+.marquee-track {
+  animation: marquee 30s linear infinite;
+}
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* A ring that pulses out of the step numbers once they scroll in. */
+@keyframes ping-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+.reveal[data-shown] .ping-ring {
+  animation: ping-ring 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) 2 both;
+  animation-delay: calc(var(--delay, 0ms) + 150ms);
+}
+
+/* The showcased drive swaps sizes with a short pop. */
+@keyframes art-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94) rotate(-4deg);
+  }
+}
+.art-in {
+  animation: art-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

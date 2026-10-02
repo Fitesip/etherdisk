@@ -43,15 +43,12 @@ export const en = {
     connectText: "Your drives are NFTs in your wallet. Connect it to open them.",
   },
   landing: {
-    eyebrow: "End-to-end encrypted · on Ethereum",
     titleStart: "Cloud storage you buy once and",
     titleAccent: "own",
     subtitle:
       "Every drive is an NFT. No subscription, no account: mint it, fill it, give it away or sell it — the files go with it, readable only with your passphrase.",
     ctaPrimary: "Open your drives",
     ctaSecondary: "How it works",
-    testnet: "Live on the Sepolia testnet",
-    mainnet: "Live on Ethereum",
     demo: {
       ready: "Ready to upload",
       encrypting: "Encrypting chunk {n} of {total}",
@@ -66,6 +63,15 @@ export const en = {
       "Encryption happens in your browser, before a single byte is uploaded. Names, types and thumbnails are encrypted too.",
     youSee: "What you see",
     serverSees: "What the server sees",
+    nft: {
+      title: "Your drive is a real NFT",
+      text: "Its picture and details are drawn by the smart contract itself, so a wallet or marketplace shows your drive without asking our servers.",
+      points: {
+        onchain: "Image and metadata live on-chain, not on a website",
+        fixed: "Capacity is part of the token and never changes",
+        wallets: "Shows up in your wallet like any other NFT",
+      },
+    },
     featuresTitle: "Everything a drive should do",
     featuresText: "A familiar file manager on top of strong cryptography and an ordinary NFT.",
     features: {
