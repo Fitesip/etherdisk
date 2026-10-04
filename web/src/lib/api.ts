@@ -266,6 +266,8 @@ export const api = {
   outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
   declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),
 
+  /** Drives minted per tier (tiers with none are left out). */
+  tierStats: () => json<{ tier_id: number; minted: number }[]>(request("/tiers/stats")),
   ideas: (token: string | null) => json<Idea[]>(request("/ideas", { token })),
   ideasMe: (token: string) => json<IdeasMe>(request("/ideas/me", { token })),
   proposeIdea: (token: string, title: string, body: string) =>

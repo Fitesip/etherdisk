@@ -125,6 +125,7 @@ export const en = {
     usage: "{used} of {total} used",
     free: "{free} free",
     notSetUp: "Not set up",
+    popular: "Popular",
     locked: "Locked",
     unlocked: "Unlocked",
     mintTitle: "Get a new drive",

@@ -20,6 +20,7 @@ sol! {
     #[sol(rpc)]
     interface IEtherdisk {
         event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+        event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
 
         function ownerOf(uint256 tokenId) external view returns (address);
         function capacityOf(uint256 tokenId) external view returns (uint32);
@@ -27,7 +28,7 @@ sol! {
     }
 }
 
-pub use IEtherdisk::Transfer;
+pub use IEtherdisk::{DriveMinted, Transfer};
 
 /// What the server needs from the chain. Abstracted so tests can run without an RPC node.
 #[async_trait]

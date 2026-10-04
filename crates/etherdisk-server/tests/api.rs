@@ -662,6 +662,22 @@ async fn new_owner_is_not_turned_away_by_a_stale_cache() {
     assert!(owners.require_owner(U256::from(1), alice).await.is_err(), "and the cache now knows");
 }
 
+// ------------------------------------------------------------ tier stats
+
+#[tokio::test]
+async fn tier_stats_count_mints_per_tier() {
+    let app = app().await;
+    assert_eq!(app.get("/api/tiers/stats", None).await.json(), json!([]));
+    for (token, tier) in [(1, 1), (2, 1), (3, 0), (4, 1)] {
+        indexer::on_mint(&app.state, U256::from(token), U256::from(tier)).await.unwrap();
+    }
+    // The same event seen twice (a backfill replay) counts once.
+    indexer::on_mint(&app.state, U256::from(2), U256::from(1)).await.unwrap();
+    let r = app.get("/api/tiers/stats", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json(), json!([{ "tier_id": 0, "minted": 1 }, { "tier_id": 1, "minted": 3 }]));
+}
+
 // ------------------------------------------------------------ rate limits & ideas
 
 #[tokio::test]

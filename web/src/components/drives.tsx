@@ -70,7 +70,7 @@ function PendingDriveCard({ id }: { id: string }) {
 /** How long "Drive minted" stays. */
 const MINTED_NOTE_MS = 5000;
 
-function MintCard({ tier, best, onMinted }: { tier: Tier; best: boolean; onMinted: (tokenId: string | null) => void }) {
+function MintCard({ tier, popular, onMinted }: { tier: Tier; popular: boolean; onMinted: (tokenId: string | null) => void }) {
   const t = useT();
   const write = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash: write.data });
@@ -91,14 +91,14 @@ function MintCard({ tier, best, onMinted }: { tier: Tier; best: boolean; onMinte
       className={cn(
         "group relative flex flex-col gap-4 p-5 transition-transform duration-300",
         tier.active ? "hover:-translate-y-1" : "border-dashed opacity-70",
-        best && "border-accent shadow-xl shadow-accent/15",
+        popular && "border-accent shadow-xl shadow-accent/15",
       )}
     >
       {!tier.active && (
         <span className="absolute -top-2.5 left-5 rounded-full border border-border bg-bg px-2 py-0.5 text-[11px] text-muted">{t("drives.inactive")}</span>
       )}
-      {best && (
-        <span className="absolute -top-2.5 left-5 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-accent-fg">{t("landing.bestValue")}</span>
+      {popular && (
+        <span className="absolute -top-2.5 left-5 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-accent-fg">{t("drives.popular")}</span>
       )}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -113,7 +113,7 @@ function MintCard({ tier, best, onMinted }: { tier: Tier; best: boolean; onMinte
         />
       </div>
       <Button
-        variant={best ? "primary" : "secondary"}
+        variant={popular ? "primary" : "secondary"}
         className="mt-auto"
         disabled={!tier.active}
         loading={busy}
@@ -138,10 +138,12 @@ function Drives({ token }: { token: string }) {
   const qc = useQueryClient();
   const vaults = useQuery({ queryKey: vaultsKey(token), queryFn: () => api.vaults(token) });
   const { tiers } = useTiers();
-  // The cheapest per GB on sale, as on the landing page.
-  const onSale = tiers.filter((x) => x.active);
-  const perGb = (x: Tier) => Number(x.price) / x.capacityGb;
-  const best = onSale.length > 1 ? onSale.reduce((a, b) => (perGb(b) < perGb(a) ? b : a)).id : -1;
+  // "Popular": the tier on sale with the most drives minted (none until something sells).
+  const stats = useQuery({ queryKey: ["tier-stats"], queryFn: api.tierStats, staleTime: 60_000 });
+  const mintedIn = (id: number) => stats.data?.find((s) => s.tier_id === id)?.minted ?? 0;
+  const popular = tiers
+    .filter((x) => x.active && mintedIn(x.id) > 0)
+    .reduce<Tier | undefined>((a, b) => (!a || mintedIn(b.id) > mintedIn(a.id) ? b : a), undefined)?.id;
   // Drives minted here that the list doesn't show yet: the server confirms a new token with
   // ownerOf, which a lagging RPC node may not answer at once, so keep asking.
   const [minted, setMinted] = useState<string[]>([]);
@@ -150,6 +152,7 @@ function Drives({ token }: { token: string }) {
     (id: string | null) => {
       if (id) setMinted((m) => (m.includes(id) ? m : [...m, id]));
       qc.invalidateQueries({ queryKey: vaultsKey(token) });
+      qc.invalidateQueries({ queryKey: ["tier-stats"] });
     },
     [qc, token],
   );
@@ -200,7 +203,7 @@ function Drives({ token }: { token: string }) {
         <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           {tiers.map((tier) => (
-            <MintCard key={tier.id} tier={tier} best={tier.id === best} onMinted={onMinted} />
+            <MintCard key={tier.id} tier={tier} popular={tier.id === popular} onMinted={onMinted} />
           ))}
         </div>
         <p className="mt-3 text-xs text-muted">
