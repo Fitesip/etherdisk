@@ -67,6 +67,26 @@ function PendingDriveCard({ id }: { id: string }) {
   );
 }
 
+/** Placeholders while the tiers are read from the contract (six, as on mainnet). */
+const SKELETON_TIERS = 6;
+
+/** The shape of a mint card, shimmering, while its tier is still loading. */
+function MintCardSkeleton({ delay }: { delay: number }) {
+  return (
+    <div aria-hidden className="skeleton flex flex-col gap-4 rounded-xl border border-border bg-card p-5" style={{ animationDelay: `${delay}ms` }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-1 flex-col gap-2">
+          <div className="h-7 w-24 rounded-md bg-bg-subtle" />
+          <div className="h-4 w-20 rounded bg-bg-subtle" />
+          <div className="h-3 w-36 rounded bg-bg-subtle" />
+        </div>
+        <div className="h-14 w-14 shrink-0 rounded-xl bg-bg-subtle" />
+      </div>
+      <div className="h-9 rounded-lg bg-bg-subtle" />
+    </div>
+  );
+}
+
 /** How long "Drive minted" stays. */
 const MINTED_NOTE_MS = 5000;
 
@@ -137,7 +157,7 @@ function Drives({ token }: { token: string }) {
   const t = useT();
   const qc = useQueryClient();
   const vaults = useQuery({ queryKey: vaultsKey(token), queryFn: () => api.vaults(token) });
-  const { tiers } = useTiers();
+  const { tiers, isLoading: tiersLoading } = useTiers();
   // "Popular": the tier on sale with the most drives minted (none until something sells).
   const stats = useQuery({ queryKey: ["tier-stats"], queryFn: api.tierStats, staleTime: 60_000 });
   const mintedIn = (id: number) => stats.data?.find((s) => s.tier_id === id)?.minted ?? 0;
@@ -202,6 +222,7 @@ function Drives({ token }: { token: string }) {
         </h2>
         <p className="mt-1 text-sm text-muted">{IS_TESTNET ? t("drives.mintText") : t("drives.mintTextMainnet")}</p>
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          {tiersLoading && Array.from({ length: SKELETON_TIERS }, (_, i) => <MintCardSkeleton key={i} delay={i * 120} />)}
           {tiers.map((tier) => (
             <MintCard key={tier.id} tier={tier} popular={tier.id === popular} onMinted={onMinted} />
           ))}

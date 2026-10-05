@@ -315,6 +315,29 @@ dialog[open]::backdrop {
   animation: art-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+/* Loading placeholder: a light band sweeps across (animation-delay staggers a row). */
+@keyframes skeleton-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  animation: fade-up 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--fg) 7%, transparent), transparent);
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+  animation-delay: inherit;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

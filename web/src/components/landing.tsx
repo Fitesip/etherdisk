@@ -27,7 +27,7 @@ import { useTiers } from "@/lib/tiers";
 
 import { DriveArt, driveColor } from "./drive-art";
 import { Logo } from "./header";
-import { cn, Spinner } from "./ui";
+import { cn } from "./ui";
 
 // ------------------------------------------------------------------ motion helpers
 
@@ -595,7 +595,19 @@ function Tiers() {
           <p className="mt-4 text-muted">{IS_TESTNET ? t("landing.tiersText") : t("landing.tiersTextMainnet")}</p>
         </Reveal>
         {isLoading ? (
-          <Spinner className="mx-auto mt-12" />
+          <div aria-hidden className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-3">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="skeleton flex h-80 flex-col gap-3 rounded-2xl border border-border bg-card p-6" style={{ animationDelay: `${i * 120}ms` }}>
+                <div className="flex justify-between">
+                  <div className="h-9 w-28 rounded-lg bg-bg-subtle" />
+                  <div className="h-16 w-16 rounded-xl bg-bg-subtle" />
+                </div>
+                <div className="h-4 w-24 rounded bg-bg-subtle" />
+                <div className="h-3 w-40 rounded bg-bg-subtle" />
+                <div className="mt-auto h-10 rounded-lg bg-bg-subtle" />
+              </div>
+            ))}
+          </div>
         ) : (
           <div className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-3">
             {tiers.map((tier, i) => {
