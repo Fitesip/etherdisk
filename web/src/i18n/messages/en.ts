@@ -206,6 +206,7 @@ export const en = {
     icon: "Icon",
     cover: "Cover",
     coverNone: "No cover",
+    coverHint: "Covers use the fill color; aurora blends it with the outline color.",
     colorDefault: "Default",
     colorCustom: "Custom color",
     accentHint: "Buttons inside the drive use the fill color.",

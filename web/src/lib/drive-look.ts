@@ -65,7 +65,8 @@ export const DriveIcon = ({ id, ...props }: IconProps) => createElement((id && I
 /** A folder's icon by id (default: a folder). */
 export const FolderIcon = ({ id, ...props }: IconProps) => createElement((id && ICONS[id]) || Folder, props);
 
-/** Cover patterns for drive cards, drawn in the drive's accent color (`--accent`). */
+/** Cover patterns for drive cards, drawn in the drive's fill color (`--accent`); "aurora"
+ *  blends it with the outline color (`--drive-stroke`). */
 const COVERS: Record<string, string> = {
   dots: "radial-gradient(color-mix(in srgb, var(--accent) 45%, transparent) 1.2px, transparent 1.6px) 0 0 / 12px 12px",
   grid: "linear-gradient(color-mix(in srgb, var(--accent) 22%, transparent) 1px, transparent 1px) 0 0 / 16px 16px, linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent) 1px, transparent 1px) 0 0 / 16px 16px",
@@ -75,7 +76,7 @@ const COVERS: Record<string, string> = {
   rings: "repeating-radial-gradient(circle at 90% 50%, color-mix(in srgb, var(--accent) 26%, transparent) 0 1.5px, transparent 1.5px 12px)",
   glow: "radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--accent) 38%, transparent), transparent 60%)",
   aurora:
-    "radial-gradient(60% 120% at 0% 100%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%), radial-gradient(60% 120% at 100% 0%, color-mix(in srgb, #ec4899 26%, transparent), transparent 70%)",
+    "radial-gradient(60% 120% at 0% 100%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%), radial-gradient(60% 120% at 100% 0%, color-mix(in srgb, var(--drive-stroke, #ec4899) 30%, transparent), transparent 70%)",
 };
 
 export const COVER_IDS = Object.keys(COVERS);

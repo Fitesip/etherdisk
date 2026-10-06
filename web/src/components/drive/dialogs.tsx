@@ -546,7 +546,8 @@ export function DriveTile({ info, status, footer }: { info: VaultInfo; status?: 
           <span className="truncate font-medium">{driveName(info, t)}</span>
           {status}
         </div>
-        <Progress value={info.used_bytes / info.capacity_bytes} className="mt-2" />
+        {/* Outlined and opaque, so it stays readable on any cover. */}
+        <Progress value={info.used_bytes / info.capacity_bytes} className="mt-2 h-2 bg-card ring-1 ring-(--drive-stroke,var(--border))" />
         {footer}
       </div>
     </div>
@@ -659,6 +660,7 @@ export function DriveLookForm({ token, info }: { token: string; info: VaultInfo 
               </button>
             ))}
           </div>
+          <p className="mt-2 text-xs text-muted">{t("vault.coverHint")}</p>
         </fieldset>
         {error && <Notice tone="danger">{error}</Notice>}
         <div className="flex items-center gap-3">
