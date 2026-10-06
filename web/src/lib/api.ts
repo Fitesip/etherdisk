@@ -63,6 +63,9 @@ export interface VaultInfo {
   name: string | null;
   stroke: string | null;
   fill: string | null;
+  /** Ids from lib/drive-look (null = default). */
+  icon: string | null;
+  cover: string | null;
 }
 
 export interface DriveKey {
@@ -74,7 +77,7 @@ export interface DriveKey {
   needs_new_key: boolean;
 }
 
-export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill">;
+export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill" | "icon" | "cover">;
 
 export interface ObjectRow {
   id: string;
@@ -188,6 +191,9 @@ export const api = {
   deleteRecovery: (token: string, id: string) => empty(request(`/vaults/${id}/recovery`, { method: "DELETE", token })),
   setProfile: (token: string, id: string, profile: VaultProfile) =>
     json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),
+  /** Drive-wide settings sealed with the drive key (lib/prefs); blob is base64 or null. */
+  prefs: (token: string, id: string) => json<{ blob: string | null }>(request(`/vaults/${id}/prefs`, { token })),
+  setPrefs: (token: string, id: string, blob: string | null) => empty(request(`/vaults/${id}/prefs`, { method: "PUT", token, json: { blob } })),
   reset: (token: string, id: string) =>
     empty(request(`/vaults/${id}/reset`, { method: "POST", token, json: { confirm: "DELETE" } })),
 

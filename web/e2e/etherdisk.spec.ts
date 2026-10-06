@@ -9,8 +9,10 @@ test("landing shows the tiers from the contract", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Cloud storage you buy once/ })).toBeVisible();
   await expect(page.getByText("0.0005 ETH", { exact: true })).toBeVisible();
   await expect(page.getByText("Best value per GB")).toBeVisible();
-  // A tier that isn't on sale yet is listed, without a way to buy it.
-  await expect(page.getByText("8 GB", { exact: true })).toBeVisible();
+  // A tier that isn't on sale yet is listed (with its drive picture), without a way to buy it.
+  const tiers = page.locator("section", { has: page.getByRole("heading", { name: "Pay once. Keep it." }) });
+  await expect(tiers.getByText("8 GB", { exact: true }).and(tiers.locator("div"))).toBeVisible();
+  await expect(tiers.getByRole("img", { name: "Etherdisk 8 GB" })).toBeVisible();
   await expect(page.getByText("Coming soon").first()).toBeVisible();
   // The legal pages, from the footer.
   await page.getByRole("link", { name: "Terms of Service" }).click();
@@ -265,4 +267,78 @@ test("transfer with the passphrase: the new owner makes the drive theirs", async
   await bob.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill("Mine#Now7");
   await bob.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(bob.getByRole("button", { name: /told\.txt/ })).toBeVisible();
+});
+
+test("customization: drive icon and cover, starred files, labels, folder color and icon", async ({ page }) => {
+  await installWallet(page, ALICE);
+  await signIn(page);
+  const tokenId = await mintAndSetUp(page);
+  // The file list (the uploads panel has a list too).
+  const list = page.locator("main ul").filter({ has: page.getByRole("checkbox", { name: /^Select / }) });
+  const row = (name: string) => list.locator("li", { hasText: name });
+  const menu = async (name: string, item: string) => {
+    await row(name).getByRole("button", { name: "Actions" }).click();
+    await page.getByRole("button", { name: item }).click();
+  };
+
+  await upload(page, [text("alpha.txt", "a"), text("zeta.txt", "z")]);
+  await page.getByRole("button", { name: "New folder" }).click();
+  await page.locator("dialog[open] input").fill("Photos");
+  await page.locator("dialog[open]").getByRole("button", { name: "Create", exact: true }).click();
+  await expect(row("Photos")).toBeVisible();
+  await expect(row("zeta.txt")).toBeVisible();
+  // The finished uploads panel covers the bottom right corner of the list.
+  await page.getByRole("button", { name: "Clear finished" }).click();
+
+  // A starred file goes to the top, above folders, and the "Starred" filter shows only it.
+  await menu("zeta.txt", "Star");
+  await expect(list.locator("li").first()).toContainText("zeta.txt");
+  await page.getByRole("button", { name: "Starred" }).click();
+  await expect(list.locator("li")).toHaveCount(1);
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
+  // A new label on alpha.txt; its chip filters the list.
+  await menu("alpha.txt", "Labels…");
+  await page.getByRole("button", { name: "New label" }).click();
+  await page.getByLabel("Label name").fill("Work");
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.locator("dialog[open]").getByRole("checkbox")).toBeChecked();
+  await page.locator("dialog[open]").getByRole("button", { name: "Save" }).click();
+  await expect(row("alpha.txt").locator('[title="Work"]')).toBeVisible();
+  await page.getByRole("button", { name: "Work" }).click();
+  await expect(list.locator("li")).toHaveCount(1);
+  await expect(list.locator("li")).toContainText("alpha.txt");
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
+  // A folder's color and icon.
+  await menu("Photos", "Color and icon…");
+  await page.locator("dialog[open]").getByRole("button", { name: "#ef4444" }).click();
+  await page.locator("dialog[open]").getByRole("button", { name: "camera" }).click();
+  await page.locator("dialog[open]").getByRole("button", { name: "Save" }).click();
+  await expect(row("Photos").locator("svg.lucide-camera")).toHaveCSS("color", "rgb(239, 68, 68)");
+
+  // The drive's icon and cover show on the drives page.
+  await page.goto(`/drive/${tokenId}/settings`);
+  await page.getByRole("button", { name: "camera" }).click();
+  await page.getByRole("button", { name: "dots" }).click();
+  await page.getByRole("button", { name: "Save" }).first().click();
+  await expect(page.getByText("Saved")).toBeVisible();
+  await page.goto("/drive");
+  const card = page.locator(`a[href="/drive/${tokenId}"]`);
+  await expect(card.locator("svg.lucide-camera")).toBeVisible();
+  await expect(card.locator("[aria-hidden][style*='radial-gradient']")).toHaveCount(1);
+  await page.screenshot({ path: "test-results/customization-drives.png" });
+
+  // Labels and stars survive a reload (sealed prefs and metadata on the server).
+  await page.goto(`/drive/${tokenId}`);
+  // A navigation locks the drive unless "stay unlocked" is on: wait for either screen.
+  const unlockHeading = page.getByRole("heading", { name: /^Unlock / });
+  await expect(unlockHeading.or(page.getByRole("button", { name: "Upload" }))).toBeVisible();
+  if (await unlockHeading.isVisible()) {
+    await page.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill(PASSPHRASE);
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  }
+  await expect(page.getByRole("button", { name: "Work" })).toBeVisible();
+  await expect(list.locator("li").first()).toContainText("zeta.txt");
+  await page.screenshot({ path: "test-results/customization-files.png", fullPage: true });
 });

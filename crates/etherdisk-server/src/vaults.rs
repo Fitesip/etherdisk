@@ -19,6 +19,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}/recovery", get(get_recovery).put(put_recovery).delete(delete_recovery))
         .route("/vaults/{token_id}/reset", post(reset))
         .route("/vaults/{token_id}/profile", put(put_profile))
+        .route("/vaults/{token_id}/prefs", get(get_prefs).put(put_prefs))
 }
 
 pub(crate) fn parse_token(s: &str) -> AppResult<U256> {
@@ -55,16 +56,24 @@ pub struct VaultInfo {
     profile: Profile,
 }
 
-/// Owner-chosen name and colors. Plaintext, so the drive list can show them while locked.
+/// Owner-chosen name, colors, icon and cover. Plaintext, so the drive list can show them
+/// while locked.
 #[derive(Serialize, Deserialize, Default, sqlx::FromRow)]
 pub struct Profile {
     name: Option<String>,
     /// '#rrggbb'
     stroke: Option<String>,
     fill: Option<String>,
+    /// Ids from the app's icon and cover sets (`[a-z0-9-]`); the app falls back to its
+    /// default for ids it doesn't know.
+    icon: Option<String>,
+    cover: Option<String>,
 }
 
 pub const MAX_NAME_CHARS: usize = 64;
+const MAX_STYLE_ID: usize = 32;
+/// Sealed drive-wide settings (labels and the like): a few KiB in practice.
+pub const MAX_PREFS: usize = 64 * 1024;
 
 /// `owner`: the caller, who holds the token (recovery keys are per holder).
 async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
@@ -80,7 +89,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     .bind(format!("{owner:#x}"))
     .fetch_optional(&st.db)
     .await?;
-    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill FROM vault_profiles WHERE token_id = ?")
+    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill, icon, cover FROM vault_profiles WHERE token_id = ?")
         .bind(&token)
         .fetch_optional(&st.db)
         .await?
@@ -153,6 +162,14 @@ fn clean_color(c: Option<String>) -> AppResult<Option<String>> {
     }
 }
 
+fn clean_style_id(id: Option<String>, what: &str) -> AppResult<Option<String>> {
+    match id {
+        None => Ok(None),
+        Some(s) if !s.is_empty() && s.len() <= MAX_STYLE_ID && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => Ok(Some(s)),
+        Some(_) => Err(AppError::bad(format!("{what} must be 1..={MAX_STYLE_ID} of a-z, 0-9, -"))),
+    }
+}
+
 /// Replaces the whole profile; `null` fields reset to defaults.
 async fn put_profile(
     State(st): State<AppState>,
@@ -161,16 +178,24 @@ async fn put_profile(
     Json(req): Json<Profile>,
 ) -> AppResult<Json<VaultInfo>> {
     let (id, token) = owned(&st, &user, &token_id).await?;
-    let p = Profile { name: clean_name(req.name)?, stroke: clean_color(req.stroke)?, fill: clean_color(req.fill)? };
+    let p = Profile {
+        name: clean_name(req.name)?,
+        stroke: clean_color(req.stroke)?,
+        fill: clean_color(req.fill)?,
+        icon: clean_style_id(req.icon, "icon")?,
+        cover: clean_style_id(req.cover, "cover")?,
+    };
     sqlx::query(
-        "INSERT INTO vault_profiles (token_id, name, stroke, fill, updated_at) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO vault_profiles (token_id, name, stroke, fill, icon, cover, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (token_id) DO UPDATE SET name = excluded.name, stroke = excluded.stroke,
-            fill = excluded.fill, updated_at = excluded.updated_at",
+            fill = excluded.fill, icon = excluded.icon, cover = excluded.cover, updated_at = excluded.updated_at",
     )
     .bind(&token)
     .bind(&p.name)
     .bind(&p.stroke)
     .bind(&p.fill)
+    .bind(&p.icon)
+    .bind(&p.cover)
     .bind(now())
     .execute(&st.db)
     .await?;
@@ -381,6 +406,42 @@ struct ResetRequest {
 
 /// Irreversibly wipes the vault: files, thumbnails, metadata, links and the key blob.
 /// The token stays; the owner sets up a new passphrase afterwards.
+#[derive(Serialize, Deserialize)]
+struct Prefs {
+    /// Sealed by the app with the drive key; null if never saved.
+    #[serde(with = "b64::option")]
+    blob: Option<Vec<u8>>,
+}
+
+/// Drive-wide settings, sealed: only the holder reads or replaces them.
+async fn get_prefs(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Prefs>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let blob = sqlx::query_scalar("SELECT blob FROM vault_prefs WHERE token_id = ?").bind(&token).fetch_optional(&st.db).await?;
+    Ok(Json(Prefs { blob }))
+}
+
+/// Replaces the settings; a null or empty blob removes them.
+async fn put_prefs(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>, Json(req): Json<Prefs>) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let Some(blob) = req.blob.filter(|b| !b.is_empty()) else {
+        sqlx::query("DELETE FROM vault_prefs WHERE token_id = ?").bind(&token).execute(&st.db).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    if blob.len() > MAX_PREFS {
+        return Err(AppError::bad(format!("prefs must be at most {MAX_PREFS} bytes")));
+    }
+    sqlx::query(
+        "INSERT INTO vault_prefs (token_id, blob, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET blob = excluded.blob, updated_at = excluded.updated_at",
+    )
+    .bind(&token)
+    .bind(&blob)
+    .bind(now())
+    .execute(&st.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn reset(
     State(st): State<AppState>,
     user: AuthUser,
@@ -403,6 +464,7 @@ async fn wipe(st: &AppState, token: &str) -> AppResult<()> {
     sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM handover_skips WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM vault_prefs WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     tx.commit().await?;
     st.store.delete_vault(token).await?;
     Ok(())

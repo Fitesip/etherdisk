@@ -8,14 +8,17 @@ import {
   File as FileIcon,
   FileText,
   Film,
-  Folder,
   Image as ImageIcon,
   Lock,
   MoreHorizontal,
   Move,
   Music,
+  Paintbrush,
   Pencil,
   Share2,
+  Star,
+  StarOff,
+  Tag,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -25,11 +28,15 @@ import { createPortal } from "react-dom";
 import { useT } from "@/i18n";
 import { api } from "@/lib/api";
 import { fromB64 } from "@/lib/crypto";
+import { FolderIcon } from "@/lib/drive-look";
 import { formatBytes, formatDate, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, type Item } from "@/lib/meta";
 import { useThumbnail } from "@/lib/thumbs";
 
 import { Button, cn } from "../ui";
+import type { Label } from "@/lib/prefs";
+
+import { itemLabels, LabelDots } from "./customize";
 import type { DriveCtx } from "./dialogs";
 
 // ------------------------------------------------------------------ menu
@@ -118,7 +125,10 @@ export function MenuItem({ icon: Icon, label, onClick, danger }: { icon: typeof 
 
 export function TypeIcon({ meta, className = "h-5 w-5" }: { meta: Item["meta"]; className?: string }) {
   if (!meta) return <TriangleAlert className={cn(className, "text-danger")} />;
-  if (!isFileMeta(meta)) return <Folder className={cn(className, "fill-accent/20 text-accent")} />;
+  if (!isFileMeta(meta)) {
+    if (!meta.color) return <FolderIcon id={meta.icon} className={cn(className, "fill-accent/20 text-accent")} />;
+    return <FolderIcon id={meta.icon} className={className} style={{ color: meta.color, fill: `color-mix(in srgb, ${meta.color} 20%, transparent)` }} />;
+  }
   const kind = viewKind(meta.name, meta.type);
   const Icon = kind === "image" ? ImageIcon : kind === "video" ? Film : kind === "audio" ? Music : kind === "text" || kind === "pdf" ? FileText : FileIcon;
   return <Icon className={cn(className, "text-muted")} />;
@@ -149,6 +159,11 @@ export interface ItemActions {
   rename: (item: Item) => void;
   move: (items: Item[]) => void;
   trash: (items: Item[]) => void;
+  /** Stars or unstars; omit where it doesn't apply (search results keep it). */
+  star?: (items: Item[], on: boolean) => void;
+  labels?: (items: Item[]) => void;
+  /** A folder's color and icon. */
+  customize?: (item: Item) => void;
   /** Drag-and-drop move; omit to disable dragging. */
   moveTo?: (ids: string[], folderId: string | null) => void;
 }
@@ -214,6 +229,20 @@ interface ViewProps {
   subtitle?: (item: Item) => string | undefined;
   sort?: Sort;
   onSort?: (key: SortKey) => void;
+  /** The drive's labels, for the dots next to names. */
+  labels?: Label[];
+}
+
+/** Star and label dots after an item's name. */
+function Marks({ item, labels }: { item: Item; labels?: Label[] }) {
+  const own = labels ? itemLabels(item, labels) : [];
+  if (!item.meta?.starred && !own.length) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {item.meta?.starred && <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />}
+      <LabelDots labels={own} />
+    </span>
+  );
 }
 
 function SortHeader({ k, label, sort, onSort, className }: { k: SortKey; label: string; sort?: Sort; onSort?: (k: SortKey) => void; className?: string }) {
@@ -269,6 +298,17 @@ function ItemMenu({ item, actions }: { item: Item; actions: ItemActions }) {
             )}
             <MenuItem icon={Share2} label={t("files.share")} onClick={act(() => actions.share(item))} />
             {item.meta && <MenuItem icon={Pencil} label={t("files.rename")} onClick={act(() => actions.rename(item))} />}
+            {item.meta && actions.star && (
+              <MenuItem
+                icon={item.meta.starred ? StarOff : Star}
+                label={item.meta.starred ? t("custom.unstar") : t("custom.star")}
+                onClick={act(() => actions.star!([item], !item.meta!.starred))}
+              />
+            )}
+            {item.meta && actions.labels && <MenuItem icon={Tag} label={t("custom.labels")} onClick={act(() => actions.labels!([item]))} />}
+            {item.meta && item.row.kind === "folder" && actions.customize && (
+              <MenuItem icon={Paintbrush} label={t("custom.folderLook")} onClick={act(() => actions.customize!(item))} />
+            )}
             <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move([item]))} />
             <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash([item]))} />
           </>
@@ -300,7 +340,7 @@ function Checkbox({ checked, onChange, label, className }: { checked: boolean; o
   );
 }
 
-export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll, subtitle, sort, onSort }: ViewProps) {
+export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll, subtitle, sort, onSort, labels }: ViewProps) {
   const t = useT();
   const selecting = !!selected && selected.size > 0;
   const allSelected = !!selected && items.length > 0 && items.every((i) => selected.has(i.row.id));
@@ -343,7 +383,10 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
               >
                 <Thumb ctx={ctx} item={item} />
                 <span className="min-w-0">
-                  <span className="block truncate text-sm">{itemName(item)}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm">{itemName(item)}</span>
+                    <Marks item={item} labels={labels} />
+                  </span>
                   {sub && <span className="block truncate text-xs text-muted">{sub}</span>}
                 </span>
               </button>
@@ -358,7 +401,7 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
   );
 }
 
-export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle }: ViewProps) {
+export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle, labels }: ViewProps) {
   const t = useT();
   const selecting = !!selected && selected.size > 0;
   return (
@@ -386,7 +429,10 @@ export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle }: 
             >
               <Thumb ctx={ctx} item={item} className="aspect-square w-full" iconClassName="h-10 w-10" />
               <span className="block px-3 pt-2 pb-2.5">
-                <span className="block truncate text-sm">{itemName(item)}</span>
+                <span className="flex items-center gap-2">
+                  <span className="truncate text-sm">{itemName(item)}</span>
+                  <Marks item={item} labels={labels} />
+                </span>
                 <span className="block truncate text-xs text-muted">{sub ?? (isFileMeta(meta) ? formatBytes(meta.size) : "—")}</span>
               </span>
             </button>

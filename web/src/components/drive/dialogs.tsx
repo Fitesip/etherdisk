@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, Copy, Folder, HardDrive } from "lucide-react";
+import { Ban, Check, ChevronRight, Copy, Folder } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { useT } from "@/i18n";
@@ -9,6 +9,7 @@ import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { MAX_DRIVE_NAME } from "@/lib/config";
 import { fromB64, toB64, type WasmVault } from "@/lib/crypto";
 import { rewrapVault } from "@/lib/kdf";
+import { COVER_IDS, coverStyle, DRIVE_ICON_IDS, DriveIcon, FolderIcon } from "@/lib/drive-look";
 import { driveName, driveVars, PRESET_COLORS } from "@/lib/drive-style";
 import { formatDate } from "@/lib/format";
 import { itemName, openItem, sealMeta, type Item } from "@/lib/meta";
@@ -482,7 +483,7 @@ export function LinksDialog({ open, onClose, ctx }: { open: boolean; onClose: ()
 
 const SELECTED = "ring-2 ring-fg ring-offset-2 ring-offset-card";
 
-function ColorField({ label, value, onChange }: { label: string; value: string | null; onChange: (v: string | null) => void }) {
+export function ColorField({ label, value, onChange }: { label: string; value: string | null; onChange: (v: string | null) => void }) {
   const t = useT();
   const custom = value !== null && !PRESET_COLORS.includes(value);
   return (
@@ -530,13 +531,15 @@ function ColorField({ label, value, onChange }: { label: string; value: string |
 /** Drive card body, colored by the drive's profile (drive list and settings preview). */
 export function DriveTile({ info, status, footer }: { info: VaultInfo; status?: ReactNode; footer?: ReactNode }) {
   const t = useT();
+  const cover = coverStyle(info.cover);
   return (
     <div
       style={driveVars(info)}
-      className="flex items-center gap-4 rounded-xl border border-(--drive-stroke,var(--border)) bg-card p-4 transition"
+      className="relative isolate flex items-center gap-4 overflow-hidden rounded-xl border border-(--drive-stroke,var(--border)) bg-card p-4 transition"
     >
-      <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-accent text-accent-fg">
-        <HardDrive className="h-6 w-6" />
+      {cover && <div aria-hidden className="pointer-events-none absolute inset-0 -z-10" style={cover} />}
+      <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-accent text-accent-fg shadow-sm">
+        <DriveIcon id={info.icon} className="h-6 w-6" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
@@ -550,25 +553,67 @@ export function DriveTile({ info, status, footer }: { info: VaultInfo; status?: 
   );
 }
 
-/** Rename the drive and pick its outline and fill colors, with a live preview. */
+/** Picks one icon of a set; null = the set's default (its first icon). */
+export function IconField({
+  label,
+  ids,
+  icon,
+  value,
+  onChange,
+}: {
+  label: string;
+  ids: string[];
+  icon: typeof DriveIcon | typeof FolderIcon;
+  value: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium">{label}</legend>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {ids.map((id, i) => {
+          const Icon = icon;
+          const on = value === id || (i === 0 && value === null);
+          return (
+            <button
+              key={id}
+              type="button"
+              aria-label={id}
+              title={id}
+              aria-pressed={on}
+              onClick={() => onChange(i === 0 ? null : id)}
+              className={cn("grid h-9 w-9 place-items-center rounded-lg border border-border text-muted hover:text-fg", on && cn(SELECTED, "bg-accent-soft text-accent"))}
+            >
+              <Icon id={id} className="h-4 w-4" />
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+/** Rename the drive and pick its colors, icon and cover, with a live preview. */
 export function DriveLookForm({ token, info }: { token: string; info: VaultInfo }) {
   const t = useT();
   const qc = useQueryClient();
   const [name, setName] = useState(info.name ?? "");
   const [stroke, setStroke] = useState(info.stroke);
   const [fill, setFill] = useState(info.fill);
+  const [icon, setIcon] = useState(info.icon);
+  const [cover, setCover] = useState(info.cover);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const preview: VaultInfo = { ...info, name: name.trim() || null, stroke, fill };
-  const dirty = (info.name ?? "") !== name.trim() || info.stroke !== stroke || info.fill !== fill;
+  const preview: VaultInfo = { ...info, name: name.trim() || null, stroke, fill, icon, cover };
+  const dirty = (info.name ?? "") !== name.trim() || info.stroke !== stroke || info.fill !== fill || info.icon !== icon || info.cover !== cover;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill });
+      const updated = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill, icon, cover });
       qc.setQueryData(["vault", token, info.token_id], updated);
       await qc.invalidateQueries({ queryKey: ["vaults", token] });
       setSaved(true);
@@ -595,6 +640,26 @@ export function DriveLookForm({ token, info }: { token: string; info: VaultInfo 
         </label>
         <ColorField label={t("vault.stroke")} value={stroke} onChange={setStroke} />
         <ColorField label={t("vault.fill")} value={fill} onChange={setFill} />
+        <IconField label={t("vault.icon")} ids={DRIVE_ICON_IDS} icon={DriveIcon} value={icon} onChange={setIcon} />
+        <fieldset>
+          <legend className="text-sm font-medium">{t("vault.cover")}</legend>
+          <div className="mt-2 flex flex-wrap gap-1.5" style={driveVars(preview)}>
+            {[null, ...COVER_IDS].map((id) => (
+              <button
+                key={id ?? "none"}
+                type="button"
+                aria-label={id ?? t("vault.coverNone")}
+                title={id ?? t("vault.coverNone")}
+                aria-pressed={cover === id}
+                onClick={() => setCover(id)}
+                className={cn("grid h-10 w-16 place-items-center overflow-hidden rounded-lg border border-border bg-card text-muted", cover === id && SELECTED)}
+                style={coverStyle(id)}
+              >
+                {!id && <Ban className="h-4 w-4" />}
+              </button>
+            ))}
+          </div>
+        </fieldset>
         {error && <Notice tone="danger">{error}</Notice>}
         <div className="flex items-center gap-3">
           <Button type="submit" variant="primary" loading={busy} disabled={!dirty}>

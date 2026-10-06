@@ -493,8 +493,42 @@ b" })).await.status, StatusCode::BAD_REQUEST);
     let r = put(json!({ "name": " ", "stroke": null })).await.json();
     assert!(r["name"].is_null() && r["stroke"].is_null() && r["fill"].is_null());
 
+    // Icon and cover: ids from the app's sets.
+    let r = put(json!({ "icon": "camera", "cover": "waves-2" })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!((r.json()["icon"].clone(), r.json()["cover"].clone()), (json!("camera"), json!("waves-2")));
+    assert_eq!(put(json!({ "icon": "Camera" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "cover": "<svg>" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "icon": "a".repeat(33) })).await.status, StatusCode::BAD_REQUEST);
+
     let tb = app.login(&bob).await;
     assert_eq!(app.json(Method::PUT, "/api/vaults/1/profile", Some(&tb), json!({ "name": "mine" })).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn vault_prefs_are_the_holders_and_go_with_a_format() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(1, alice.address(), 1).await;
+    let t = app.login(&alice).await;
+    let get = || app.get("/api/vaults/1/prefs", Some(&t));
+    assert_eq!(get().await.json(), json!({ "blob": null }));
+
+    let put = |blob: Value| app.json(Method::PUT, "/api/vaults/1/prefs", Some(&t), json!({ "blob": blob }));
+    assert_eq!(put(json!(b64(b"sealed labels"))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(get().await.json()["blob"], b64(b"sealed labels"));
+    assert_eq!(put(json!(b64(&vec![0; 64 * 1024 + 1]))).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(get().await.json()["blob"], b64(b"sealed labels"), "a rejected write keeps the old prefs");
+
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults/1/prefs", Some(&tb)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.json(Method::PUT, "/api/vaults/1/prefs", Some(&tb), json!({ "blob": b64(b"x") })).await.status, StatusCode::FORBIDDEN);
+
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&t), json!({ "confirm": "DELETE" })).await;
+    assert_eq!(get().await.json(), json!({ "blob": null }), "a format drops them with the key");
+    assert_eq!(put(json!(b64(b"new"))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(put(json!(null)).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(get().await.json(), json!({ "blob": null }));
 }
 
 #[tokio::test]

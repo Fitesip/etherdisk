@@ -20,7 +20,7 @@ Files are encrypted in your browser before upload. We never receive:
 | **Wallet addresses** | Sign-in, knowing which drives you hold, ideas and votes, key handover | As long as the related drive, idea or vote exists |
 | **Sign-in sessions** (a random token, stored hashed, with its wallet and expiry) | Keeping you signed in | Until it expires ([7] days) or you sign out |
 | **Encrypted files and their metadata**: size, number of files, folder structure (without names), dates, trash state | Storing and serving your files | Until you delete them, format the drive, or the service ends |
-| **Drive name and colors** you choose (not encrypted, so the drive list can show them while locked) | Showing your drives | Until you change them or format the drive |
+| **Drive name, colors, icon and cover** you choose (not encrypted, so the drive list can show them while locked) | Showing your drives | Until you change them (they stay with the drive when it is formatted or changes hands) |
 | **Share links**: which drive, when created, expiry, an encrypted list of the shared files | Serving shared files | Until the link expires, is revoked, or the drive changes hands |
 | **Key handover data**: your inbox public key and its wallet signature, drive keys sealed for a recipient | Handing a drive's key to its next holder | Until the handover is completed or cancelled |
 | **Recovery data**: your drive key encrypted under your recovery words | Opening the drive if you forget the passphrase | Until you remove it, the drive changes hands, or is formatted |

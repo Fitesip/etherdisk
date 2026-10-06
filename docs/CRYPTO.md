@@ -118,7 +118,8 @@ chunk_i = XChaCha20-Poly1305(file key,
 ## 6. Metadata
 
 File and folder metadata (name, MIME type, size, mtime, the file's 44-byte header for share
-links, the thumbnail header) is JSON sealed with the metadata key:
+links, the thumbnail header; the star, label ids, a folder's color and icon) is JSON sealed
+with the metadata key:
 
 ```
 sealed = nonce (24, random) ‖ XChaCha20-Poly1305(metadata key, nonce, json, aad)
@@ -128,6 +129,10 @@ aad    = "etherdisk/object/{object id}"
 The AAD binds metadata to its object id, so the server can't swap names between objects.
 The owner's private record of a share link (link key, name, options) is sealed the same way
 with `aad = "etherdisk/share"`.
+
+Drive-wide settings (the drive's labels: id, name, color) are one JSON document sealed the
+same way with `aad = "etherdisk/prefs/{token id}"` and stored by the server as opaque bytes
+(`/vaults/{id}/prefs`, at most 64 KiB). A format deletes them with the key.
 
 ## 7. Share links
 
