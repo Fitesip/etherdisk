@@ -66,6 +66,8 @@ export interface VaultInfo {
   /** Ids from lib/drive-look (null = default). */
   icon: string | null;
   cover: string | null;
+  /** Color of the cover pattern; null = the fill color. */
+  cover_color: string | null;
 }
 
 export interface DriveKey {
@@ -77,7 +79,7 @@ export interface DriveKey {
   needs_new_key: boolean;
 }
 
-export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill" | "icon" | "cover">;
+export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill" | "icon" | "cover" | "cover_color">;
 
 export interface ObjectRow {
   id: string;

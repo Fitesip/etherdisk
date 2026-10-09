@@ -4,6 +4,12 @@ import type { Translate } from "@/i18n";
 
 import type { VaultInfo } from "./api";
 
+/** EtherdiskArt.sol's color for a capacity: one per power of two, six in a cycle. */
+const TIER_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#0ea5e9", "#a855f7"];
+export const log2 = (x: number) => Math.floor(Math.log2(Math.max(1, x)));
+export const tierColor = (capacityGb: number) => TIER_COLORS[log2(capacityGb) % 6];
+const BYTES_PER_GB = 2 ** 30;
+
 export const driveName = (v: Pick<VaultInfo, "token_id" | "name">, t: Translate) => v.name || t("drives.drive", { id: v.token_id });
 
 /** Readable text color (black/white) on top of a #rrggbb background. */
@@ -19,10 +25,11 @@ export function contrastText(hex: string): string {
 
 /**
  * CSS variables that recolor everything inside a drive: accent buttons, progress bars,
- * focus rings use the fill (or the stroke if only that is set); borders use the stroke.
+ * focus rings use the fill (or the stroke if only that is set, else the color of the drive's
+ * size, as on its NFT); borders use the stroke.
  */
-export function driveVars(v: Pick<VaultInfo, "stroke" | "fill">): CSSProperties {
-  const accent = v.fill ?? v.stroke;
+export function driveVars(v: Pick<VaultInfo, "stroke" | "fill"> & Partial<Pick<VaultInfo, "cover_color" | "capacity_bytes">>): CSSProperties {
+  const accent = v.fill ?? v.stroke ?? (v.capacity_bytes ? tierColor(Math.round(v.capacity_bytes / BYTES_PER_GB)) : null);
   const vars: Record<string, string> = {};
   if (accent) {
     vars["--accent"] = accent;
@@ -30,6 +37,7 @@ export function driveVars(v: Pick<VaultInfo, "stroke" | "fill">): CSSProperties 
     vars["--accent-soft"] = `color-mix(in srgb, ${accent} 16%, var(--card))`;
   }
   if (v.stroke) vars["--drive-stroke"] = v.stroke;
+  if (v.cover_color) vars["--drive-cover"] = v.cover_color;
   return vars as CSSProperties;
 }
 

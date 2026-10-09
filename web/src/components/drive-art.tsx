@@ -1,15 +1,13 @@
 import { useId } from "react";
 
 import { cn } from "./ui";
+import { log2, tierColor } from "@/lib/drive-style";
 import { formatCapacity } from "@/lib/format";
 
 // The token's picture, as EtherdiskArt.sol draws it (same colors, rings and layout), plus
 // motion for the landing page: the platter spins and the read arm seeks.
 
-const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#0ea5e9", "#a855f7"];
-
-const log2 = (x: number) => Math.floor(Math.log2(Math.max(1, x)));
-export const driveColor = (capacityGb: number) => COLORS[log2(capacityGb) % 6];
+export const driveColor = tierColor;
 const ringCount = (capacityGb: number) => {
   const n = log2(capacityGb);
   return n < 6 ? 4 : n > 12 ? 10 : n - 2;

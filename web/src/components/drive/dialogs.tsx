@@ -603,18 +603,19 @@ export function DriveLookForm({ token, info }: { token: string; info: VaultInfo 
   const [fill, setFill] = useState(info.fill);
   const [icon, setIcon] = useState(info.icon);
   const [cover, setCover] = useState(info.cover);
+  const [coverColor, setCoverColor] = useState(info.cover_color);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const preview: VaultInfo = { ...info, name: name.trim() || null, stroke, fill, icon, cover };
-  const dirty = (info.name ?? "") !== name.trim() || info.stroke !== stroke || info.fill !== fill || info.icon !== icon || info.cover !== cover;
+  const preview: VaultInfo = { ...info, name: name.trim() || null, stroke, fill, icon, cover, cover_color: coverColor };
+  const dirty = (info.name ?? "") !== name.trim() || info.stroke !== stroke || info.fill !== fill || info.icon !== icon || info.cover !== cover || info.cover_color !== coverColor;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill, icon, cover });
+      const updated = await api.setProfile(token, info.token_id, { name: name.trim() || null, stroke, fill, icon, cover, cover_color: coverColor });
       qc.setQueryData(["vault", token, info.token_id], updated);
       await qc.invalidateQueries({ queryKey: ["vaults", token] });
       setSaved(true);
@@ -662,6 +663,7 @@ export function DriveLookForm({ token, info }: { token: string; info: VaultInfo 
           </div>
           <p className="mt-2 text-xs text-muted">{t("vault.coverHint")}</p>
         </fieldset>
+        {cover && <ColorField label={t("vault.coverColor")} value={coverColor} onChange={setCoverColor} />}
         {error && <Notice tone="danger">{error}</Notice>}
         <div className="flex items-center gap-3">
           <Button type="submit" variant="primary" loading={busy} disabled={!dirty}>

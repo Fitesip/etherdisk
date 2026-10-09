@@ -68,6 +68,8 @@ pub struct Profile {
     /// default for ids it doesn't know.
     icon: Option<String>,
     cover: Option<String>,
+    /// '#rrggbb' of the cover pattern; null = the fill color.
+    cover_color: Option<String>,
 }
 
 pub const MAX_NAME_CHARS: usize = 64;
@@ -89,7 +91,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     .bind(format!("{owner:#x}"))
     .fetch_optional(&st.db)
     .await?;
-    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill, icon, cover FROM vault_profiles WHERE token_id = ?")
+    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill, icon, cover, cover_color FROM vault_profiles WHERE token_id = ?")
         .bind(&token)
         .fetch_optional(&st.db)
         .await?
@@ -184,11 +186,13 @@ async fn put_profile(
         fill: clean_color(req.fill)?,
         icon: clean_style_id(req.icon, "icon")?,
         cover: clean_style_id(req.cover, "cover")?,
+        cover_color: clean_color(req.cover_color)?,
     };
     sqlx::query(
-        "INSERT INTO vault_profiles (token_id, name, stroke, fill, icon, cover, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO vault_profiles (token_id, name, stroke, fill, icon, cover, cover_color, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (token_id) DO UPDATE SET name = excluded.name, stroke = excluded.stroke,
-            fill = excluded.fill, icon = excluded.icon, cover = excluded.cover, updated_at = excluded.updated_at",
+            fill = excluded.fill, icon = excluded.icon, cover = excluded.cover,
+            cover_color = excluded.cover_color, updated_at = excluded.updated_at",
     )
     .bind(&token)
     .bind(&p.name)
@@ -196,6 +200,7 @@ async fn put_profile(
     .bind(&p.fill)
     .bind(&p.icon)
     .bind(&p.cover)
+    .bind(&p.cover_color)
     .bind(now())
     .execute(&st.db)
     .await?;

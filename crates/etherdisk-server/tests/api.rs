@@ -494,8 +494,10 @@ b" })).await.status, StatusCode::BAD_REQUEST);
     assert!(r["name"].is_null() && r["stroke"].is_null() && r["fill"].is_null());
 
     // Icon and cover: ids from the app's sets.
-    let r = put(json!({ "icon": "camera", "cover": "waves-2" })).await;
+    let r = put(json!({ "icon": "camera", "cover": "waves-2", "cover_color": "#F97316" })).await;
     assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["cover_color"], "#f97316");
+    assert_eq!(put(json!({ "cover_color": "orange" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!((r.json()["icon"].clone(), r.json()["cover"].clone()), (json!("camera"), json!("waves-2")));
     assert_eq!(put(json!({ "icon": "Camera" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "cover": "<svg>" })).await.status, StatusCode::BAD_REQUEST);
