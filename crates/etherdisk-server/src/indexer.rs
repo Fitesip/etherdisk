@@ -19,10 +19,18 @@ use crate::{AppResult, AppState};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(12);
 
+/// Attempts at filling the tables from past events before new blocks get priority.
+const BACKFILL_ATTEMPTS: u32 = 10;
+
 pub async fn run(st: AppState, chain: std::sync::Arc<RpcChain>) {
-    loop {
+    // New transfers must not wait forever on old ones (they revoke links and access): if the
+    // RPC can't serve the old logs, carry on and try again at the next start.
+    for attempt in 1..=BACKFILL_ATTEMPTS {
         match backfill(&st, &chain).await {
             Ok(()) => break,
+            Err(e) if attempt == BACKFILL_ATTEMPTS => tracing::error!(
+                "indexer: backfilling past events failed {BACKFILL_ATTEMPTS} times ({e:#}); following new blocks without it.                  Wallets' drive lists and tier counts may miss older drives until a restart succeeds"
+            ),
             Err(e) => {
                 tracing::warn!("indexer: backfilling past events: {e:#}");
                 tokio::time::sleep(POLL_INTERVAL).await;

@@ -143,7 +143,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const cameraInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>(null);
-  const { prefs, save: savePrefs } = useDrivePrefs(token, tokenId, unlocked.vault);
+  const drivePrefs = useDrivePrefs(token, tokenId, unlocked.vault);
+  const { prefs, save: savePrefs } = drivePrefs;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [gallery, setGallery] = useState<Gallery | null>(null);
   const [dialog, setDialog] = useState<Dialogs>(null);
@@ -761,6 +762,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         onClose={close}
         ctx={ctx}
         prefs={prefs}
+        prefsState={drivePrefs.ready ? "ready" : drivePrefs.failed ? "failed" : "loading"}
+        onRetry={() => void drivePrefs.retry()}
         savePrefs={savePrefs}
         onSaved={() => {
           setSelected(new Set());

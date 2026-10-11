@@ -54,5 +54,6 @@ export function useDrivePrefs(token: string, tokenId: string, vault: WasmVault) 
     },
     [qc, token, tokenId, vault],
   );
-  return { prefs: query.data ?? EMPTY, loading: query.isLoading, save, key };
+  // Saving replaces the whole list: only once the stored one is known.
+  return { prefs: query.data ?? EMPTY, ready: query.isSuccess, failed: query.isError, retry: query.refetch, save, key };
 }

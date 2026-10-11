@@ -2,10 +2,12 @@
 
 import { Eye, EyeOff, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { twMerge } from "tailwind-merge";
 
 import { useT } from "@/i18n";
 
-export const cn = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
+/** Joins classes; of two conflicting Tailwind classes the later one wins (`cn("border-border", "border-accent")`). */
+export const cn = (...c: (string | false | null | undefined)[]) => twMerge(c.filter(Boolean).join(" "));
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {

@@ -61,9 +61,12 @@ export const FOLDER_ICON_IDS = ["folder", ...DRIVE_ICON_IDS.filter((id) => id !=
 type IconProps = { id: string | null | undefined; className?: string; style?: CSSProperties };
 
 /** A drive's icon by id (default: a hard drive). */
-export const DriveIcon = ({ id, ...props }: IconProps) => createElement((id && ICONS[id]) || HardDrive, props);
+/** An icon of the set by id; ids from elsewhere (profiles, metadata) may be anything. */
+const icon = (id: string | null | undefined) => (id && Object.hasOwn(ICONS, id) ? ICONS[id] : null);
+
+export const DriveIcon = ({ id, ...props }: IconProps) => createElement(icon(id) ?? HardDrive, props);
 /** A folder's icon by id (default: a folder). */
-export const FolderIcon = ({ id, ...props }: IconProps) => createElement((id && ICONS[id]) || Folder, props);
+export const FolderIcon = ({ id, ...props }: IconProps) => createElement(icon(id) ?? Folder, props);
 
 /** Cover patterns for drive cards, drawn in the cover color (`--drive-cover`, by default the
  *  fill color `--accent`); "aurora" blends it with the outline color (`--drive-stroke`). */
@@ -77,13 +80,13 @@ const COVERS: Record<string, string> = {
   rings: `repeating-radial-gradient(circle at 90% 50%, color-mix(in srgb, ${C} 26%, transparent) 0 1.5px, transparent 1.5px 12px)`,
   glow: `radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, ${C} 38%, transparent), transparent 60%)`,
   aurora:
-    `radial-gradient(60% 120% at 0% 100%, color-mix(in srgb, ${C} 30%, transparent), transparent 70%), radial-gradient(60% 120% at 100% 0%, color-mix(in srgb, var(--drive-stroke, #ec4899) 30%, transparent), transparent 70%)`,
+    `radial-gradient(60% 120% at 0% 100%, color-mix(in srgb, ${C} 30%, transparent), transparent 70%), radial-gradient(60% 120% at 100% 0%, color-mix(in srgb, var(--drive-stroke, var(--accent)) 30%, transparent), transparent 70%)`,
 };
 
 export const COVER_IDS = Object.keys(COVERS);
 
 /** Background for a drive card; undefined for no cover. */
 export function coverStyle(id: string | null | undefined): CSSProperties | undefined {
-  const bg = id ? COVERS[id] : undefined;
+  const bg = id && Object.hasOwn(COVERS, id) ? COVERS[id] : undefined;
   return bg ? { background: bg } : undefined;
 }

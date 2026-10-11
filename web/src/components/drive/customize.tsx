@@ -10,18 +10,23 @@ import { useT } from "@/i18n";
 import { api } from "@/lib/api";
 import { FOLDER_ICON_IDS, FolderIcon } from "@/lib/drive-look";
 import { PRESET_COLORS } from "@/lib/drive-style";
-import { itemName, sealMeta, type FileMeta, type FolderMeta, type Item } from "@/lib/meta";
+import { itemName, openItem, sealMeta, type FileMeta, type FolderMeta, type Item } from "@/lib/meta";
 import { MAX_LABEL_NAME, MAX_LABELS, newLabelId, type DrivePrefs, type Label } from "@/lib/prefs";
 
-import { Button, cn, Dialog, Input, Notice } from "../ui";
+import { Button, cn, Dialog, Input, Notice, Spinner } from "../ui";
 import { ColorField, IconField, type DriveCtx } from "./dialogs";
 
 type Meta = FileMeta | FolderMeta;
 
-/** Re-seals an item's metadata with some fields changed. */
+/**
+ * Re-seals an item's metadata with some fields changed. Starts from the stored metadata,
+ * so a rename made elsewhere since the list loaded isn't undone.
+ */
 export async function updateMeta(ctx: DriveCtx, item: Item, patch: Partial<Meta>) {
-  if (!item.meta) return;
-  const next = { ...item.meta, ...patch } as Meta;
+  const row = (await api.path(ctx.token, ctx.tokenId, item.row.id)).find((r) => r.id === item.row.id);
+  const current = row ? openItem(ctx.vault, row).meta : item.meta;
+  if (!current) return;
+  const next = { ...current, ...patch } as Meta;
   await api.setMetadata(ctx.token, ctx.tokenId, item.row.id, sealMeta(ctx.vault, item.row.id, next));
 }
 
@@ -119,6 +124,8 @@ export function LabelsDialog({
   onClose,
   ctx,
   prefs,
+  prefsState,
+  onRetry,
   savePrefs,
   onSaved,
 }: {
@@ -126,13 +133,25 @@ export function LabelsDialog({
   onClose: () => void;
   ctx: DriveCtx;
   prefs: DrivePrefs;
+  /** The form only opens on a loaded list: saving an empty one would erase the drive's labels. */
+  prefsState: "loading" | "ready" | "failed";
+  onRetry: () => void;
   savePrefs: (p: DrivePrefs) => Promise<void>;
   onSaved: () => void;
 }) {
   const t = useT();
   return (
     <Dialog open={!!items} onClose={onClose} title={items?.length === 1 ? t("custom.labelsTitle", { name: itemName(items[0]) }) : t("custom.labelsTitleMany", { n: items?.length ?? 0 })}>
-      {items && <LabelsForm key={items.map((i) => i.row.id).join()} items={items} ctx={ctx} prefs={prefs} savePrefs={savePrefs} onDone={() => (onSaved(), onClose())} />}
+      {items && prefsState === "loading" && <Spinner className="mx-auto my-6" />}
+      {items && prefsState === "failed" && (
+        <div className="flex flex-col items-start gap-3">
+          <Notice tone="danger">{t("errors.network")}</Notice>
+          <Button onClick={onRetry}>{t("common.retry")}</Button>
+        </div>
+      )}
+      {items && prefsState === "ready" && (
+        <LabelsForm key={items.map((i) => i.row.id).join()} items={items} ctx={ctx} prefs={prefs} savePrefs={savePrefs} onDone={() => (onSaved(), onClose())} />
+      )}
     </Dialog>
   );
 }

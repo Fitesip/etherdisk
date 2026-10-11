@@ -224,8 +224,10 @@ in page memory only.
 
 ## 10. What the server sees
 
-- Per drive: the key blob, the recovery blob, name and colors (plaintext, chosen by the
-  owner and shown while locked).
+- Per drive: the key blob, the keyring, the recovery blob, the sealed prefs (the label
+  list); name, colors, icon id, cover id and cover color (plaintext, chosen by the owner
+  and shown while locked); the current holder and the tier it was minted in (both public
+  on chain anyway).
 - Per object: id, parent folder id, kind (file / folder), ciphertext size, timestamps,
   trash state; ciphertext and thumbnail ciphertext; sealed metadata.
 - Per link: which drive, when, expiry, the encrypted manifest (its size hints at how many

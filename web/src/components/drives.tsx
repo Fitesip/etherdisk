@@ -3,13 +3,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Lock, LockOpen, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatEther } from "viem";
 import { parseEventLogs } from "viem";
 import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 
 import { useT } from "@/i18n";
-import { api, type VaultInfo } from "@/lib/api";
+import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { vaultNft } from "@/lib/contract";
 import { IS_TESTNET } from "@/lib/chain";
 import { formatBytes, formatCapacity } from "@/lib/format";
@@ -86,6 +86,9 @@ function MintCardSkeleton({ delay }: { delay: number }) {
     </div>
   );
 }
+
+/** A minted drive the server still doesn't confirm after this long is no longer waited for. */
+const PENDING_GIVE_UP_MS = 10 * 60_000;
 
 /** How long "Drive minted" stays. */
 const MINTED_NOTE_MS = 5000;
@@ -177,12 +180,22 @@ function Drives({ token }: { token: string }) {
     [qc, token],
   );
   const waitingKey = waiting.join(",");
+  const waitingSince = useRef(new Map<string, number>());
   useEffect(() => {
     if (!waitingKey) return;
+    const giveUp = (id: string) => setMinted((m) => m.filter((x) => x !== id));
     const check = () =>
-      Promise.all(waitingKey.split(",").map((id) => api.vault(token, id).catch(() => null))).then(() =>
-        qc.invalidateQueries({ queryKey: vaultsKey(token) }),
-      );
+      Promise.all(
+        waitingKey.split(",").map((id) => {
+          const since = waitingSince.current.get(id) ?? Date.now();
+          waitingSince.current.set(id, since);
+          if (Date.now() - since > PENDING_GIVE_UP_MS) return giveUp(id);
+          return api.vault(token, id).catch((e) => {
+            // Another wallet holds it (e.g. minted from a different account than the one signed in).
+            if (e instanceof ApiError && e.status === 403) giveUp(id);
+          });
+        }),
+      ).then(() => qc.invalidateQueries({ queryKey: vaultsKey(token) }));
     check();
     const timer = setInterval(check, 3000);
     return () => clearInterval(timer);

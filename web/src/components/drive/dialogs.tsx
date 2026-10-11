@@ -82,6 +82,10 @@ export function ResetDialog({ open, onClose, token, tokenId }: { open: boolean; 
         qc.invalidateQueries({ queryKey: ["key", token, tokenId] }),
         qc.invalidateQueries({ queryKey: ["vaults", token] }),
       ]);
+      // Gone on the server with the key: don't show (or re-save) them from the cache.
+      qc.removeQueries({ queryKey: ["prefs", token, tokenId] });
+      qc.removeQueries({ queryKey: ["objects", token, tokenId] });
+      qc.removeQueries({ queryKey: ["path", token, tokenId] });
       setWord("");
       onClose();
     } catch (err) {
@@ -583,7 +587,7 @@ export function IconField({
               title={id}
               aria-pressed={on}
               onClick={() => onChange(i === 0 ? null : id)}
-              className={cn("grid h-9 w-9 place-items-center rounded-lg border border-border text-muted hover:text-fg", on && cn(SELECTED, "bg-accent-soft text-accent"))}
+              className={cn("grid h-9 w-9 place-items-center rounded-lg border border-border", on ? cn(SELECTED, "bg-accent-soft text-accent") : "text-muted hover:text-fg")}
             >
               <Icon id={id} className="h-4 w-4" />
             </button>

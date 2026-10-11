@@ -489,16 +489,24 @@ async fn vault_profile() {
 b" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "fill": "red" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "fill": "#12345g" })).await.status, StatusCode::BAD_REQUEST);
-    // Null/blank resets to defaults.
+    // Fields left out keep their value; null/blank resets to defaults.
     let r = put(json!({ "name": " ", "stroke": null })).await.json();
-    assert!(r["name"].is_null() && r["stroke"].is_null() && r["fill"].is_null());
+    assert!(r["name"].is_null() && r["stroke"].is_null());
+    assert_eq!(r["fill"], "#112233", "a field left out is kept");
+    let r = put(json!({ "fill": null })).await.json();
+    assert!(r["fill"].is_null());
 
     // Icon and cover: ids from the app's sets.
     let r = put(json!({ "icon": "camera", "cover": "waves-2", "cover_color": "#F97316" })).await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["cover_color"], "#f97316");
-    assert_eq!(put(json!({ "cover_color": "orange" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!((r.json()["icon"].clone(), r.json()["cover"].clone()), (json!("camera"), json!("waves-2")));
+    assert_eq!(put(json!({ "cover_color": "orange" })).await.status, StatusCode::BAD_REQUEST);
+    // An app from before icons and covers saves just the name: the look stays.
+    let kept = put(json!({ "name": "Photos", "stroke": null, "fill": null })).await.json();
+    assert_eq!((kept["icon"].clone(), kept["cover"].clone(), kept["cover_color"].clone()), (json!("camera"), json!("waves-2"), json!("#f97316")));
+    let reset = put(json!({ "icon": null, "cover": null, "cover_color": null })).await.json();
+    assert!(reset["icon"].is_null() && reset["cover"].is_null() && reset["cover_color"].is_null());
     assert_eq!(put(json!({ "icon": "Camera" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "cover": "<svg>" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "icon": "a".repeat(33) })).await.status, StatusCode::BAD_REQUEST);
@@ -696,6 +704,27 @@ async fn new_owner_is_not_turned_away_by_a_stale_cache() {
     chain.transfer(1, bob);
     owners.require_owner(U256::from(1), bob).await.expect("rechecked on mismatch");
     assert!(owners.require_owner(U256::from(1), alice).await.is_err(), "and the cache now knows");
+}
+
+/// A previous owner whose check still sees them as the holder (cached owner, lagging RPC
+/// node) must not take the drive back from the new owner's list.
+#[tokio::test]
+async fn a_stale_owner_does_not_overwrite_the_recorded_holder() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(1, alice.address(), 1).await;
+    let ta = app.login(&alice).await;
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
+
+    // The indexer saw the transfer; Alice's next check still hits a node that hasn't.
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
+
+    // The node catches up; nothing else happens on chain.
+    app.chain.transfer(1, bob.address());
+    let tb = app.login(&bob).await;
+    let list = app.get("/api/vaults", Some(&tb)).await.json();
+    assert_eq!(list.as_array().unwrap().len(), 1, "Bob's list has the drive: {list}");
 }
 
 // ------------------------------------------------------------ tier stats

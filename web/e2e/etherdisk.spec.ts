@@ -140,9 +140,13 @@ test("ideas: propose, vote for and against, not on your own idea", async ({ page
   const bob = await (await browser.newContext()).newPage();
   await installWallet(bob, BOB);
   await signIn(bob);
-  await bob.goto("/ideas");
   const his = bob.locator("li", { hasText: "Dark mode for shared pages" });
   const score = (n: number) => his.getByLabel(new RegExp(`^Score ${n}:`));
+  // Bob counts as the holder once the indexer has seen the transfer (one poll, ~12 s).
+  await expect(async () => {
+    await bob.goto("/ideas");
+    await expect(his.getByRole("button", { name: "Vote for" })).toBeEnabled({ timeout: 3_000 });
+  }).toPass({ timeout: 45_000 });
   await his.getByRole("button", { name: "Vote for" }).click();
   await expect(score(1)).toBeVisible();
   await expect(his.getByRole("button", { name: "You voted for" })).toHaveAttribute("aria-pressed", "true");
@@ -328,6 +332,22 @@ test("customization: drive icon and cover, starred files, labels, folder color a
   await expect(card.locator("svg.lucide-camera")).toBeVisible();
   await expect(card.locator("[aria-hidden][style*='radial-gradient']")).toHaveCount(1);
   await page.screenshot({ path: "test-results/customization-drives.png" });
+
+  // Ids the app doesn't know (set through the API, e.g. by a previous owner) fall back to
+  // the defaults, including names every JS object has.
+  const status = await page.evaluate(async (id) => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith("etherdisk.session."))!;
+    const { token } = JSON.parse(localStorage.getItem(key)!);
+    const r = await fetch(`http://localhost:8788/api/vaults/${id}/profile`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ icon: "constructor", cover: "constructor" }),
+    });
+    return r.status;
+  }, tokenId);
+  expect(status).toBe(200);
+  await page.reload();
+  await expect(card.locator("svg.lucide-hard-drive")).toBeVisible();
 
   // Labels and stars survive a reload (sealed prefs and metadata on the server).
   await page.goto(`/drive/${tokenId}`);
