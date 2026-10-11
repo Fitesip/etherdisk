@@ -22,7 +22,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { useT } from "@/i18n";
@@ -48,6 +48,42 @@ const EDGE = 8;
  * A dropdown rendered into `document.body` with fixed positioning, so lists with
  * `overflow: hidden` don't clip it. Opens upwards when there is no room below.
  */
+/** Closes an open menu on a pointer press outside `inside`, Escape, a scroll outside the menu, or a resize. */
+function useDismiss(open: boolean, inside: RefObject<HTMLElement | null>[], menu: RefObject<HTMLElement | null>, close: () => void) {
+  const closeRef = useRef(close);
+  useEffect(() => {
+    closeRef.current = close;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const done = () => closeRef.current();
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (!inside.some((r) => r.current?.contains(target))) done();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && done();
+    // The menu is pinned to the viewport: close it rather than let it drift from its anchor.
+    const onScroll = (e: Event) => !menu.current?.contains(e.target as Node) && done();
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", done);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", done);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the refs are stable
+  }, [open]);
+}
+
+const MENU_CLASS = "fixed z-50 w-52 animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg";
+
+/**
+ * A dropdown rendered into `document.body` with fixed positioning, so lists with
+ * `overflow: hidden` don't clip it. Opens upwards when there is no room below.
+ */
 export function Menu({ trigger, children, align = "right" }: { trigger: ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean } | null>(null);
@@ -63,29 +99,10 @@ export function Menu({ trigger, children, align = "right" }: { trigger: ReactNod
     const left = Math.min(Math.max(align === "right" ? r.right - width : r.left, EDGE), window.innerWidth - width - EDGE);
     setPos({ top, left, up });
   }, [open, align]);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    const onDown = (e: PointerEvent) => {
-      const target = e.target as Node;
-      if (!ref.current?.contains(target) && !menu.current?.contains(target)) close();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-    // The menu is pinned to the viewport: close it rather than let it drift from its button.
-    const onScroll = (e: Event) => !menu.current?.contains(e.target as Node) && close();
-    document.addEventListener("pointerdown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", close);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
-      setPos(null);
-    };
-  }, [open]);
+  useDismiss(open, [ref, menu], menu, () => {
+    setOpen(false);
+    setPos(null);
+  });
 
   return (
     <div ref={ref} className="relative">
@@ -96,7 +113,7 @@ export function Menu({ trigger, children, align = "right" }: { trigger: ReactNod
             ref={menu}
             style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0, visibility: "hidden" }}
             className={cn(
-              "fixed z-50 w-52 animate-pop-in rounded-lg border border-border bg-card p-1 shadow-lg",
+              MENU_CLASS,
               pos?.up ? (align === "right" ? "origin-bottom-right" : "origin-bottom-left") : align === "right" ? "origin-top-right" : "origin-top-left",
             )}
           >
@@ -105,6 +122,43 @@ export function Menu({ trigger, children, align = "right" }: { trigger: ReactNod
           document.body,
         )}
     </div>
+  );
+}
+
+/** A menu opened at a point (right click): to its right and below, flipped where it doesn't fit. */
+export function ContextMenu({ at, onClose, children }: { at: { x: number; y: number } | null; onClose: () => void; children: (close: () => void) => ReactNode }) {
+  const menu = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; origin: string } | null>(null);
+  useLayoutEffect(() => {
+    if (!at || !menu.current) return;
+    const { width, height } = menu.current.getBoundingClientRect();
+    const left = at.x + width > window.innerWidth - EDGE;
+    const up = at.y + height > window.innerHeight - EDGE;
+    setPos({
+      left: Math.max(EDGE, left ? at.x - width : at.x),
+      top: Math.max(EDGE, up ? at.y - height : at.y),
+      origin: `${up ? "bottom" : "top"} ${left ? "right" : "left"}`,
+    });
+  }, [at]);
+  useDismiss(!!at, [menu], menu, () => {
+    setPos(null);
+    onClose();
+  });
+  if (!at) return null;
+  return createPortal(
+    <div
+      ref={menu}
+      role="menu"
+      onContextMenu={(e) => e.preventDefault()}
+      style={pos ? { top: pos.top, left: pos.left, transformOrigin: pos.origin } : { top: 0, left: 0, visibility: "hidden" }}
+      className={MENU_CLASS}
+    >
+      {children(() => {
+        setPos(null);
+        onClose();
+      })}
+    </div>,
+    document.body,
   );
 }
 
@@ -259,24 +313,37 @@ function SortHeader({ k, label, sort, onSort, className }: { k: SortKey; label: 
 /** A list row; folders also accept dropped items. */
 function ListRow({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
   const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
+  const context = useItemContextMenu(item, actions);
   return (
-    <li {...dragProps(item, selected, !!actions.moveTo && !!item.meta)} {...drop.props} className={cn(className, drop.over && "bg-accent-soft ring-2 ring-accent ring-inset")}>
+    <li
+      {...dragProps(item, selected, !!actions.moveTo && !!item.meta)}
+      {...drop.props}
+      onContextMenu={context.onContextMenu}
+      className={cn(className, drop.over && "bg-accent-soft ring-2 ring-accent ring-inset")}
+    >
       {children}
+      {context.menu}
     </li>
   );
 }
 
 function GridCard({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
   const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
+  const context = useItemContextMenu(item, actions);
   return (
-    <li {...dragProps(item, selected, !!actions.moveTo && !!item.meta)} {...drop.props} className={cn(className, drop.over && "ring-2 ring-accent")}>
+    <li
+      {...dragProps(item, selected, !!actions.moveTo && !!item.meta)}
+      {...drop.props}
+      onContextMenu={context.onContextMenu}
+      className={cn(className, drop.over && "ring-2 ring-accent")}
+    >
       {children}
+      {context.menu}
     </li>
   );
 }
 
 function ItemMenu({ item, actions }: { item: Item; actions: ItemActions }) {
-  const t = useT();
   return (
     <Menu
       trigger={
@@ -285,37 +352,56 @@ function ItemMenu({ item, actions }: { item: Item; actions: ItemActions }) {
         </Button>
       }
     >
-      {(close) => {
-        const act = (fn: () => void) => () => (close(), fn());
-        return (
-          <>
-            {item.meta && (
-              <MenuItem
-                icon={Download}
-                label={item.row.kind === "folder" ? t("files.downloadZip") : t("files.download")}
-                onClick={act(() => actions.download(item))}
-              />
-            )}
-            <MenuItem icon={Share2} label={t("files.share")} onClick={act(() => actions.share(item))} />
-            {item.meta && <MenuItem icon={Pencil} label={t("files.rename")} onClick={act(() => actions.rename(item))} />}
-            {item.meta && actions.star && (
-              <MenuItem
-                icon={item.meta.starred ? StarOff : Star}
-                label={item.meta.starred ? t("custom.unstar") : t("custom.star")}
-                onClick={act(() => actions.star!([item], !item.meta!.starred))}
-              />
-            )}
-            {item.meta && actions.labels && <MenuItem icon={Tag} label={t("custom.labels")} onClick={act(() => actions.labels!([item]))} />}
-            {item.meta && item.row.kind === "folder" && actions.customize && (
-              <MenuItem icon={Paintbrush} label={t("custom.folderLook")} onClick={act(() => actions.customize!(item))} />
-            )}
-            <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move([item]))} />
-            <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash([item]))} />
-          </>
-        );
-      }}
+      {(close) => <ItemMenuItems item={item} actions={actions} close={close} />}
     </Menu>
   );
+}
+
+function ItemMenuItems({ item, actions, close }: { item: Item; actions: ItemActions; close: () => void }) {
+  const t = useT();
+  const act = (fn: () => void) => () => (close(), fn());
+  return (
+    <>
+      {item.meta && (
+        <MenuItem
+          icon={Download}
+          label={item.row.kind === "folder" ? t("files.downloadZip") : t("files.download")}
+          onClick={act(() => actions.download(item))}
+        />
+      )}
+      <MenuItem icon={Share2} label={t("files.share")} onClick={act(() => actions.share(item))} />
+      {item.meta && <MenuItem icon={Pencil} label={t("files.rename")} onClick={act(() => actions.rename(item))} />}
+      {item.meta && actions.star && (
+        <MenuItem
+          icon={item.meta.starred ? StarOff : Star}
+          label={item.meta.starred ? t("custom.unstar") : t("custom.star")}
+          onClick={act(() => actions.star!([item], !item.meta!.starred))}
+        />
+      )}
+      {item.meta && actions.labels && <MenuItem icon={Tag} label={t("custom.labels")} onClick={act(() => actions.labels!([item]))} />}
+      {item.meta && item.row.kind === "folder" && actions.customize && (
+        <MenuItem icon={Paintbrush} label={t("custom.folderLook")} onClick={act(() => actions.customize!(item))} />
+      )}
+      <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move([item]))} />
+      <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash([item]))} />
+    </>
+  );
+}
+
+/** Right click on an item: the same actions as its "…" button, at the pointer. */
+function useItemContextMenu(item: Item, actions: ItemActions) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  return {
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      setAt({ x: e.clientX, y: e.clientY });
+    },
+    menu: (
+      <ContextMenu at={at} onClose={() => setAt(null)}>
+        {(close) => <ItemMenuItems item={item} actions={actions} close={close} />}
+      </ContextMenu>
+    ),
+  };
 }
 
 function Checkbox({ checked, onChange, label, className }: { checked: boolean; onChange: () => void; label: string; className?: string }) {

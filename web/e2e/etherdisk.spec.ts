@@ -294,8 +294,16 @@ test("customization: drive icon and cover, starred files, labels, folder color a
   // The finished uploads panel covers the bottom right corner of the list.
   await page.getByRole("button", { name: "Clear finished" }).click();
 
-  // A starred file goes to the top, above folders, and the "Starred" filter shows only it.
-  await menu("zeta.txt", "Star");
+  // Right click opens the same actions at the pointer; Escape closes them.
+  await row("alpha.txt").click({ button: "right" });
+  await expect(page.getByRole("menu").getByRole("button", { name: "Rename" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
+  // A starred file goes to the top, above folders, and the "Starred" filter shows only it
+  // (starred here from the right-click menu).
+  await row("zeta.txt").click({ button: "right" });
+  await page.getByRole("menu").getByRole("button", { name: "Star" }).click();
   await expect(list.locator("li").first()).toContainText("zeta.txt");
   await page.getByRole("button", { name: "Starred" }).click();
   await expect(list.locator("li")).toHaveCount(1);
