@@ -322,6 +322,28 @@ test("customization: drive icon and cover, starred files, labels, folder color a
   await expect(list.locator("li")).toContainText("alpha.txt");
   await page.getByRole("button", { name: "All", exact: true }).click();
 
+  // Right click on one of several selected items: the actions apply to all of them.
+  await page.getByRole("checkbox", { name: "Select alpha.txt" }).click();
+  await page.getByRole("checkbox", { name: "Select Photos" }).click();
+  await row("alpha.txt").click({ button: "right" });
+  const group = page.getByRole("menu");
+  await expect(group.getByText("2 selected")).toBeVisible();
+  await expect(group.getByRole("button", { name: "Download as ZIP" })).toBeVisible();
+  await expect(group.getByRole("button", { name: "Rename" })).toHaveCount(0);
+  await group.getByRole("button", { name: "Star" }).click();
+  await expect(row("alpha.txt").locator("svg.lucide-star")).toBeVisible();
+  await expect(row("Photos").locator("svg.lucide-star")).toBeVisible();
+  await row("Photos").click({ button: "right" });
+  await page.getByRole("menu").getByRole("button", { name: "Remove star" }).click();
+  await expect(list.locator("svg.lucide-star")).toHaveCount(1);
+  // On an item outside the selection, the menu is that item's own.
+  await row("zeta.txt").click({ button: "right" });
+  await expect(page.getByRole("menu").getByRole("button", { name: "Rename" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("2 selected")).toHaveCount(0);
+
   // A folder's color and icon.
   await menu("Photos", "Color and icon…");
   await page.locator("dialog[open]").getByRole("button", { name: "#ef4444" }).click();

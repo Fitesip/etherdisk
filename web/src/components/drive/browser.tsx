@@ -252,6 +252,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     },
     labels: (items) => setDialog({ type: "labels", items }),
     customize: (item) => setDialog({ type: "folderLook", item }),
+    zip: (items) => void zip(items),
     moveTo: searching
       ? undefined
       : async (ids, folderId) => {

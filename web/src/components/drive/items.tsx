@@ -218,6 +218,8 @@ export interface ItemActions {
   labels?: (items: Item[]) => void;
   /** A folder's color and icon. */
   customize?: (item: Item) => void;
+  /** Several items as one ZIP (the right-click menu of a selection). */
+  zip?: (items: Item[]) => void;
   /** Drag-and-drop move; omit to disable dragging. */
   moveTo?: (ids: string[], folderId: string | null) => void;
 }
@@ -311,9 +313,19 @@ function SortHeader({ k, label, sort, onSort, className }: { k: SortKey; label: 
 }
 
 /** A list row; folders also accept dropped items. */
-function ListRow({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
+interface RowProps {
+  item: Item;
+  children: ReactNode;
+  className: string;
+  actions: ItemActions;
+  selected?: ReadonlySet<string>;
+  /** The selected items on screen (the right-click menu of one of them acts on all). */
+  selection: Item[];
+}
+
+function ListRow({ item, children, className, actions, selected, selection }: RowProps) {
   const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
-  const context = useItemContextMenu(item, actions);
+  const context = useItemContextMenu(item, actions, selection);
   return (
     <li
       {...dragProps(item, selected, !!actions.moveTo && !!item.meta)}
@@ -327,9 +339,9 @@ function ListRow({ item, children, className, actions, selected }: { item: Item;
   );
 }
 
-function GridCard({ item, children, className, actions, selected }: { item: Item; children: ReactNode; className: string; actions: ItemActions; selected?: ReadonlySet<string> }) {
+function GridCard({ item, children, className, actions, selected, selection }: RowProps) {
   const drop = useDropTarget(item.row.kind === "folder" ? item.row.id : null, item.row.kind === "folder" ? actions.moveTo : undefined);
-  const context = useItemContextMenu(item, actions);
+  const context = useItemContextMenu(item, actions, selection);
   return (
     <li
       {...dragProps(item, selected, !!actions.moveTo && !!item.meta)}
@@ -388,9 +400,33 @@ function ItemMenuItems({ item, actions, close }: { item: Item; actions: ItemActi
   );
 }
 
-/** Right click on an item: the same actions as its "…" button, at the pointer. */
-function useItemContextMenu(item: Item, actions: ItemActions) {
+/** Actions on several selected items at once (as on the selection bar). */
+function SelectionMenuItems({ items, actions, close }: { items: Item[]; actions: ItemActions; close: () => void }) {
+  const t = useT();
+  const act = (fn: () => void) => () => (close(), fn());
+  const readable = items.filter((i) => i.meta);
+  const allStarred = readable.length > 0 && readable.every((i) => i.meta!.starred);
+  return (
+    <>
+      <p className="px-3 pt-1.5 pb-1 text-xs text-muted">{t("files.selected", { n: items.length })}</p>
+      {actions.zip && <MenuItem icon={Download} label={t("files.downloadZip")} onClick={act(() => actions.zip!(items))} />}
+      {actions.star && readable.length > 0 && (
+        <MenuItem icon={allStarred ? StarOff : Star} label={allStarred ? t("custom.unstar") : t("custom.star")} onClick={act(() => actions.star!(readable, !allStarred))} />
+      )}
+      {actions.labels && readable.length > 0 && <MenuItem icon={Tag} label={t("custom.labels")} onClick={act(() => actions.labels!(readable))} />}
+      <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move(items))} />
+      <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash(items))} />
+    </>
+  );
+}
+
+/**
+ * Right click on an item: the same actions as its "…" button, at the pointer. On one of
+ * several selected items, the actions apply to the whole selection (like in a file manager).
+ */
+function useItemContextMenu(item: Item, actions: ItemActions, selection: Item[]) {
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const group = selection.length > 1 && selection.includes(item);
   return {
     onContextMenu: (e: React.MouseEvent) => {
       e.preventDefault();
@@ -398,7 +434,7 @@ function useItemContextMenu(item: Item, actions: ItemActions) {
     },
     menu: (
       <ContextMenu at={at} onClose={() => setAt(null)}>
-        {(close) => <ItemMenuItems item={item} actions={actions} close={close} />}
+        {(close) => (group ? <SelectionMenuItems items={selection} actions={actions} close={close} /> : <ItemMenuItems item={item} actions={actions} close={close} />)}
       </ContextMenu>
     ),
   };
@@ -429,6 +465,7 @@ function Checkbox({ checked, onChange, label, className }: { checked: boolean; o
 export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll, subtitle, sort, onSort, labels }: ViewProps) {
   const t = useT();
   const selecting = !!selected && selected.size > 0;
+  const selection = selected ? items.filter((i) => selected.has(i.row.id)) : [];
   const allSelected = !!selected && items.length > 0 && items.every((i) => selected.has(i.row.id));
   const cols = selected ? "grid-cols-[1.25rem_1fr_2.5rem] sm:grid-cols-[1.25rem_1fr_7rem_11rem_2.5rem]" : "grid-cols-[1fr_2.5rem] sm:grid-cols-[1fr_7rem_11rem_2.5rem]";
   return (
@@ -451,6 +488,7 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
               item={item}
               actions={actions}
               selected={selected}
+              selection={selection}
               className={cn("group grid items-center gap-4 px-4 py-2 transition-colors", cols, isSelected ? "bg-accent-soft" : "hover:bg-bg-subtle")}
             >
               {selected && (
@@ -490,6 +528,7 @@ export function ItemList({ ctx, items, actions, selected, onToggle, onToggleAll,
 export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle, labels }: ViewProps) {
   const t = useT();
   const selecting = !!selected && selected.size > 0;
+  const selection = selected ? items.filter((i) => selected.has(i.row.id)) : [];
   return (
     <ul className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
       {items.map((item) => {
@@ -502,6 +541,7 @@ export function ItemGrid({ ctx, items, actions, selected, onToggle, subtitle, la
             item={item}
             actions={actions}
             selected={selected}
+            selection={selection}
             className={cn(
               "group relative overflow-hidden rounded-xl border bg-card transition",
               isSelected ? "border-accent ring-2 ring-accent/40" : "border-border hover:-translate-y-0.5 hover:shadow-md",
