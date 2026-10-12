@@ -23,7 +23,8 @@ import {
   X,
 } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useT } from "@/i18n";
 import { api, ApiError, type ObjectRow, type VaultInfo } from "@/lib/api";
@@ -148,7 +149,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [gallery, setGallery] = useState<Gallery | null>(null);
   const [dialog, setDialog] = useState<Dialogs>(null);
-  const [dragging, setDragging] = useState(0);
+  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -342,15 +343,45 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     for (const [folderId, list] of merged) uploads.enqueue(list, folderId);
   }
 
-  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes("Files");
-  const onDrop = (e: DragEvent) => {
-    if (!isFileDrag(e)) return;
-    e.preventDefault();
-    setDragging(0);
-    if (inTrash) return;
-    const target = current;
-    entriesFromDrop(e.dataTransfer).then((entries) => plan(entries, target));
-  };
+  // Files dropped anywhere on the page go into the open folder (not only onto the list).
+  const dropInto = useRef<(data: DataTransfer) => void>(() => {});
+  useEffect(() => {
+    dropInto.current = (data) => {
+      if (inTrash) return;
+      const target = current;
+      entriesFromDrop(data).then((entries) => plan(entries, target));
+    };
+  });
+  useEffect(() => {
+    // Only files from the computer: drags of drive items (moves) carry no "Files". The
+    // overlay that shows up then covers the window, so its own dragleave means the drag
+    // left the window (no counting of enters and leaves over the page's elements).
+    const isFileDrag = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    const onEnter = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      setDragging(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!isFileDrag(e) || !e.dataTransfer) return;
+      e.preventDefault();
+      setDragging(false);
+      dropInto.current(e.dataTransfer);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
 
   // Keyboard: Delete, Ctrl/Cmd+A, Esc, "/" (search), F2 (rename), Enter (open).
   useEffect(() => {
@@ -386,17 +417,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const hitPath = new Map(search.hits.map((h) => [h.item.row.id, h.path]));
 
   return (
-    <div
-      className="relative flex flex-col gap-4"
-      onDragEnter={(e) => {
-        if (!isFileDrag(e)) return;
-        e.preventDefault();
-        setDragging((n) => n + 1);
-      }}
-      onDragLeave={(e) => isFileDrag(e) && setDragging((n) => Math.max(0, n - 1))}
-      onDragOver={(e) => isFileDrag(e) && e.preventDefault()}
-      onDrop={onDrop}
-    >
+    <div className="relative flex flex-col gap-4">
       {/* Where we are + search */}
       <div className="flex flex-wrap items-center gap-3">
         <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-lg font-semibold tracking-tight">
@@ -699,11 +720,27 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         </div>
       )}
 
-      {dragging > 0 && !inTrash && (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl border-2 border-dashed border-accent bg-accent-soft/80">
-          <p className="font-medium text-accent">{t("files.dropHere")}</p>
-        </div>
-      )}
+      {dragging &&
+        !inTrash &&
+        createPortal(
+          // Over the whole window, in the drive's colors (a portal: no transformed ancestor
+          // can shrink a fixed overlay to its own box). Its content ignores the pointer, so
+          // dragleave fires only when the drag leaves the window (or is cancelled).
+          <div
+            style={driveVars(info)}
+            onDragLeave={() => setDragging(false)}
+            className="fixed inset-0 z-50 grid animate-fade-up place-items-center bg-bg/70 p-4 backdrop-blur-sm"
+          >
+            <div className="pointer-events-none grid h-full w-full place-items-center rounded-2xl border-2 border-dashed border-accent bg-accent-soft/60">
+              <div className="flex flex-col items-center gap-3 text-center">
+                <Upload className="h-10 w-10 text-accent" />
+                <p className="text-lg font-medium text-accent">{t("files.dropHere")}</p>
+                <p className="text-sm text-muted">{path.at(-1)?.name ?? t("files.allFiles")}</p>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <UploadPanel items={uploads.items} onClear={uploads.clearFinished} style={driveVars(info)} />
       <Viewer gallery={gallery} onIndex={(index) => setGallery((g) => g && { ...g, index })} onClose={() => setGallery(null)} />

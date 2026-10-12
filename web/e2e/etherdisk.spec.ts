@@ -291,6 +291,20 @@ test("customization: drive icon and cover, starred files, labels, folder color a
   await page.locator("dialog[open]").getByRole("button", { name: "Create", exact: true }).click();
   await expect(row("Photos")).toBeVisible();
   await expect(row("zeta.txt")).toBeVisible();
+  // Files dropped anywhere on the page (here on the header, outside the list) are uploaded
+  // into the open folder; the window-wide overlay shows while dragging.
+  const files = await page.evaluateHandle(() => {
+    const d = new DataTransfer();
+    d.items.add(new File(["dropped"], "dropped.txt", { type: "text/plain" }));
+    return d;
+  });
+  await page.getByRole("banner").dispatchEvent("dragenter", { dataTransfer: files });
+  const overlay = page.getByText("Drop files to upload");
+  await expect(overlay).toBeVisible();
+  await overlay.dispatchEvent("drop", { dataTransfer: files });
+  await expect(overlay).toHaveCount(0);
+  await expect(row("dropped.txt")).toBeVisible();
+
   // The finished uploads panel covers the bottom right corner of the list.
   await page.getByRole("button", { name: "Clear finished" }).click();
 

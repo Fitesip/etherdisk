@@ -48,8 +48,9 @@ export async function signIn(page: Page) {
   const sign = page.getByRole("button", { name: "Sign message" });
   await expect(connect.or(sign).or(page.getByRole("heading", { name: "Your drives" }))).toBeVisible();
   if (await connect.isVisible()) {
-    await connect.click();
-    await page.getByRole("button", { name: "Anvil Test Wallet" }).click();
+    // wagmi may reconnect the wallet on its own meanwhile, and the button goes away.
+    await connect.click({ timeout: 5_000 }).catch(() => {});
+    await page.getByRole("button", { name: "Anvil Test Wallet" }).click({ timeout: 5_000 }).catch(() => {});
   }
   if (await sign.isVisible().catch(() => false)) await sign.click();
   else await sign.click({ timeout: 5_000 }).catch(() => {});
