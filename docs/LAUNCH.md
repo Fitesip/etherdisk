@@ -1,6 +1,6 @@
 # Запуск в Ethereum mainnet
 
-**Контракт в mainnet:** `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`, блок 26193612, 15.10.2026; владелец — Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 из 3); деплой 3 092 394 газа при 0,139 gwei = 0,000430 ETH. Код в сети совпадает со сборкой репозитория. Данные деплоя — `contracts/deployments/chain-1.json`.
+**Контракт в mainnet:** `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`, блок 26193612, 15.10.2026; владелец — Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 из 3); деплой 3 092 394 газа при 0,139 gwei = 0,000430 ETH. Код в сети совпадает со сборкой репозитория; исходник верифицирован на Etherscan и отправлен на Sourcify. Данные деплоя — `contracts/deployments/chain-1.json`.
 
 Порядок действий для выхода в mainnet. Тарифы и цены — в `contracts/mainnet-tiers.env`.
 
