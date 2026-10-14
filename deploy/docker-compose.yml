@@ -22,7 +22,7 @@ services:
       context: ..
       dockerfile: deploy/web.Dockerfile
       args:
-        NEXT_PUBLIC_CHAIN_ID: ${NEXT_PUBLIC_CHAIN_ID:-11155111}
+        NEXT_PUBLIC_CHAIN_ID: ${NEXT_PUBLIC_CHAIN_ID:-1}
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://etherdisk.app}
         NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL}
         NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}

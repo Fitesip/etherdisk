@@ -18,7 +18,8 @@ async fn vaults_spread_over_volumes_and_stay_put() {
     let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
 
     let store = VolumeStore::open(&[a.clone(), b.clone()], db.clone()).await.unwrap();
-    // Same filesystem, same free space: the emptier volume takes the next vault.
+    // Same filesystem: free space differs only by what else is written meanwhile (under
+    // FREE_SPACE_TIE), so the volume with fewer vaults takes the next one.
     store.put("1/x", Bytes::from_static(b"one")).await.unwrap();
     store.put("2/x", Bytes::from_static(b"two")).await.unwrap();
     store.put("1/y", Bytes::from_static(b"one-more")).await.unwrap();
