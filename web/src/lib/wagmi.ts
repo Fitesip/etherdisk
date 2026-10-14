@@ -19,7 +19,8 @@ export const wagmiConfig = createConfig({
               name: "Etherdisk",
               description: "Encrypted storage you own as an NFT",
               url: typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
-              icons: [],
+              // Shown by the wallet next to connection and signature requests.
+              icons: typeof window === "undefined" ? [] : [`${window.location.origin}/icons/icon-192.png`],
             },
           }),
         ]

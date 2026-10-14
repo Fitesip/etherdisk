@@ -9,7 +9,7 @@ import { useHydrated } from "@/lib/hydrated";
 import { useSession } from "@/lib/session";
 import { CHAIN } from "@/lib/wagmi";
 
-import { Button, Card, Spinner } from "./ui";
+import { Button, Card, Notice, Spinner } from "./ui";
 import { ConnectButton } from "./wallet";
 
 function Panel({ icon, title, text, children }: { icon: ReactNode; title: string; text: string; children: ReactNode }) {
@@ -29,7 +29,7 @@ export function RequireSession({ children }: { children: (token: string) => Reac
   const hydrated = useHydrated();
   const { status, chainId } = useConnection();
   const switchChain = useSwitchChain();
-  const { token, signIn, signingIn } = useSession();
+  const { token, signIn, signingIn, signInError, viaWalletConnect } = useSession();
 
   if (!hydrated || status === "connecting" || status === "reconnecting") return <Spinner className="mx-auto mt-24" />;
   if (status !== "connected") {
@@ -54,6 +54,12 @@ export function RequireSession({ children }: { children: (token: string) => Reac
         <Button variant="primary" loading={signingIn} onClick={() => signIn().catch(() => {})}>
           {signingIn ? t("wallet.signingIn") : t("wallet.signIn")}
         </Button>
+        {signingIn && viaWalletConnect && <p className="mt-3 text-sm text-muted">{t("wallet.openWalletApp")}</p>}
+        {signInError && !signingIn && (
+          <div className="mt-4 text-left">
+            <Notice tone="danger">{signInError === "rejected" ? t("wallet.signRejected") : t("wallet.signFailed", { reason: signInError })}</Notice>
+          </div>
+        )}
       </Panel>
     );
   }

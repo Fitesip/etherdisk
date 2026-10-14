@@ -25,6 +25,9 @@ const connect = [
   "wss://*.walletconnect.org",
   "https://*.reown.com",
   "wss://*.reown.com",
+  // The WalletConnect modal's wallet list and wallet logos.
+  "https://api.web3modal.org",
+  "https://api.web3modal.com",
   ...(isDev ? ["ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"] : []),
 ].filter(Boolean);
 
@@ -35,11 +38,12 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data:",
+  // Wallet logos in the WalletConnect modal (fetched as blobs, some as plain images).
+  "img-src 'self' blob: data: https://*.walletconnect.com https://*.walletconnect.org https://*.reown.com https://api.web3modal.org https://imagedelivery.net",
   "media-src 'self' blob:",
-  "font-src 'self'",
+  "font-src 'self' https://fonts.reown.com",
   `connect-src ${connect.join(" ")}`,
-  "frame-src 'self' blob: https://verify.walletconnect.com https://verify.walletconnect.org",
+  "frame-src 'self' blob: https://verify.walletconnect.com https://verify.walletconnect.org https://secure.walletconnect.org https://secure.walletconnect.com",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "object-src 'none'",
