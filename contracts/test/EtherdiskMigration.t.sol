@@ -115,10 +115,13 @@ contract EtherdiskMigrationTest is Test {
         vm.prank(alice);
         vm.expectRevert();
         legacy.safeTransferFrom(alice, address(next), 1);
-        // migrate() moves only what the successor is approved for.
+        // migrate() swaps only the caller's own drive, even if its holder approved the successor.
+        vm.prank(bob);
+        legacy.approve(address(next), 2);
         vm.prank(alice);
         vm.expectRevert();
         next.migrate(2);
+        assertEq(legacy.ownerOf(2), bob);
     }
 
     function test_onlyLegacyDrivesAreSwapped() public {

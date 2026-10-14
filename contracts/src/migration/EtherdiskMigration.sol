@@ -47,14 +47,15 @@ abstract contract EtherdiskMigration is IERC721Receiver {
         return IERC721Receiver.onERC721Received.selector;
     }
 
-    /// @notice The same swap for wallets that can't call `safeTransferFrom` directly: approve
-    ///         this contract for the drive (or all drives) first.
+    /// @notice The same swap for wallets that can't call `safeTransferFrom` directly: the
+    ///         holder approves this contract for the drive (or all drives), then calls this.
+    ///         Only the holder: nobody else can start a swap of their drive.
     function migrate(uint256 tokenId) external {
         if (!migrationOpen) revert MigrationClosed();
-        address holder = legacy.ownerOf(tokenId);
-        // transferFrom (not safe): no callback, the mint happens right here.
-        legacy.transferFrom(holder, address(this), tokenId);
-        _migrate(holder, tokenId);
+        // transferFrom (not safe): no callback, the mint happens right here. Reverts unless
+        // the caller holds the drive.
+        legacy.transferFrom(msg.sender, address(this), tokenId);
+        _migrate(msg.sender, tokenId);
     }
 
     /// Mints the successor's drive. Reverts (and so undoes the whole swap, the legacy token
