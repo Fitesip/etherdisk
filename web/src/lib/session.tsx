@@ -8,7 +8,7 @@ import type { Address } from "viem";
 import { createSiweMessage } from "viem/siwe";
 import { useConnection, useSignMessage } from "wagmi";
 
-import { api, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, UNAUTHORIZED_EVENT } from "./api";
 import { readStored, useStored, writeStored } from "./storage";
 import { CHAIN } from "./wagmi";
 
@@ -88,7 +88,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const s = await api.verify(message, signature);
       writeStored(storageKey(address), JSON.stringify({ token: s.token, expiresAt: s.expires_at } satisfies Stored));
     } catch (e) {
-      setSignInError(isRejection(e) ? "rejected" : e instanceof Error ? e.message.split("\n")[0] : String(e));
+      setSignInError(isRejection(e) ? "rejected" : errorReason(e));
       throw e;
     } finally {
       setSigningIn(false);
@@ -100,6 +100,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [address, token, signIn, signingIn, signInError, viaWalletConnect, signOut],
   );
   return <SessionContext value={value}>{children}</SessionContext>;
+}
+
+/** A short reason, never empty (a gateway error such as 502 comes without a message). */
+function errorReason(e: unknown): string {
+  const first = e instanceof Error ? e.message.split("\n")[0].trim() : String(e ?? "").trim();
+  if (e instanceof ApiError) return first ? `${first} (HTTP ${e.status})` : `the server didn't answer (HTTP ${e.status})`;
+  return first || "unknown error";
 }
 
 /** The wallet declined (EIP-1193 code 4001, or viem's UserRejectedRequestError). */
