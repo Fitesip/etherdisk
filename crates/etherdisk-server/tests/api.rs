@@ -19,7 +19,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use etherdisk_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
-use etherdisk_server::chain::{Chain, Ownership};
+use etherdisk_server::chain::{Chain, Ownership, WithLegacy};
 use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
@@ -60,6 +60,8 @@ struct App {
     router: Router,
     state: AppState,
     chain: Arc<FakeChain>,
+    /// The legacy contract, read only when `legacy_contract_address` is configured.
+    legacy: Arc<FakeChain>,
     data_dir: tempfile::TempDir,
 }
 
@@ -75,6 +77,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         data_dirs: vec![data_dir.path().join("blobs")],
         rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
+        legacy_contract_address: None,
         chain_id: CHAIN_ID,
         start_block: 0,
         log_block_range: 500,
@@ -100,9 +103,14 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     let db = connect_db(&config.database_url).await.unwrap();
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
     let chain = Arc::new(FakeChain::default());
+    let legacy = Arc::new(FakeChain::default());
+    let reads: Arc<dyn Chain> = match config.legacy_contract_address {
+        Some(_) => Arc::new(WithLegacy { current: chain.clone(), current_address: config.contract_address, legacy: legacy.clone() }),
+        None => chain.clone(),
+    };
     // TTL 0: every request sees the fake chain's current state.
-    let state = AppState::new(db, store, Ownership::new(chain.clone(), Duration::ZERO), config);
-    App { router: etherdisk_server::router(state.clone()), state, chain, data_dir }
+    let state = AppState::new(db, store, Ownership::new(reads, Duration::ZERO), config);
+    App { router: etherdisk_server::router(state.clone()), state, chain, legacy, data_dir }
 }
 
 struct Resp {
@@ -546,11 +554,82 @@ async fn database_is_bound_to_one_contract() {
     let dir = tempfile::tempdir().unwrap();
     let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
     let (a, b) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
-    bind_deployment(&db, a, 1).await.unwrap();
-    bind_deployment(&db, a, 1).await.unwrap(); // restart: fine
-    let err = bind_deployment(&db, b, 1).await.unwrap_err().to_string();
+    bind_deployment(&db, a, 1, None).await.unwrap();
+    bind_deployment(&db, a, 1, None).await.unwrap(); // restart: fine
+    let err = bind_deployment(&db, b, 1, None).await.unwrap_err().to_string();
     assert!(err.contains("DATABASE_URL"), "{err}");
-    assert!(bind_deployment(&db, a, 2).await.is_err(), "other chain");
+    assert!(bind_deployment(&db, a, 2, None).await.is_err(), "other chain");
+}
+
+#[tokio::test]
+async fn a_database_moves_on_to_the_successor_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
+    let (legacy, successor, other) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb), Address::repeat_byte(0xcc));
+    bind_deployment(&db, legacy, 1, None).await.unwrap();
+    sqlx::query("INSERT INTO tier_mints (token_id, tier_id) VALUES ('1', 0)").execute(&db).await.unwrap();
+    // Only from the contract the database belongs to, on the same chain.
+    assert!(bind_deployment(&db, successor, 1, Some(other)).await.is_err(), "not this database's contract");
+    assert!(bind_deployment(&db, successor, 2, Some(legacy)).await.is_err(), "other chain");
+    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
+    let bound: String = sqlx::query_scalar("SELECT contract FROM deployment").fetch_one(&db).await.unwrap();
+    assert_eq!(bound, format!("{successor:#x}"));
+    let mints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tier_mints").fetch_one(&db).await.unwrap();
+    assert_eq!(mints, 0, "tier ids belong to a contract: the counts start over");
+    // Restarts keep working, with or without the legacy address.
+    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
+    bind_deployment(&db, successor, 1, None).await.unwrap();
+}
+
+/// The swap of docs/MIGRATION.md: a legacy drive becomes the successor's drive with the same
+/// id, and keeps its files, key, recovery key and links.
+#[tokio::test]
+async fn a_swapped_drive_keeps_its_data() {
+    let (legacy_addr, successor) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+    let app = app_with(|c| {
+        c.contract_address = successor;
+        c.legacy_contract_address = Some(legacy_addr);
+    })
+    .await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+
+    // A drive minted before the successor existed works from the legacy contract.
+    app.legacy.mint(1, alice.address(), 4);
+    indexer::on_legacy_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
+    let ta = app.login(&alice).await;
+    let (_vault, file, ct) = setup_vault_with_file(&app, &ta, b"kept").await;
+    let r = app
+        .json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" }))
+        .await;
+    let sid = r.json()["id"].as_str().unwrap().to_owned();
+    let before = app.get("/api/vaults", Some(&ta)).await.json();
+    assert_eq!(before[0]["capacity_bytes"], 4u64 << 30);
+
+    // The swap: the legacy token goes to the successor, which mints the same id to Alice.
+    app.legacy.transfer(1, successor);
+    indexer::on_legacy_transfer(&app.state, alice.address(), successor, U256::from(1)).await.unwrap();
+    app.chain.mint(1, alice.address(), 4);
+    indexer::on_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
+
+    assert_eq!(app.get("/api/vaults", Some(&ta)).await.json(), before, "same drive, same look and usage");
+    let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
+    assert_eq!(key["needs_new_key"], false, "the swap is no change of hands");
+    assert_eq!(app.get(&format!("/api/vaults/1/files/{file}/content"), Some(&ta)).await.body, ct);
+    assert_eq!(app.get(&format!("/api/shares/{sid}/files/{file}/content"), None).await.body, ct, "links still work");
+
+    // Afterwards, a sale on the successor is a change of hands as usual.
+    app.chain.transfer(1, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::NOT_FOUND);
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults", Some(&tb)).await.json().as_array().unwrap().len(), 1);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::FORBIDDEN);
+
+    // A legacy drive sent to the successor with a plain transfer (no swap) is nobody's until
+    // the successor's owner rescues it: its old holder no longer opens it.
+    app.legacy.mint(2, alice.address(), 1);
+    app.legacy.transfer(2, successor);
+    assert_eq!(app.get("/api/vaults/2", Some(&ta)).await.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -93,6 +93,37 @@ impl Chain for RpcChain {
     }
 }
 
+/// A successor contract and the legacy one its drives were swapped from (docs/MIGRATION.md).
+/// A drive lives on the successor once swapped (same token id, same capacity); until then it
+/// lives on the legacy contract. A legacy drive held by the successor but not swapped (sent
+/// with a plain `transferFrom`) belongs to nobody until the owner rescues it.
+pub struct WithLegacy {
+    pub current: Arc<dyn Chain>,
+    pub current_address: Address,
+    pub legacy: Arc<dyn Chain>,
+}
+
+#[async_trait]
+impl Chain for WithLegacy {
+    async fn owner_of(&self, token_id: U256) -> anyhow::Result<Option<Address>> {
+        if let Some(owner) = self.current.owner_of(token_id).await? {
+            return Ok(Some(owner));
+        }
+        Ok(self.legacy.owner_of(token_id).await?.filter(|owner| *owner != self.current_address))
+    }
+
+    async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>> {
+        match self.current.capacity_gb(token_id).await? {
+            Some(gb) => Ok(Some(gb)),
+            None => self.legacy.capacity_gb(token_id).await,
+        }
+    }
+
+    async fn contract_owner(&self) -> anyhow::Result<Address> {
+        self.current.contract_owner().await
+    }
+}
+
 /// Bytes per GB of tier capacity (binary GB, like Windows shows disk sizes).
 pub const BYTES_PER_GB: u64 = 1 << 30;
 

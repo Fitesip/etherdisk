@@ -61,17 +61,25 @@ async fn poll(st: &AppState, chain: &RpcChain) -> anyhow::Result<bool> {
     let to = head.min(from + cfg.log_block_range.max(1) - 1);
 
     let filter = Filter::new()
-        .address(cfg.contract_address)
+        .address(contracts(cfg))
         .event_signature(vec![Transfer::SIGNATURE_HASH, DriveMinted::SIGNATURE_HASH])
         .from_block(from)
         .to_block(to);
     for log in chain.provider.get_logs(&filter).await? {
+        let legacy = log.address() != cfg.contract_address;
         if log.topic0() == Some(&DriveMinted::SIGNATURE_HASH) {
-            let ev = log.log_decode::<DriveMinted>()?.inner.data;
-            on_mint(st, ev.tokenId, ev.tierId).await?;
+            // Tier ids are per contract: only the current contract's sales count.
+            if !legacy {
+                let ev = log.log_decode::<DriveMinted>()?.inner.data;
+                on_mint(st, ev.tokenId, ev.tierId).await?;
+            }
         } else {
             let ev = log.log_decode::<Transfer>()?.inner.data;
-            on_transfer(st, ev.from, ev.to, ev.tokenId).await?;
+            if legacy {
+                on_legacy_transfer(st, ev.from, ev.to, ev.tokenId).await?;
+            } else {
+                on_transfer(st, ev.from, ev.to, ev.tokenId).await?;
+            }
         }
     }
 
@@ -102,17 +110,23 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
     while from < next as u64 {
         let to = (next as u64 - 1).min(from + cfg.log_block_range.max(1) - 1);
         let filter = Filter::new()
-            .address(cfg.contract_address)
+            .address(contracts(cfg))
             .event_signature(vec![Transfer::SIGNATURE_HASH, DriveMinted::SIGNATURE_HASH])
             .from_block(from)
             .to_block(to);
         for log in chain.provider.get_logs(&filter).await? {
+            let legacy = log.address() != cfg.contract_address;
             if log.topic0() == Some(&DriveMinted::SIGNATURE_HASH) {
-                let ev = log.log_decode::<DriveMinted>()?.inner.data;
-                on_mint(st, ev.tokenId, ev.tierId).await?;
+                if !legacy {
+                    let ev = log.log_decode::<DriveMinted>()?.inner.data;
+                    on_mint(st, ev.tokenId, ev.tierId).await?;
+                }
             } else {
                 let ev = log.log_decode::<Transfer>()?.inner.data;
-                set_owner(st, ev.to, &ev.tokenId.to_string()).await?;
+                // A swap's legacy half (to the successor) leaves the holder as is.
+                if !(legacy && ev.to == cfg.contract_address) {
+                    set_owner(st, ev.to, &ev.tokenId.to_string()).await?;
+                }
             }
         }
         from = to + 1;
@@ -120,6 +134,23 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
     sqlx::query("UPDATE indexer_state SET owners_synced = 1, mints_synced = 1 WHERE id = 1").execute(&st.db).await?;
     tracing::info!("indexer: drive owners and tiers backfilled up to block {next}");
     Ok(())
+}
+
+/// The contracts whose events matter: the current one and, during a migration, the legacy one.
+fn contracts(cfg: &crate::Config) -> Vec<Address> {
+    std::iter::once(cfg.contract_address).chain(cfg.legacy_contract_address).collect()
+}
+
+/// A `Transfer` on the legacy contract. Sending a drive to the successor is the first half of
+/// a swap (the successor mints the same id to the same holder right after): not a change of
+/// hands, so links, keys and votes stay. Any other legacy transfer is one.
+pub async fn on_legacy_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
+    if to == st.config.contract_address {
+        st.chain.invalidate(token_id);
+        tracing::info!(%token_id, holder = %from, "drive sent to the successor contract (swap)");
+        return Ok(());
+    }
+    on_transfer(st, from, to, token_id).await
 }
 
 /// Records the tier a drive was minted in (once per token).
