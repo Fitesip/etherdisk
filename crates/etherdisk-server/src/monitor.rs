@@ -358,6 +358,11 @@ impl Monitor {
         let mut seen_errors = self.state.server_errors.load(Ordering::Relaxed);
         loop {
             tokio::time::sleep(self.interval).await;
+            // Drives that found no room take space freed since (deleted files, a cleaned
+            // volume) without waiting for their owner to open them.
+            for (token, _) in self.store.shortages() {
+                crate::reserve::sync_logged(&self.state, &token).await;
+            }
             let total = self.state.server_errors.load(Ordering::Relaxed);
             let s = self.snapshot(total - seen_errors).await;
             seen_errors = total;
