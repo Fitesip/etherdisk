@@ -38,6 +38,7 @@ import { useStored, writeStored } from "@/lib/storage";
 import { downloadFile, ownerSource } from "@/lib/stream";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 
+import { fullness, isShort, UsageText } from "../drive-size";
 import { useToast } from "../toast";
 import { Button, cn, Dialog, Notice, Progress, Spinner } from "../ui";
 import { Viewer, type Gallery } from "../viewer";
@@ -631,9 +632,17 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       )}
 
       <div className="flex items-center gap-3 text-xs text-muted">
-        <Progress value={info.used_bytes / info.capacity_bytes} className="max-w-48" />
-        {t("drives.usage", { used: formatBytes(info.used_bytes), total: formatBytes(info.capacity_bytes) })}
+        <Progress value={fullness(info)} className="max-w-48" />
+        <UsageText info={info} />
       </div>
+
+      {!inTrash && isShort(info) && (
+        <Notice tone="danger">
+          {info.usable_bytes > 0
+            ? t("drives.shortNotice", { usable: formatBytes(info.usable_bytes), capacity: formatBytes(info.capacity_bytes) })
+            : t("drives.shortNoticeZero", { capacity: formatBytes(info.capacity_bytes) })}
+        </Notice>
+      )}
 
       {!inTrash && (prefs.labels.length > 0 || anyStarred || activeFilter) && (
         <div className="flex flex-wrap items-center gap-1.5">

@@ -29,7 +29,7 @@ interface UploadItem {
 
 function describe(e: unknown, t: Translate): string {
   if (e instanceof ApiError) {
-    if (e.status === 507) return t("files.quotaExceeded");
+    if (e.status === 507) return e.code === "storage_short" ? t("files.storageShort") : t("files.quotaExceeded");
     if (e.status === 0) return t("errors.network");
     return e.message;
   }

@@ -55,6 +55,8 @@ const empty = async (p: Promise<Response>): Promise<void> => {
 export interface VaultInfo {
   token_id: string;
   capacity_bytes: number;
+  /** What the drive can hold now: less than `capacity_bytes` while the server is short of storage. */
+  usable_bytes: number;
   used_bytes: number;
   initialized: boolean;
   /** When this owner saved a recovery key (unix seconds), or null. */

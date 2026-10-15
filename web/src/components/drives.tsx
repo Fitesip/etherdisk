@@ -18,6 +18,7 @@ import { useUnlocked } from "@/lib/unlocked";
 
 import { DriveTile } from "./drive/dialogs";
 import { DriveArt } from "./drive-art";
+import { freeBytes, UsageText } from "./drive-size";
 import { InboxHint, OutgoingHandovers } from "./handover";
 import { RequireSession } from "./require-session";
 import { Button, Card, cn, Notice, Spinner } from "./ui";
@@ -41,8 +42,10 @@ function DriveCard({ v }: { v: VaultInfo }) {
         }
         footer={
           <div className="mt-1.5 flex justify-between text-xs text-muted">
-            <span>{t("drives.usage", { used: formatBytes(v.used_bytes), total: formatBytes(v.capacity_bytes) })}</span>
-            <span>{t("drives.free", { free: formatBytes(Math.max(0, v.capacity_bytes - v.used_bytes)) })}</span>
+            <span>
+              <UsageText info={v} />
+            </span>
+            <span>{t("drives.free", { free: formatBytes(freeBytes(v)) })}</span>
           </div>
         }
       />

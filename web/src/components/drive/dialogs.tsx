@@ -17,6 +17,7 @@ import { passphraseValid } from "@/lib/passphrase";
 import { createShare, openOwnerShareMeta, shareLink } from "@/lib/share";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { fullness } from "../drive-size";
 import { PassphraseRules } from "../passphrase-rules";
 import { Button, cn, Dialog, Input, Notice, PasswordInput, Progress, Spinner } from "../ui";
 
@@ -551,7 +552,7 @@ export function DriveTile({ info, status, footer }: { info: VaultInfo; status?: 
           {status}
         </div>
         {/* Outlined and opaque, so it stays readable on any cover. */}
-        <Progress value={info.used_bytes / info.capacity_bytes} className="mt-2 h-2 bg-card ring-1 ring-(--drive-stroke,var(--border))" />
+        <Progress value={fullness(info)} className="mt-2 h-2 bg-card ring-1 ring-(--drive-stroke,var(--border))" />
         {footer}
       </div>
     </div>

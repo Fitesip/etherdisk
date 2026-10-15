@@ -47,6 +47,9 @@ pub struct VaultInfo {
     /// Decimal string: uint256 does not fit a JS number.
     token_id: String,
     capacity_bytes: u64,
+    /// What the drive can store now: its capacity, less what found no disk space on the
+    /// server (equal to `capacity_bytes` unless storage ran out).
+    usable_bytes: u64,
     used_bytes: u64,
     /// Whether a passphrase/key blob has been set up.
     initialized: bool,
@@ -103,6 +106,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     Ok(VaultInfo {
         profile,
         capacity_bytes: st.chain.capacity_bytes(id).await?,
+        usable_bytes: crate::reserve::usable_capacity(st, id, &token).await?,
         used_bytes: used_bytes(st, &token).await?,
         initialized,
         recovery_at,

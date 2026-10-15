@@ -70,6 +70,11 @@ async fn app() -> App {
 }
 
 async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
+    app_keeping_free(0, tweak).await
+}
+
+/// `keep_free`: the share of the disk reservations leave free (100: no room for any drive).
+async fn app_keeping_free(keep_free: u64, tweak: impl FnOnce(&mut Config)) -> App {
     let data_dir = tempfile::tempdir().unwrap();
     let mut config = Config {
         bind_addr: String::new(),
@@ -103,7 +108,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     };
     tweak(&mut config);
     let db = connect_db(&config.database_url).await.unwrap();
-    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap().keep_free(0));
+    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap().keep_free(keep_free));
     let chain = Arc::new(FakeChain::default());
     let legacy = Arc::new(FakeChain::default());
     let reads: Arc<dyn Chain> = match config.legacy_contract_address {
@@ -564,9 +569,32 @@ async fn a_drive_reserves_its_capacity_from_mint_to_format() {
     let (_vault, file, ct) = setup_vault_with_file(&app, &t, b"some bytes").await;
     assert_eq!(reserve(), (1 << 30) - ct.len() as u64, "the upload took its bytes from the reservation");
 
+    assert_eq!(app.get("/api/vaults/1", Some(&t)).await.json()["usable_bytes"], 1u64 << 30);
+
     app.json(Method::POST, "/api/vaults/1/reset", Some(&t), json!({ "confirm": "DELETE" })).await;
     assert_eq!(reserve(), 1 << 30, "a format gives the whole capacity back");
     let _ = file;
+}
+
+/// A drive minted when storage has no room shows 0 usable bytes and takes no uploads,
+/// instead of filling the space its volume keeps free.
+#[tokio::test]
+async fn a_drive_without_room_can_store_nothing() {
+    let app = app_keeping_free(100, |c| c.reserve_space = true).await;
+    let alice = PrivateKeySigner::random();
+    app.mint(1, alice.address(), 1).await;
+    let t = app.login(&alice).await;
+    let v = app.get("/api/vaults/1", Some(&t)).await.json();
+    assert_eq!((v["capacity_bytes"].clone(), v["usable_bytes"].clone()), (json!(1u64 << 30), json!(0)));
+    let (vault, blob) = Vault::create_with_params("pass", FAST).unwrap();
+    app.json(Method::PUT, "/api/vaults/1/key", Some(&t), json!({ "key_blob": b64(&blob), "previous_etag": null })).await;
+    let id = Uuid::new_v4();
+    let meta = vault.seal_metadata(b"{}", id.as_bytes()).unwrap();
+    let r = app
+        .json(Method::POST, "/api/vaults/1/files", Some(&t), json!({ "id": id, "parent_id": null, "metadata": b64(&meta), "size": 100, "thumb_size": null }))
+        .await;
+    assert_eq!(r.status, StatusCode::INSUFFICIENT_STORAGE, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["error"], "storage_short", "the server's shortage, not a full drive");
 }
 
 #[tokio::test]

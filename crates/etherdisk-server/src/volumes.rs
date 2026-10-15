@@ -89,30 +89,33 @@ pub struct VolumeStore {
     db: SqlitePool,
     /// token id -> index into `volumes`
     placed: Mutex<HashMap<String, usize>>,
-    /// token id -> bytes of its reservation that didn't fit on its volume
+    /// token id -> bytes of its capacity not backed by disk space (only vaults that are short)
     short: Mutex<HashMap<String, u64>>,
     /// Share of each volume (percent) that reservations leave free.
     keep_free_percent: u64,
 }
 
-/// Sets a reservation file to `want` bytes: shrinks it, or grows it with preallocated
-/// blocks while the volume keeps `KEEP_FREE_PERCENT` free. Returns the bytes that didn't fit.
-fn resize_reserve(root: &Path, path: &Path, want: u64, keep_free_percent: u64) -> io::Result<u64> {
+/// Sizes a vault's reservation file. "Backed" is the part of the capacity the vault can
+/// actually use: what it stores plus its reservation. It never shrinks, and grows (up to the
+/// capacity) only with free space above the kept-free share, so a vault that didn't fit
+/// takes its uploads out of its own reservation instead of the volume's last free space.
+/// `backed` is the previous value, or `None` (new vault, or after a restart: then what's on
+/// disk). Returns the new backed size.
+fn resize_reserve(root: &Path, path: &Path, capacity: u64, used: u64, backed: Option<u64>, keep_free_percent: u64) -> io::Result<u64> {
     use fs4::FileExt;
     std::fs::create_dir_all(path.parent().expect("a vault folder"))?;
     let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
     let have = file.metadata()?.len();
-    if want <= have {
-        file.set_len(want)?;
-        return Ok(0);
-    }
+    let backed = backed.unwrap_or(used + have).min(capacity);
     let floor = fs4::total_space(root)? * keep_free_percent / 100;
     let room = fs4::available_space(root)?.saturating_sub(floor);
-    let target = want.min(have + room);
-    if target > have {
+    let target = capacity.saturating_sub(used).min(backed.saturating_sub(used) + room).min(have + room);
+    if target < have {
+        file.set_len(target)?;
+    } else if target > have {
         FileExt::allocate(&file, target)?;
     }
-    Ok(want - target)
+    Ok((used + target).min(capacity))
 }
 
 /// Size of a vault's reservation (0 if it has none).
@@ -211,7 +214,7 @@ impl VolumeStore {
         self
     }
 
-    /// Drives whose reservation didn't fit on their volume: (token id, missing bytes).
+    /// Drives whose capacity isn't fully backed by disk space: (token id, missing bytes).
     pub fn shortages(&self) -> Vec<(String, u64)> {
         let mut out: Vec<_> = self.short.lock().unwrap().iter().map(|(t, b)| (t.clone(), *b)).collect();
         out.sort();
@@ -301,10 +304,14 @@ impl BlobStore for VolumeStore {
         Ok(())
     }
 
-    async fn reserve(&self, token_id: &str, capacity: u64, bytes: u64) -> io::Result<u64> {
+    async fn reserve(&self, token_id: &str, capacity: u64, used: u64) -> io::Result<u64> {
         let v = self.place(token_id, capacity).await?;
         let (root, path, keep) = (v.root.clone(), v.root.join(token_id).join(RESERVE), self.keep_free_percent);
-        let missing = tokio::task::spawn_blocking(move || resize_reserve(&root, &path, bytes, keep)).await.map_err(io::Error::other)??;
+        let backed = self.short.lock().unwrap().get(token_id).map(|m| capacity.saturating_sub(*m));
+        let backed = tokio::task::spawn_blocking(move || resize_reserve(&root, &path, capacity, used, backed, keep))
+            .await
+            .map_err(io::Error::other)??;
+        let missing = capacity - backed;
         let mut short = self.short.lock().unwrap();
         if missing > 0 {
             short.insert(token_id.to_owned(), missing);
@@ -312,5 +319,9 @@ impl BlobStore for VolumeStore {
             short.remove(token_id);
         }
         Ok(missing)
+    }
+
+    fn shortage(&self, token_id: &str) -> u64 {
+        self.short.lock().unwrap().get(token_id).copied().unwrap_or(0)
     }
 }

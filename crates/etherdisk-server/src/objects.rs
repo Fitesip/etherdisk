@@ -262,7 +262,7 @@ async fn create_file(
     if let Some(p) = &req.parent_id {
         ensure_folder(&st, &token, p).await?;
     }
-    let capacity = st.chain.capacity_bytes(id).await?;
+    let capacity = crate::reserve::usable_capacity(&st, id, &token).await?;
     let needed = req.size + req.thumb_size.unwrap_or(0);
 
     // Check-and-reserve in one statement so concurrent uploads cannot overshoot the quota.
@@ -288,7 +288,7 @@ async fn create_file(
     .map_err(map_insert_err)?
     .rows_affected();
     if inserted == 0 {
-        return Err(AppError::QuotaExceeded);
+        return Err(crate::reserve::too_big(&st, id, capacity).await);
     }
     // Hand the upload's bytes over from the drive's reservation before they arrive.
     crate::reserve::sync_logged(&st, &token).await;
@@ -362,7 +362,7 @@ async fn put_thumbnail(
     }
     // A resumed upload makes a fresh thumbnail, whose size may differ: re-reserve quota.
     if file.thumb_size != Some(size) {
-        let capacity = st.chain.capacity_bytes(vault).await?;
+        let capacity = crate::reserve::usable_capacity(&st, vault, &token).await?;
         let n = sqlx::query(
             "UPDATE objects SET thumb_size = ? WHERE id = ? AND status = 'pending'
                AND (SELECT COALESCE(SUM(size + COALESCE(thumb_size, 0)), 0) FROM objects WHERE token_id = ? AND id != ?)
@@ -378,7 +378,7 @@ async fn put_thumbnail(
         .await?
         .rows_affected();
         if n == 0 {
-            return Err(AppError::QuotaExceeded);
+            return Err(crate::reserve::too_big(&st, vault, capacity).await);
         }
         crate::reserve::sync_logged(&st, &token).await;
     }

@@ -9,12 +9,12 @@ import { useState } from "react";
 import { useT } from "@/i18n";
 import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { driveName, driveVars } from "@/lib/drive-style";
-import { formatBytes } from "@/lib/format";
 import { hasKept } from "@/lib/kept-keys";
 import { useSession } from "@/lib/session";
 import { useStored } from "@/lib/storage";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { DriveSize } from "../drive-size";
 import { IncomingHandover } from "../handover";
 import { RequireSession } from "../require-session";
 import { Button, cn, Notice, Spinner } from "../ui";
@@ -137,7 +137,7 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
           <p className="font-mono text-xs text-muted">
-            #{vault.token_id} · {formatBytes(vault.capacity_bytes)}
+            #{vault.token_id} · <DriveSize info={vault} />
           </p>
           <h1 className="truncate text-2xl font-semibold tracking-tight">{name}</h1>
         </div>

@@ -61,6 +61,9 @@ const child = spawn(server, [], {
     BIND_ADDR: "127.0.0.1:8788",
     DATABASE_URL: `sqlite://${join(data, "etherdisk.db").replaceAll("\\", "/")}`,
     DATA_DIR: join(data, "blobs"),
+    // Each test drive would take its capacity of real disk (covered by the server tests);
+    // E2E_RESERVE_SPACE=true shows a short drive on a nearly full disk.
+    RESERVE_SPACE: process.env.E2E_RESERVE_SPACE ?? "false",
     SIWE_DOMAIN: "localhost:3001",
     CORS_ORIGINS: "http://localhost:3001",
   },
