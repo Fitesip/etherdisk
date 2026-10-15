@@ -2,3 +2,11 @@ target/
 node_modules/
 .env
 data/
+
+# Server-side deploy files: secrets, certificates, local storage overrides and data.
+deploy/server.env
+deploy/storage.yml
+deploy/letsencrypt/
+deploy/certbot-www/
+deploy/db/
+deploy/volume1/

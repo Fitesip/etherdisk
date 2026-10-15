@@ -22,7 +22,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}/prefs", get(get_prefs).put(put_prefs))
 }
 
-pub(crate) fn parse_token(s: &str) -> AppResult<U256> {
+pub fn parse_token(s: &str) -> AppResult<U256> {
     U256::from_str_radix(s, 10).map_err(|_| AppError::NotFound)
 }
 
@@ -34,7 +34,7 @@ pub(crate) async fn owned(st: &AppState, user: &AuthUser, token_id: &str) -> App
 }
 
 /// Bytes reserved by the vault: ciphertext of files and thumbnails, including uploads in progress.
-async fn used_bytes(st: &AppState, token: &str) -> AppResult<u64> {
+pub async fn used_bytes(st: &AppState, token: &str) -> AppResult<u64> {
     let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size + COALESCE(thumb_size, 0)), 0) FROM objects WHERE token_id = ?")
         .bind(token)
         .fetch_one(&st.db)
@@ -504,6 +504,8 @@ async fn reset(
     }
     let (_, token) = owned(&st, &user, &token_id).await?;
     wipe(&st, &token).await?;
+    // The whole capacity is free again (possibly on another volume).
+    crate::reserve::sync_logged(&st, &token).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

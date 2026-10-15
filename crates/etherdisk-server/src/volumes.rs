@@ -4,6 +4,13 @@
 //! a vault stays tied to its volume when paths or their order change in the config. A
 //! volume that is configured away (or not mounted) makes its vaults fail with an error
 //! instead of silently starting over on another volume.
+//!
+//! Each vault holds its unused capacity as real disk space: a preallocated `.reserve` file
+//! in its folder, sized to "capacity minus what the vault stores", that shrinks before
+//! uploads and grows back after deletions. Writes to a vault therefore never find the
+//! disk full, and a volume's free space is what no drive has been promised yet. A
+//! volume's last `KEEP_FREE_PERCENT` is never reserved (the system and the database may
+//! share the disk); what doesn't fit is reported as a shortage.
 
 use std::collections::HashMap;
 use std::io;
@@ -18,6 +25,10 @@ use crate::now;
 use crate::storage::{AppendError, BlobStore, ByteStream, LocalStore};
 
 const MARKER: &str = ".etherdisk-volume";
+/// The file in a vault's folder that holds its reserved space.
+const RESERVE: &str = ".reserve";
+/// Reservations never take a volume below this share of free space (by default).
+pub const KEEP_FREE_PERCENT: u64 = 5;
 
 struct Volume {
     id: String,
@@ -31,7 +42,10 @@ pub struct VolumeInfo {
     pub id: String,
     pub root: PathBuf,
     pub total_bytes: u64,
+    /// Free space: not used by files and not reserved for drives.
     pub available_bytes: u64,
+    /// Space held for drives' unused capacity (their `.reserve` files).
+    pub reserved_bytes: u64,
     pub vaults: i64,
 }
 
@@ -75,6 +89,35 @@ pub struct VolumeStore {
     db: SqlitePool,
     /// token id -> index into `volumes`
     placed: Mutex<HashMap<String, usize>>,
+    /// token id -> bytes of its reservation that didn't fit on its volume
+    short: Mutex<HashMap<String, u64>>,
+    /// Share of each volume (percent) that reservations leave free.
+    keep_free_percent: u64,
+}
+
+/// Sets a reservation file to `want` bytes: shrinks it, or grows it with preallocated
+/// blocks while the volume keeps `KEEP_FREE_PERCENT` free. Returns the bytes that didn't fit.
+fn resize_reserve(root: &Path, path: &Path, want: u64, keep_free_percent: u64) -> io::Result<u64> {
+    use fs4::FileExt;
+    std::fs::create_dir_all(path.parent().expect("a vault folder"))?;
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+    let have = file.metadata()?.len();
+    if want <= have {
+        file.set_len(want)?;
+        return Ok(0);
+    }
+    let floor = fs4::total_space(root)? * keep_free_percent / 100;
+    let room = fs4::available_space(root)?.saturating_sub(floor);
+    let target = want.min(have + room);
+    if target > have {
+        FileExt::allocate(&file, target)?;
+    }
+    Ok(want - target)
+}
+
+/// Size of a vault's reservation (0 if it has none).
+fn reserve_len(root: &Path, token: &str) -> u64 {
+    std::fs::metadata(root.join(token).join(RESERVE)).map_or(0, |m| m.len())
 }
 
 /// Differences in free space smaller than this don't decide where a new vault goes.
@@ -99,7 +142,13 @@ impl VolumeStore {
             }
             volumes.push(volume);
         }
-        let store = Self { volumes, db, placed: Mutex::new(HashMap::new()) };
+        let store = Self {
+            volumes,
+            db,
+            placed: Mutex::new(HashMap::new()),
+            short: Mutex::new(HashMap::new()),
+            keep_free_percent: KEEP_FREE_PERCENT,
+        };
         for (id, vaults) in store.missing().await? {
             tracing::error!(volume = %id, vaults, "storage volume is not configured or not mounted: its drives are unavailable");
         }
@@ -110,9 +159,9 @@ impl VolumeStore {
     pub async fn info(&self) -> io::Result<Vec<VolumeInfo>> {
         let mut out = Vec::with_capacity(self.volumes.len());
         for v in &self.volumes {
-            let vaults: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_volumes WHERE volume = ?")
+            let tokens: Vec<String> = sqlx::query_scalar("SELECT token_id FROM vault_volumes WHERE volume = ?")
                 .bind(&v.id)
-                .fetch_one(&self.db)
+                .fetch_all(&self.db)
                 .await
                 .map_err(db_err)?;
             out.push(VolumeInfo {
@@ -120,7 +169,8 @@ impl VolumeStore {
                 root: v.root.clone(),
                 total_bytes: fs4::total_space(&v.root)?,
                 available_bytes: fs4::available_space(&v.root)?,
-                vaults,
+                reserved_bytes: tokens.iter().map(|t| reserve_len(&v.root, t)).sum(),
+                vaults: tokens.len() as i64,
             });
         }
         Ok(out)
@@ -155,15 +205,32 @@ impl VolumeStore {
         Ok(Some(&self.volumes[i]))
     }
 
-    /// The vault's volume; a new vault goes where the most space is free. Free space within
-    /// `FREE_SPACE_TIE` counts as equal (volumes on one disk, or a disk others keep writing
-    /// to, never read exactly the same): then the volume with the fewest vaults wins.
-    async fn place(&self, token: &str) -> io::Result<&Volume> {
+    /// Another share of each volume to keep free (tests on a nearly full disk use 0).
+    pub fn keep_free(mut self, percent: u64) -> Self {
+        self.keep_free_percent = percent;
+        self
+    }
+
+    /// Drives whose reservation didn't fit on their volume: (token id, missing bytes).
+    pub fn shortages(&self) -> Vec<(String, u64)> {
+        let mut out: Vec<_> = self.short.lock().unwrap().iter().map(|(t, b)| (t.clone(), *b)).collect();
+        out.sort();
+        out
+    }
+
+    /// The vault's volume; a new vault goes where the most space is free, among the volumes
+    /// where `need` bytes fit above their kept-free share (any volume if none has room).
+    /// Free space within `FREE_SPACE_TIE` counts as equal (volumes on one disk, or a disk
+    /// others keep writing to, never read exactly the same): then the fewest vaults win.
+    async fn place(&self, token: &str, need: u64) -> io::Result<&Volume> {
         if let Some(v) = self.find(token).await? {
             return Ok(v);
         }
+        let infos = self.info().await?;
+        let fits = |i: &VolumeInfo| i.available_bytes.saturating_sub(i.total_bytes * self.keep_free_percent / 100) >= need;
+        let any_fits = infos.iter().any(fits);
         let mut best: Option<(u64, i64, &Volume)> = None;
-        for info in self.info().await? {
+        for info in infos.iter().filter(|i| !any_fits || fits(i)) {
             let v = self.volumes.iter().find(|v| v.id == info.id).expect("info lists configured volumes");
             let better = match best {
                 None => true,
@@ -202,11 +269,11 @@ impl BlobStore for VolumeStore {
     }
 
     async fn append(&self, key: &str, body: ByteStream, max: u64) -> Result<u64, AppendError> {
-        self.place(token_of(key)).await?.store.append(key, body, max).await
+        self.place(token_of(key), 0).await?.store.append(key, body, max).await
     }
 
     async fn put(&self, key: &str, data: Bytes) -> io::Result<()> {
-        self.place(token_of(key)).await?.store.put(key, data).await
+        self.place(token_of(key), 0).await?.store.put(key, data).await
     }
 
     async fn read_range(&self, key: &str, offset: u64, len: u64) -> io::Result<ByteStream> {
@@ -230,6 +297,20 @@ impl BlobStore for VolumeStore {
         }
         sqlx::query("DELETE FROM vault_volumes WHERE token_id = ?").bind(token_id).execute(&self.db).await.map_err(db_err)?;
         self.placed.lock().unwrap().remove(token_id);
+        self.short.lock().unwrap().remove(token_id);
         Ok(())
+    }
+
+    async fn reserve(&self, token_id: &str, capacity: u64, bytes: u64) -> io::Result<u64> {
+        let v = self.place(token_id, capacity).await?;
+        let (root, path, keep) = (v.root.clone(), v.root.join(token_id).join(RESERVE), self.keep_free_percent);
+        let missing = tokio::task::spawn_blocking(move || resize_reserve(&root, &path, bytes, keep)).await.map_err(io::Error::other)??;
+        let mut short = self.short.lock().unwrap();
+        if missing > 0 {
+            short.insert(token_id.to_owned(), missing);
+        } else {
+            short.remove(token_id);
+        }
+        Ok(missing)
     }
 }

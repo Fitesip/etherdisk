@@ -67,3 +67,37 @@ async fn existing_data_is_adopted_and_duplicates_refused() {
     // The same directory twice is a config mistake.
     assert!(VolumeStore::open(&[old.clone(), old], db).await.is_err());
 }
+
+#[tokio::test]
+async fn a_drive_keeps_its_unused_capacity_reserved_on_disk() {
+    const MB: u64 = 1 << 20;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", tmp.path().join("t.db").display())).await.unwrap();
+    let dir = tmp.path().join("v");
+    // Kept free 0: the test may run on a nearly full disk.
+    let store = VolumeStore::open(std::slice::from_ref(&dir), db.clone()).await.unwrap().keep_free(0);
+    let reserve = |token: &str| std::fs::metadata(dir.join(token).join(".reserve")).map(|m| m.len()).unwrap_or(0);
+
+    // A new drive takes its whole capacity; uploads shrink it, deletions grow it back.
+    assert_eq!(store.reserve("1", 64 * MB, 64 * MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 64 * MB);
+    assert_eq!(store.info().await.unwrap()[0].reserved_bytes, 64 * MB);
+    assert_eq!(store.reserve("1", 64 * MB, 16 * MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 16 * MB);
+    store.put("1/x", Bytes::from_static(b"data")).await.unwrap();
+    assert_eq!(read(&store, "1/x").await, b"data", "the reservation sits next to the drive's files");
+    assert_eq!(store.reserve("1", 64 * MB, 64 * MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 64 * MB);
+    assert!(store.shortages().is_empty());
+
+    // What doesn't fit is reported, not forced: here the whole volume is kept free.
+    let full = VolumeStore::open(std::slice::from_ref(&dir), db.clone()).await.unwrap().keep_free(100);
+    assert_eq!(full.reserve("2", 8 * MB, 8 * MB).await.unwrap(), 8 * MB);
+    assert_eq!(full.shortages(), [("2".to_owned(), 8 * MB)]);
+    assert_eq!(reserve("2"), 0);
+    // Shrinking always works, and a format frees the place and the shortage.
+    assert_eq!(full.reserve("1", 64 * MB, MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), MB);
+    full.delete_vault("2").await.unwrap();
+    assert!(full.shortages().is_empty());
+}

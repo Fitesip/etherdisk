@@ -75,6 +75,8 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
         data_dirs: vec![data_dir.path().join("blobs")],
+        // Each test drive would take a real GB; one test turns this on.
+        reserve_space: false,
         rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
         legacy_contract_address: None,
@@ -101,7 +103,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     };
     tweak(&mut config);
     let db = connect_db(&config.database_url).await.unwrap();
-    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
+    let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap().keep_free(0));
     let chain = Arc::new(FakeChain::default());
     let legacy = Arc::new(FakeChain::default());
     let reads: Arc<dyn Chain> = match config.legacy_contract_address {
@@ -547,6 +549,24 @@ async fn vault_prefs_are_the_holders_and_go_with_a_format() {
     assert_eq!(put(json!(b64(b"new"))).await.status, StatusCode::NO_CONTENT);
     assert_eq!(put(json!(null)).await.status, StatusCode::NO_CONTENT);
     assert_eq!(get().await.json(), json!({ "blob": null }));
+}
+
+/// A minted drive's capacity is held on disk, and follows what the drive stores.
+#[tokio::test]
+async fn a_drive_reserves_its_capacity_from_mint_to_format() {
+    let app = app_with(|c| c.reserve_space = true).await;
+    let alice = PrivateKeySigner::random();
+    app.mint(1, alice.address(), 1).await;
+    let reserve = || std::fs::metadata(app.data_dir.path().join("blobs/1/.reserve")).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(reserve(), 1 << 30, "reserved at mint, before any upload");
+
+    let t = app.login(&alice).await;
+    let (_vault, file, ct) = setup_vault_with_file(&app, &t, b"some bytes").await;
+    assert_eq!(reserve(), (1 << 30) - ct.len() as u64, "the upload took its bytes from the reservation");
+
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&t), json!({ "confirm": "DELETE" })).await;
+    assert_eq!(reserve(), 1 << 30, "a format gives the whole capacity back");
+    let _ = file;
 }
 
 #[tokio::test]

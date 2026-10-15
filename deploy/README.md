@@ -23,7 +23,7 @@ cp .env.example .env               # адрес контракта, RPC, пут�
 cp server.env.example server.env   # CHAIN_ID, START_BLOCK, Telegram, модераторы
 ```
 
-Несколько массивов: в `.env` — `VOLUME_2=...`, в `docker-compose.yml` под `server.volumes` — строка `- ${VOLUME_2}:/mnt/volume2`, в `server.env` — `DATA_DIR=/mnt/volume1,/mnt/volume2`.
+Несколько массивов — см. «Добавить хранилище» ниже (`storage.yml`, `docker-compose.yml` править не нужно).
 
 ## 3. Сертификат (первый раз)
 
@@ -81,6 +81,47 @@ docker compose logs -f server     # лог сервера: тома, монит�
    В этих блоках журнал пишется без IP-адресов, как обещает политика конфиденциальности.
 
 4. `docker compose up -d --build` и проверка: `curl -I https://etherdisk.app`.
+
+## Резерв места под диски
+
+Каждый купленный диск держит свой неиспользованный объём **на томе как настоящее занятое место**: файл `.reserve` в папке диска, выделенный сразу (`fallocate`, без записи нулей). При минте резервируется весь объём, при загрузке файлов резерв уменьшается ровно на их размер, при удалении — растёт обратно, при форматировании возвращается целиком. Поэтому:
+
+- запись файлов в купленный диск никогда не упрётся в полный том;
+- `df` и `/status` показывают как «свободно» то, что **ещё никому не продано**: это и есть запас для новых дисков. Сколько держится под диски — «зарезервировано за дисками» в `/status`;
+- новый диск попадает на том, где помещается весь его объём; резерв никогда не забирает последние 5 % тома (там могут жить система и база);
+- не хватило места на резерв — тревога в Telegram «Не хватает места на резерв дисков» с номерами дисков: пора добавить хранилище и закрыть продажи;
+- «Мало места» (меньше 15 % свободно) теперь значит «пора планировать расширение»: непроданного запаса осталось мало.
+
+`RESERVE_SPACE=false` в `server.env` выключает резерв (только для разработки). Резерв дисков, купленных раньше, сервер выставляет сам при запуске.
+
+## Добавить хранилище (новый RAID-массив)
+
+Новые диски идут на новый массив, уже купленные остаются там, где были.
+
+1. **Найти новые диски:** `lsblk` (например `sdb`, `sdc`, `sdd`; на них не должно быть ничего нужного).
+2. **Собрать массив** (RAID5 из 3+ дисков; от 5–6 дисков надёжнее RAID6, `--level=6`):
+   ```bash
+   sudo mdadm --create /dev/md1 --level=5 --raid-devices=3 /dev/sdb /dev/sdc /dev/sdd
+   sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
+   sudo update-initramfs -u
+   ```
+   Первичная синхронизация идёт часами (`cat /proc/mdstat`); пользоваться массивом можно сразу.
+3. **Файловая система** без резерва для root (это том данных): `sudo mkfs.ext4 -m 0 /dev/md1`.
+4. **Точка монтирования, защищённая от записи без массива**, и автомонтирование по UUID:
+   ```bash
+   sudo mkdir -p /mnt/raid2 && sudo chattr +i /mnt/raid2
+   echo "UUID=$(sudo blkid -s UUID -o value /dev/md1) /mnt/raid2 ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+   sudo mount /mnt/raid2
+   ```
+5. **Папка для Etherdisk** и права для пользователя контейнера (от `etherdisk`, с rootless Docker):
+   ```bash
+   sudo mkdir /mnt/raid2/etherdisk && sudo chown etherdisk:etherdisk /mnt/raid2/etherdisk
+   docker run --rm -v /mnt/raid2/etherdisk:/d alpine chown 10001:10001 /d
+   ```
+6. **Подключить к серверу:** `cp storage.yml.example storage.yml` (путь в нём — `/mnt/raid2/etherdisk`), в `.env` добавить `storage.yml` в `COMPOSE_FILE` (например `docker-compose.yml:behind-proxy.yml:storage.yml`), в `server.env` — `DATA_DIR=/mnt/volume1,/mnt/volume2`. Затем `docker compose up -d server`.
+7. **Проверить:** в логе (`docker compose logs server | grep "storage volume"`) — оба тома; `/status` в Telegram показывает оба с их свободным местом.
+
+Порядок томов в `DATA_DIR` можно менять: каждый том помнит свой id (файл `.etherdisk-volume`). Убирать том из `DATA_DIR`, пока на нём есть диски, нельзя: сервер сообщит, что они недоступны.
 
 ## Резервные копии
 

@@ -290,6 +290,8 @@ async fn create_file(
     if inserted == 0 {
         return Err(AppError::QuotaExceeded);
     }
+    // Hand the upload's bytes over from the drive's reservation before they arrive.
+    crate::reserve::sync_logged(&st, &token).await;
     Ok((StatusCode::CREATED, Json(Created { id: req.id })))
 }
 
@@ -378,6 +380,7 @@ async fn put_thumbnail(
         if n == 0 {
             return Err(AppError::QuotaExceeded);
         }
+        crate::reserve::sync_logged(&st, &token).await;
     }
     st.store.put(&thumb_key(&token, &id), body).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -396,6 +399,7 @@ async fn drop_thumbnail(
         .execute(&st.db)
         .await?;
     st.store.delete(&thumb_key(&token, &id)).await?;
+    crate::reserve::sync_logged(&st, &token).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -711,6 +715,8 @@ pub(crate) async fn delete_subtree(st: &AppState, token: &str, id: &Uuid) -> App
             st.store.delete(&thumb_key(token, &file_id)).await?;
         }
     }
+    // The freed bytes go back to the drive's reservation.
+    crate::reserve::sync_logged(st, token).await;
     Ok(())
 }
 

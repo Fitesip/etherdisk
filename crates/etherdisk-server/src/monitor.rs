@@ -38,6 +38,8 @@ pub struct Snapshot {
     pub volumes: Vec<VolumeInfo>,
     /// Volumes that hold drives but are not configured or not mounted: (id, drives).
     pub missing_volumes: Vec<(String, i64)>,
+    /// Drives whose capacity couldn't be fully reserved on their volume: (token, bytes).
+    pub shortages: Vec<(String, u64)>,
     /// Free and total bytes where the database lives.
     pub db_disk: Option<(PathBuf, u64, u64)>,
     /// Next block to index and the confirmed chain head, or the RPC error.
@@ -91,11 +93,12 @@ fn space_problems(out: &mut Vec<Problem>, places: Vec<Place>, t: &Thresholds) {
         let pc = pct(free, total);
         let key = d.iter().map(|p| p.key.as_str()).collect::<Vec<_>>().join("+");
         let what = d.iter().map(|p| p.label.as_str()).collect::<Vec<_>>().join(", ");
-        let detail = format!("свободно {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
+        // Volumes reserve their drives' capacity: free space is what no drive has been sold.
+        let detail = format!("свободно (не занято и не зарезервировано за дисками) {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
         if pc < t.critical_percent {
-            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}") });
+            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}. Новые диски не поместятся: закройте продажи или добавьте хранилище") });
         } else if pc < t.free_percent {
-            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}") });
+            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}. Пора планировать расширение хранилища") });
         }
     }
 }
@@ -112,6 +115,18 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
         places.push(Place { key: "db".into(), label: format!("база данных ({})", dir.display()), free: *free, total: *total });
     }
     space_problems(&mut out, places, t);
+    if !s.shortages.is_empty() {
+        let total: u64 = s.shortages.iter().map(|(_, b)| b).sum();
+        let drives: Vec<String> = s.shortages.iter().map(|(t, b)| format!("#{t} ({})", fmt_bytes(*b))).collect();
+        out.push(Problem {
+            key: "reserve".into(),
+            text: format!(
+                "🔴 Не хватает места на резерв дисков: {} не зарезервировано ({}). Эти диски могут упереться в полный том: добавьте хранилище и закройте продажи",
+                fmt_bytes(total),
+                drives.join(", ")
+            ),
+        });
+    }
     for (id, drives) in &s.missing_volumes {
         out.push(Problem {
             key: format!("missing:{id}"),
@@ -301,6 +316,7 @@ impl Monitor {
             Err(e) => tracing::warn!("monitor: volumes: {e}"),
         }
         s.missing_volumes = self.store.missing().await.unwrap_or_default();
+        s.shortages = self.store.shortages();
         let db_dir = db_dir(&self.state.config.database_url);
         if let (Ok(free), Ok(total)) = (fs4::available_space(&db_dir), fs4::total_space(&db_dir)) {
             s.db_disk = Some((db_dir, free, total));
@@ -381,11 +397,12 @@ pub fn status_text(s: &Snapshot, problems: usize) -> String {
     let mut lines = vec!["📊 Состояние".to_owned()];
     for v in &s.volumes {
         lines.push(format!(
-            "• Том {}: свободно {} из {} ({}%), дисков: {}",
+            "• Том {}: свободно {} из {} ({}%), зарезервировано за дисками {}, дисков: {}",
             v.root.display(),
             fmt_bytes(v.available_bytes),
             fmt_bytes(v.total_bytes),
             pct(v.available_bytes, v.total_bytes),
+            fmt_bytes(v.reserved_bytes),
             v.vaults
         ));
     }
@@ -418,7 +435,7 @@ mod tests {
     const GB: u64 = 1 << 30;
 
     fn vol(id: &str, free: u64, total: u64) -> VolumeInfo {
-        VolumeInfo { id: id.into(), root: PathBuf::from(format!("/mnt/{id}")), total_bytes: total, available_bytes: free, vaults: 3 }
+        VolumeInfo { id: id.into(), root: PathBuf::from(format!("/mnt/{id}")), total_bytes: total, available_bytes: free, reserved_bytes: 0, vaults: 3 }
     }
 
     #[test]
@@ -426,12 +443,15 @@ mod tests {
         let s = Snapshot {
             volumes: vec![vol("a", 50 * GB, 100 * GB), vol("b", 10 * GB, 100 * GB), vol("c", 2 * GB, 100 * GB)],
             missing_volumes: vec![("d".into(), 4)],
+            shortages: vec![("7".into(), 3 * GB)],
             db_disk: Some((PathBuf::from("data"), 90 * GB, 100 * GB)),
             indexer: Some(Ok((1000, 1400))),
             errors: 25,
         };
-        let keys: Vec<String> = problems(&s, &T).into_iter().map(|p| p.key).collect();
-        assert_eq!(keys, ["volume:b:low", "volume:c:critical", "missing:d", "indexer", "errors"]);
+        let found = problems(&s, &T);
+        let keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["volume:b:low", "volume:c:critical", "reserve", "missing:d", "indexer", "errors"]);
+        assert!(found[2].text.contains("#7 (3.0 ГБ)"), "{}", found[2].text);
         // A volume and the database on one disk: one message naming both.
         let shared = Snapshot {
             volumes: vec![vol("a", 2 * GB, 100 * GB)],

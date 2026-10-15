@@ -34,6 +34,12 @@ pub trait BlobStore: Send + Sync {
     async fn delete(&self, key: &str) -> io::Result<()>;
     /// Deletes every blob of a vault.
     async fn delete_vault(&self, token_id: &str) -> io::Result<()>;
+    /// Keeps `bytes` of disk space allocated for the vault (its capacity minus what it
+    /// stores), placing a new vault where `capacity` fits. Returns how many of those bytes
+    /// could not be reserved (0 when all are). Stores without reservations do nothing.
+    async fn reserve(&self, _token_id: &str, _capacity: u64, _bytes: u64) -> io::Result<u64> {
+        Ok(0)
+    }
 }
 
 pub fn content_key(token_id: &str, object_id: &uuid::Uuid) -> String {

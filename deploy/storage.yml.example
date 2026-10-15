@@ -1,0 +1,10 @@
+# More storage volumes (RAID arrays) for the server, without editing docker-compose.yml.
+# Copy to deploy/storage.yml (not tracked by git), one line per array, and add it to
+# COMPOSE_FILE in .env, e.g.:
+#   COMPOSE_FILE=docker-compose.yml:behind-proxy.yml:storage.yml
+# then list the container paths in DATA_DIR in server.env:
+#   DATA_DIR=/mnt/volume1,/mnt/volume2
+services:
+  server:
+    volumes:
+      - /mnt/raid2/etherdisk:/mnt/volume2
