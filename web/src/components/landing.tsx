@@ -21,11 +21,13 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, typ
 import { formatEther } from "viem";
 
 import { useT, type MessageKey } from "@/i18n";
+import { IS_TESTNET } from "@/lib/chain";
 import { formatCapacity } from "@/lib/format";
 import { useTiers } from "@/lib/tiers";
 
+import { DriveArt, driveColor } from "./drive-art";
 import { Logo } from "./header";
-import { cn, Spinner } from "./ui";
+import { cn } from "./ui";
 
 // ------------------------------------------------------------------ motion helpers
 
@@ -303,11 +305,7 @@ function Hero() {
 
       <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 pt-14 pb-20 md:grid-cols-[1.15fr_1fr] md:pt-24 md:pb-28">
         <div>
-          <p className="animate-fade-up inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-3 py-1 text-xs text-muted backdrop-blur">
-            <ShieldCheck className="h-3.5 w-3.5 text-accent" />
-            {t("landing.eyebrow")}
-          </p>
-          <h1 className="animate-fade-up mt-6 text-4xl font-semibold tracking-tight text-balance [animation-delay:80ms] sm:text-6xl">
+          <h1 className="animate-fade-up text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
             {t("landing.titleStart")} <span className="text-shimmer">{t("landing.titleAccent")}</span>
           </h1>
           <p className="animate-fade-up mt-6 max-w-xl text-lg text-pretty text-muted [animation-delay:160ms]">{t("landing.subtitle")}</p>
@@ -326,7 +324,6 @@ function Hero() {
               {t("landing.ctaSecondary")}
             </a>
           </div>
-          <p className="animate-fade-up mt-6 text-xs text-muted [animation-delay:320ms]">{t("landing.testnet")}</p>
         </div>
 
         <div aria-hidden className="animate-fade-up relative isolate mx-auto my-12 w-full max-w-sm [animation-delay:200ms] sm:my-16">
@@ -342,19 +339,28 @@ function Hero() {
 
 // ------------------------------------------------------------------ sections
 
-const STACK = ["XChaCha20-Poly1305", "Argon2id", "ERC-721", "Rust", "WebAssembly", "Sepolia"];
+const STACK = ["XChaCha20-Poly1305", "Argon2id", "ERC-721", "Rust", "WebAssembly", IS_TESTNET ? "Sepolia" : "Ethereum"];
 
 function Stack() {
   const t = useT();
   return (
     <div className="border-y border-border bg-bg-subtle/60">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-8 gap-y-3 px-4 py-6 text-sm text-muted">
-        <span className="text-xs tracking-widest uppercase">{t("landing.stack")}</span>
-        {STACK.map((s) => (
-          <span key={s} className="font-mono">
-            {s}
-          </span>
-        ))}
+      <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-6 text-sm text-muted">
+        <span className="shrink-0 text-xs tracking-widest uppercase">{t("landing.stack")}</span>
+        <div className="marquee min-w-0 flex-1 overflow-hidden">
+          <div className="marquee-track flex w-max">
+            {[0, 1].map((copy) => (
+              <div key={copy} aria-hidden={copy === 1} className="flex shrink-0 items-center">
+                {STACK.map((s) => (
+                  <span key={s} className="flex items-center gap-8 pr-8 font-mono whitespace-nowrap">
+                    {s}
+                    <span className="h-1 w-1 rounded-full bg-accent/60" />
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -408,6 +414,92 @@ function ServerSees() {
           </div>
         </div>
       </Reveal>
+    </section>
+  );
+}
+
+/** Sizes shown until the contract's tiers load (the mainnet set). */
+const SHOWCASE_SIZES = [64, 128, 256, 512, 1024, 2048];
+const SHOWCASE_POINTS = ["onchain", "fixed", "wallets"] as const;
+
+function onTilt(e: PointerEvent<HTMLElement>) {
+  const r = e.currentTarget.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width;
+  const y = (e.clientY - r.top) / r.height;
+  const s = e.currentTarget.style;
+  s.setProperty("--ry", `${(x - 0.5) * 16}deg`);
+  s.setProperty("--rx", `${(0.5 - y) * 16}deg`);
+  s.setProperty("--gx", `${x * 100}%`);
+  s.setProperty("--gy", `${y * 100}%`);
+}
+
+function onTiltEnd(e: PointerEvent<HTMLElement>) {
+  for (const v of ["--rx", "--ry", "--gx", "--gy"]) e.currentTarget.style.removeProperty(v);
+}
+
+/** The token's own picture, cycling through the sizes, on a card that tilts under the pointer. */
+function NftShowcase() {
+  const t = useT();
+  const { tiers } = useTiers();
+  const sizes = tiers.length ? tiers.map((x) => x.capacityGb) : SHOWCASE_SIZES;
+  const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (paused || prefersReducedMotion()) return;
+    const id = setInterval(() => setI((n) => n + 1), 2800);
+    return () => clearInterval(id);
+  }, [paused]);
+  const gb = sizes[i % sizes.length];
+  const color = driveColor(gb);
+
+  return (
+    <section className="relative isolate overflow-hidden border-t border-border">
+      <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 py-24 md:grid-cols-2">
+        <Reveal>
+          <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{t("landing.nft.title")}</h2>
+          <p className="mt-4 text-pretty text-muted">{t("landing.nft.text")}</p>
+          <ul className="mt-8 flex flex-col gap-3">
+            {SHOWCASE_POINTS.map((k) => (
+              <li key={k} className="flex items-start gap-3 text-sm">
+                <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
+                  <Check className="h-3 w-3" />
+                </span>
+                {t(`landing.nft.points.${k}` as MessageKey)}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-8 flex flex-wrap gap-2">
+            {sizes.map((s, n) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => {
+                  setI(n);
+                  setPaused(true);
+                }}
+                className={cn(
+                  "rounded-full border px-3 py-1 font-mono text-xs transition",
+                  s === gb ? "border-transparent text-white shadow-md" : "border-border text-muted hover:text-fg",
+                )}
+                style={s === gb ? { backgroundColor: driveColor(s) } : undefined}
+              >
+                {formatCapacity(s)}
+              </button>
+            ))}
+          </div>
+        </Reveal>
+        <Reveal delay={150}>
+          <div
+            onPointerMove={onTilt}
+            onPointerLeave={onTiltEnd}
+            className="tilt relative mx-auto aspect-square w-full max-w-sm rounded-[2rem] transition-shadow duration-1000"
+            style={{ boxShadow: `0 30px 80px -24px ${color}88` }}
+          >
+            <DriveArt key={gb} capacityGb={gb} tokenId={42} className="art-in h-full w-full rounded-[2rem]" />
+            <div aria-hidden className="tilt-glare pointer-events-none absolute inset-0 rounded-[2rem]" />
+          </div>
+        </Reveal>
+      </div>
     </section>
   );
 }
@@ -471,7 +563,8 @@ function Steps() {
           <li key={key}>
             <Reveal delay={i * 150}>
               <div className="relative flex items-center">
-                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full border-2 border-accent bg-card font-mono text-sm font-semibold text-accent">
+                <span className="relative grid h-11 w-11 shrink-0 place-items-center rounded-full border-2 border-accent bg-card font-mono text-sm font-semibold text-accent">
+                  <span aria-hidden className="ping-ring absolute inset-0 rounded-full border-2 border-accent opacity-0" />
                   {i + 1}
                 </span>
                 {i < STEPS.length - 1 && <span className="draw-line ml-4 hidden h-0.5 flex-1 rounded-full bg-accent/40 sm:block" />}
@@ -499,10 +592,22 @@ function Tiers() {
       <div className="mx-auto max-w-6xl px-4 py-24">
         <Reveal className="text-center">
           <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">{t("landing.tiersTitle")}</h2>
-          <p className="mt-4 text-muted">{t("landing.tiersText")}</p>
+          <p className="mt-4 text-muted">{IS_TESTNET ? t("landing.tiersText") : t("landing.tiersTextMainnet")}</p>
         </Reveal>
         {isLoading ? (
-          <Spinner className="mx-auto mt-12" />
+          <div aria-hidden className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-3">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="skeleton flex h-80 flex-col gap-3 rounded-2xl border border-border bg-card p-6" style={{ animationDelay: `${i * 120}ms` }}>
+                <div className="flex justify-between">
+                  <div className="h-9 w-28 rounded-lg bg-bg-subtle" />
+                  <div className="h-16 w-16 rounded-xl bg-bg-subtle" />
+                </div>
+                <div className="h-4 w-24 rounded bg-bg-subtle" />
+                <div className="h-3 w-40 rounded bg-bg-subtle" />
+                <div className="mt-auto h-10 rounded-lg bg-bg-subtle" />
+              </div>
+            ))}
+          </div>
         ) : (
           <div className="mx-auto mt-12 grid max-w-4xl gap-4 sm:grid-cols-3">
             {tiers.map((tier, i) => {
@@ -512,7 +617,7 @@ function Tiers() {
                 <Reveal key={tier.id} delay={i * 100}>
                   <div
                     className={cn(
-                      "relative flex h-full flex-col rounded-2xl border bg-card p-6 transition-transform duration-300",
+                      "group relative flex h-full flex-col rounded-2xl border bg-card p-6 transition-transform duration-300",
                       soon ? "border-dashed border-border opacity-70" : "hover:-translate-y-1",
                       hot ? "border-accent shadow-xl shadow-accent/15" : "border-border",
                     )}
@@ -527,6 +632,14 @@ function Tiers() {
                         {t("landing.bestValue")}
                       </span>
                     )}
+                    <DriveArt
+                      capacityGb={tier.capacityGb}
+                      motion={soon ? "none" : "hover"}
+                      className={cn(
+                        "absolute top-5 right-5 h-16 w-16 rounded-xl shadow-lg transition-transform duration-500 group-hover:-rotate-6",
+                        soon && "grayscale",
+                      )}
+                    />
                     <div className="text-4xl font-semibold tracking-tight">{t("drives.capacity", { size: formatCapacity(tier.capacityGb) })}</div>
                     <div className="mt-2 font-mono text-sm">{formatEther(tier.price)} ETH</div>
                     <div className="mt-1 text-xs text-muted">
@@ -588,6 +701,14 @@ function FinalCta() {
   );
 }
 
+/** Read in the browser: a prerendered page must not freeze the year it was built in. */
+function CurrentYear() {
+  const [year, setYear] = useState<number | null>(null);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- the clock is only read on the client
+  useEffect(() => setYear(new Date().getFullYear()), []);
+  return <span suppressHydrationWarning>{year ?? ""}</span>;
+}
+
 export function Landing() {
   const t = useT();
   return (
@@ -609,6 +730,7 @@ export function Landing() {
         <Hero />
         <Stack />
         <ServerSees />
+        <NftShowcase />
         <Features />
         <Steps />
         <Tiers />
@@ -616,7 +738,19 @@ export function Landing() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto max-w-6xl px-4 py-6 text-xs text-muted">{t("landing.footer")}</div>
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-6 text-xs text-muted">
+          <span>
+            © <CurrentYear /> Etherdisk{IS_TESTNET && <> · {t("landing.footer")}</>}
+          </span>
+          <span className="flex gap-4">
+            <Link href="/terms" className="hover:text-fg">
+              {t("landing.terms")}
+            </Link>
+            <Link href="/privacy" className="hover:text-fg">
+              {t("landing.privacy")}
+            </Link>
+          </span>
+        </div>
       </footer>
     </div>
   );

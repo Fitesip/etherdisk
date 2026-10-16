@@ -1,0 +1,10 @@
+# The host already runs its own nginx on 80/443: it terminates TLS for etherdisk.app and forwards
+# here (example: nginx/host-etherdisk.conf). Turned on from .env:
+#   COMPOSE_FILE=docker-compose.yml:behind-proxy.yml
+#   HTTP_PORT=127.0.0.1:8880
+services:
+  nginx:
+    ports: !override
+      - "${HTTP_PORT:-127.0.0.1:8880}:80"
+    volumes:
+      - ./nginx/etherdisk.behind-proxy.conf:/etc/nginx/conf.d/default.conf:ro

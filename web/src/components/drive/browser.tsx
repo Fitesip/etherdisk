@@ -16,12 +16,15 @@ import {
   MoreHorizontal,
   Move,
   Settings,
+  Star,
+  Tag,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useT } from "@/i18n";
 import { api, ApiError, type ObjectRow, type VaultInfo } from "@/lib/api";
@@ -30,6 +33,7 @@ import { driveName, driveVars } from "@/lib/drive-style";
 import { entriesFromDrop, entriesFromInput, type TreeEntry } from "@/lib/folder-upload";
 import { formatBytes, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
+import { useDrivePrefs } from "@/lib/prefs";
 import { useStored, writeStored } from "@/lib/storage";
 import { downloadFile, ownerSource } from "@/lib/stream";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
@@ -37,6 +41,7 @@ import { useUnlocked, type Unlocked } from "@/lib/unlocked";
 import { useToast } from "../toast";
 import { Button, cn, Dialog, Notice, Progress, Spinner } from "../ui";
 import { Viewer, type Gallery } from "../viewer";
+import { FolderLookDialog, LabelChip, LabelsDialog, updateMeta } from "./customize";
 import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ShareDialog, type DriveCtx } from "./dialogs";
 import { ItemGrid, ItemList, Menu, MenuItem, useDropTarget, type ItemActions, type Sort, type SortKey } from "./items";
 import { ResumeBanner } from "./resume";
@@ -52,9 +57,10 @@ const parseSort = (raw: string | null): Sort => {
 };
 const sizeOf = (i: Item) => (isFileMeta(i.meta) ? i.meta.size : -1);
 
-/** Folders first, then by the chosen key (name breaks ties). */
+/** Starred first, then folders, then by the chosen key (name breaks ties). */
 const sortItems = (items: Item[], sort: Sort) =>
   [...items].sort((a, b) => {
+    if (!!a.meta?.starred !== !!b.meta?.starred) return a.meta?.starred ? -1 : 1;
     if (a.row.kind !== b.row.kind) return a.row.kind === "folder" ? -1 : 1;
     const byName = itemName(a).localeCompare(itemName(b), undefined, { numeric: true });
     const d = sort.key === "size" ? sizeOf(a) - sizeOf(b) : sort.key === "modified" ? a.row.updated_at - b.row.updated_at : byName;
@@ -98,7 +104,12 @@ type Dialogs =
   | { type: "move"; items: Item[] }
   | { type: "share"; item: Item }
   | { type: "links" }
+  | { type: "labels"; items: Item[] }
+  | { type: "folderLook"; item: Item }
   | null;
+
+/** Show only starred items, or only those with one label. */
+type Filter = "starred" | { label: string } | null;
 
 export function FileBrowser({ token, info, unlocked }: { token: string; info: VaultInfo; unlocked: Unlocked }) {
   const t = useT();
@@ -132,10 +143,13 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const searchBox = useRef<HTMLDivElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>(null);
+  const drivePrefs = useDrivePrefs(token, tokenId, unlocked.vault);
+  const { prefs, save: savePrefs } = drivePrefs;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [gallery, setGallery] = useState<Gallery | null>(null);
   const [dialog, setDialog] = useState<Dialogs>(null);
-  const [dragging, setDragging] = useState(0);
+  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -167,11 +181,21 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   });
   const searching = query.trim().length > 0 && !inTrash;
   const search = useSearch(ctx, searching ? query : "");
-  const shown = useMemo(
+  const listed = useMemo(
     () => (searching ? search.hits.map((h) => h.item) : sortItems(objects.data ?? [], sort)),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sort is derived from its two fields
     [searching, search.hits, objects.data, sort.key, sort.desc],
   );
+  // A filter on a label that was deleted meanwhile shows everything.
+  const activeFilter = filter && filter !== "starred" && !prefs.labels.some((l) => l.id === filter.label) ? null : filter;
+  const shown = useMemo(
+    () =>
+      !activeFilter
+        ? listed
+        : listed.filter((i) => (activeFilter === "starred" ? i.meta?.starred : i.meta?.labels?.includes(activeFilter.label))),
+    [listed, activeFilter],
+  );
+  const anyStarred = listed.some((i) => i.meta?.starred);
 
   const refresh = useCallback(() => {
     qc.invalidateQueries({ queryKey: ["objects", token, tokenId] });
@@ -218,6 +242,18 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     share: (item) => setDialog({ type: "share", item }),
     rename: (item) => setDialog({ type: "rename", item }),
     move: (items) => setDialog({ type: "move", items }),
+    star: async (items, on) => {
+      try {
+        for (const i of items) if (!!i.meta?.starred !== on) await updateMeta(ctx, i, { starred: on || undefined });
+      } catch {
+        toast({ text: t("common.error") });
+      } finally {
+        refresh();
+      }
+    },
+    labels: (items) => setDialog({ type: "labels", items }),
+    customize: (item) => setDialog({ type: "folderLook", item }),
+    zip: (items) => void zip(items),
     moveTo: searching
       ? undefined
       : async (ids, folderId) => {
@@ -307,15 +343,45 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     for (const [folderId, list] of merged) uploads.enqueue(list, folderId);
   }
 
-  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes("Files");
-  const onDrop = (e: DragEvent) => {
-    if (!isFileDrag(e)) return;
-    e.preventDefault();
-    setDragging(0);
-    if (inTrash) return;
-    const target = current;
-    entriesFromDrop(e.dataTransfer).then((entries) => plan(entries, target));
-  };
+  // Files dropped anywhere on the page go into the open folder (not only onto the list).
+  const dropInto = useRef<(data: DataTransfer) => void>(() => {});
+  useEffect(() => {
+    dropInto.current = (data) => {
+      if (inTrash) return;
+      const target = current;
+      entriesFromDrop(data).then((entries) => plan(entries, target));
+    };
+  });
+  useEffect(() => {
+    // Only files from the computer: drags of drive items (moves) carry no "Files". The
+    // overlay that shows up then covers the window, so its own dragleave means the drag
+    // left the window (no counting of enters and leaves over the page's elements).
+    const isFileDrag = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    const onEnter = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      setDragging(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!isFileDrag(e) || !e.dataTransfer) return;
+      e.preventDefault();
+      setDragging(false);
+      dropInto.current(e.dataTransfer);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
 
   // Keyboard: Delete, Ctrl/Cmd+A, Esc, "/" (search), F2 (rename), Enter (open).
   useEffect(() => {
@@ -351,17 +417,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const hitPath = new Map(search.hits.map((h) => [h.item.row.id, h.path]));
 
   return (
-    <div
-      className="relative flex flex-col gap-4"
-      onDragEnter={(e) => {
-        if (!isFileDrag(e)) return;
-        e.preventDefault();
-        setDragging((n) => n + 1);
-      }}
-      onDragLeave={(e) => isFileDrag(e) && setDragging((n) => Math.max(0, n - 1))}
-      onDragOver={(e) => isFileDrag(e) && e.preventDefault()}
-      onDrop={onDrop}
-    >
+    <div className="relative flex flex-col gap-4">
       {/* Where we are + search */}
       <div className="flex flex-wrap items-center gap-3">
         <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-lg font-semibold tracking-tight">
@@ -412,6 +468,17 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             <X className="h-4 w-4" />
           </Button>
           <span className="mr-auto text-sm font-medium">{t("files.selected", { n: selected.size })}</span>
+          <Button
+            size="sm"
+            aria-label={t("custom.star")}
+            title={t("custom.star")}
+            onClick={() => actions.star!(selectedItems, !selectedItems.every((i) => i.meta?.starred))}
+          >
+            <Star className="h-4 w-4" />
+          </Button>
+          <Button size="sm" aria-label={t("custom.labels")} title={t("custom.labels")} onClick={() => actions.labels!(selectedItems)}>
+            <Tag className="h-4 w-4" />
+          </Button>
           <Button size="sm" onClick={() => zip(selectedItems)}>
             <Download className="h-4 w-4" />
             <span className="hidden sm:inline">{t("files.downloadZip")}</span>
@@ -568,6 +635,35 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         {t("drives.usage", { used: formatBytes(info.used_bytes), total: formatBytes(info.capacity_bytes) })}
       </div>
 
+      {!inTrash && (prefs.labels.length > 0 || anyStarred || activeFilter) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            aria-pressed={!activeFilter}
+            onClick={() => setFilter(null)}
+            className={cn("h-7 rounded-full border px-2.5 text-xs transition", !activeFilter ? "border-transparent bg-fg text-bg" : "border-border text-muted hover:text-fg")}
+          >
+            {t("custom.filterAll")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={activeFilter === "starred"}
+            onClick={() => setFilter(activeFilter === "starred" ? null : "starred")}
+            className={cn(
+              "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition",
+              activeFilter === "starred" ? "border-transparent bg-amber-400 text-black" : "border-border text-muted hover:text-fg",
+            )}
+          >
+            <Star className={cn("h-3 w-3", activeFilter !== "starred" && "fill-amber-400 text-amber-400")} />
+            {t("custom.starred")}
+          </button>
+          {prefs.labels.map((l) => {
+            const on = !!activeFilter && activeFilter !== "starred" && activeFilter.label === l.id;
+            return <LabelChip key={l.id} label={l} active={on} onClick={() => setFilter(on ? null : { label: l.id })} />;
+          })}
+        </div>
+      )}
+
       {!inTrash && <RecoveryBanner ctx={ctx} recoveryAt={info.recovery_at} />}
       {!inTrash && <ResumeBanner ctx={ctx} onResume={uploads.resume} active={uploads.started} />}
 
@@ -591,7 +687,14 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
               <Notice tone="danger">{t("errors.network")}</Notice>
             </div>
           ) : !shown.length ? (
-            searching ? (
+            activeFilter && listed.length ? (
+              <div className="flex flex-col items-center gap-3 px-4 py-16 text-center">
+                <p className="text-sm text-muted">{t("custom.nothingMatches")}</p>
+                <Button size="sm" onClick={() => setFilter(null)}>
+                  {t("custom.clearFilter")}
+                </Button>
+              </div>
+            ) : searching ? (
               <p className="px-4 py-16 text-center text-sm text-muted">{t("files.noResults")}</p>
             ) : (
               <div className="flex flex-col items-center gap-1 px-4 py-16 text-center">
@@ -611,16 +714,33 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
               subtitle={searching ? (i) => (hitPath.get(i.row.id) ? t("files.inFolder", { path: hitPath.get(i.row.id)! }) : name) : undefined}
               sort={searching ? undefined : sort}
               onSort={searching ? undefined : setSort}
+              labels={prefs.labels}
             />
           )}
         </div>
       )}
 
-      {dragging > 0 && !inTrash && (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl border-2 border-dashed border-accent bg-accent-soft/80">
-          <p className="font-medium text-accent">{t("files.dropHere")}</p>
-        </div>
-      )}
+      {dragging &&
+        !inTrash &&
+        createPortal(
+          // Over the whole window, in the drive's colors (a portal: no transformed ancestor
+          // can shrink a fixed overlay to its own box). Its content ignores the pointer, so
+          // dragleave fires only when the drag leaves the window (or is cancelled).
+          <div
+            style={driveVars(info)}
+            onDragLeave={() => setDragging(false)}
+            className="fixed inset-0 z-50 grid animate-fade-up place-items-center bg-bg/70 p-4 backdrop-blur-sm"
+          >
+            <div className="pointer-events-none grid h-full w-full place-items-center rounded-2xl border-2 border-dashed border-accent bg-accent-soft/60">
+              <div className="flex flex-col items-center gap-3 text-center">
+                <Upload className="h-10 w-10 text-accent" />
+                <p className="text-lg font-medium text-accent">{t("files.dropHere")}</p>
+                <p className="text-sm text-muted">{path.at(-1)?.name ?? t("files.allFiles")}</p>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <UploadPanel items={uploads.items} onClear={uploads.clearFinished} style={driveVars(info)} />
       <Viewer gallery={gallery} onIndex={(index) => setGallery((g) => g && { ...g, index })} onClose={() => setGallery(null)} />
@@ -675,6 +795,20 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         </div>
       </Dialog>
       <LinksDialog open={dialog?.type === "links"} onClose={close} ctx={ctx} />
+      <LabelsDialog
+        items={dialog?.type === "labels" ? dialog.items : null}
+        onClose={close}
+        ctx={ctx}
+        prefs={prefs}
+        prefsState={drivePrefs.ready ? "ready" : drivePrefs.failed ? "failed" : "loading"}
+        onRetry={() => void drivePrefs.retry()}
+        savePrefs={savePrefs}
+        onSaved={() => {
+          setSelected(new Set());
+          refresh();
+        }}
+      />
+      <FolderLookDialog item={dialog?.type === "folderLook" ? dialog.item : null} onClose={close} ctx={ctx} onSaved={refresh} />
     </div>
   );
 }

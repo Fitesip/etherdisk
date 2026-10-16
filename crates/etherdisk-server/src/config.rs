@@ -13,6 +13,10 @@ pub struct Config {
     /// One or more endpoints (`RPC_URL`, comma-separated): the first that works is used.
     pub rpc_urls: Vec<String>,
     pub contract_address: Address,
+    /// The contract drives were first minted on, when `contract_address` is its successor
+    /// (`LEGACY_CONTRACT_ADDRESS`, docs/MIGRATION.md): drives not swapped yet keep working
+    /// from it, and a swap keeps the drive's data (same token id).
+    pub legacy_contract_address: Option<Address>,
     pub chain_id: u64,
     /// Block the contract was deployed in; the Transfer indexer starts here.
     pub start_block: u64,
@@ -29,6 +33,9 @@ pub struct Config {
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub telegram_api_url: String,
+    /// Reach Telegram through this proxy (`TELEGRAM_PROXY`: http://, https://, socks5:// or
+    /// socks5h://, optionally with user:password@). Only Telegram traffic uses it.
+    pub telegram_proxy: Option<String>,
     pub alert_thresholds: crate::monitor::Thresholds,
     pub monitor_interval_secs: u64,
     /// Wallets that moderate the ideas board (`IDEAS_ADMINS`, comma-separated), besides
@@ -44,6 +51,10 @@ impl Config {
             data_dirs: var_or("DATA_DIR", "data/blobs").split(',').map(str::trim).filter(|d| !d.is_empty()).map(PathBuf::from).collect(),
             rpc_urls: var("RPC_URL")?.split(',').map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()).collect(),
             contract_address: parse("CONTRACT_ADDRESS", &var("CONTRACT_ADDRESS")?)?,
+            legacy_contract_address: match std::env::var("LEGACY_CONTRACT_ADDRESS").ok().filter(|s| !s.trim().is_empty()) {
+                Some(a) => Some(parse("LEGACY_CONTRACT_ADDRESS", &a)?),
+                None => None,
+            },
             chain_id: parse("CHAIN_ID", &var_or("CHAIN_ID", "11155111"))?,
             start_block: parse("START_BLOCK", &var("START_BLOCK")?)?,
             log_block_range: parse("LOG_BLOCK_RANGE", &var_or("LOG_BLOCK_RANGE", "500"))?,
@@ -59,6 +70,12 @@ impl Config {
             telegram_bot_token: std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty()),
             telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty()),
             telegram_api_url: var_or("TELEGRAM_API_URL", "https://api.telegram.org"),
+            telegram_proxy: match std::env::var("TELEGRAM_PROXY").ok().filter(|s| !s.is_empty()) {
+                // Checked here so a typo stops the server instead of silencing the alerts.
+                // The error leaves the value out: it may hold a password.
+                Some(p) => Some(reqwest::Proxy::all(&p).map(|_| p).map_err(|_| anyhow::anyhow!("TELEGRAM_PROXY is not a valid proxy URL"))?),
+                None => None,
+            },
             alert_thresholds: crate::monitor::Thresholds {
                 free_percent: parse("ALERT_FREE_PERCENT", &var_or("ALERT_FREE_PERCENT", "15"))?,
                 critical_percent: parse("ALERT_CRITICAL_PERCENT", &var_or("ALERT_CRITICAL_PERCENT", "5"))?,

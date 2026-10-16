@@ -121,7 +121,7 @@ struct Me {
 }
 
 async fn me(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Me>> {
-    let tokens = st.chain.tokens_of_owner(user.0).await?;
+    let tokens = crate::vaults::drives_of(&st, user.0).await?;
     let ids: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
     let mut votes = BTreeMap::new();
     for id in &ids {
@@ -148,7 +148,7 @@ async fn create(State(st): State<AppState>, user: AuthUser, Json(req): Json<NewI
     if body.chars().count() > MAX_BODY {
         return Err(AppError::bad(format!("description must be at most {MAX_BODY} characters")));
     }
-    if st.chain.tokens_of_owner(user.0).await?.is_empty() {
+    if crate::vaults::drives_of(&st, user.0).await?.is_empty() {
         return Err(AppError::Forbidden);
     }
     if let Err(retry) = st.limiter.check(ratelimit::IDEA_CREATE, &lower(&user.0)) {
@@ -201,7 +201,7 @@ async fn vote(State(st): State<AppState>, user: AuthUser, Path(id): Path<i64>, J
     if author == lower(&user.0) && req.choice != "withdraw" {
         return Err(AppError::bad("you cannot vote on your own idea"));
     }
-    let tokens = st.chain.tokens_of_owner(user.0).await?;
+    let tokens = crate::vaults::drives_of(&st, user.0).await?;
     if tokens.is_empty() {
         return Err(AppError::Forbidden);
     }

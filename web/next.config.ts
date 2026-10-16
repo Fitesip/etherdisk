@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
-import { sepolia } from "viem/chains";
+import { mainnet, sepolia } from "viem/chains";
 
 const isDev = process.env.NODE_ENV === "development";
+// Same rule as src/lib/chain.ts: mainnet when NEXT_PUBLIC_CHAIN_ID=1, Sepolia otherwise.
+const chain = process.env.NEXT_PUBLIC_CHAIN_ID === "1" ? mainnet : sepolia;
 const origin = (url: string | undefined) => {
   try {
     return url ? new URL(url).origin : "";
@@ -15,7 +17,7 @@ const origin = (url: string | undefined) => {
 const connect = [
   "'self'",
   origin(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"),
-  ...(process.env.NEXT_PUBLIC_RPC_URL || sepolia.rpcUrls.default.http[0]).split(",").map((u) => origin(u.trim())),
+  ...(process.env.NEXT_PUBLIC_RPC_URL || chain.rpcUrls.default.http[0]).split(",").map((u) => origin(u.trim())),
   // WalletConnect relay and verify API.
   "https://*.walletconnect.com",
   "wss://*.walletconnect.com",
@@ -23,6 +25,9 @@ const connect = [
   "wss://*.walletconnect.org",
   "https://*.reown.com",
   "wss://*.reown.com",
+  // The WalletConnect modal's wallet list and wallet logos.
+  "https://api.web3modal.org",
+  "https://api.web3modal.com",
   ...(isDev ? ["ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"] : []),
 ].filter(Boolean);
 
@@ -33,11 +38,12 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data:",
+  // Wallet logos in the WalletConnect modal (fetched as blobs, some as plain images).
+  "img-src 'self' blob: data: https://*.walletconnect.com https://*.walletconnect.org https://*.reown.com https://api.web3modal.org https://imagedelivery.net",
   "media-src 'self' blob:",
-  "font-src 'self'",
+  "font-src 'self' https://fonts.reown.com",
   `connect-src ${connect.join(" ")}`,
-  "frame-src 'self' blob: https://verify.walletconnect.com https://verify.walletconnect.org",
+  "frame-src 'self' blob: https://verify.walletconnect.com https://verify.walletconnect.org https://secure.walletconnect.org https://secure.walletconnect.com",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "object-src 'none'",
@@ -47,6 +53,8 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // The Docker image runs the self-contained server (deploy/web.Dockerfile sets NEXT_OUTPUT).
+  ...(process.env.NEXT_OUTPUT === "standalone" && { output: "standalone" as const }),
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
@@ -55,6 +63,8 @@ const nextConfig: NextConfig = {
         loaders: ["@tailwindcss/turbopack"],
         as: "*.css",
       },
+      // Legal texts (src/legal/*.md) are imported as strings.
+      "*.md": { type: "text" },
     },
   },
   async headers() {

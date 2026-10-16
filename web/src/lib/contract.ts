@@ -3,6 +3,15 @@ import { CONTRACT_ADDRESS } from "./config";
 /** The parts of Etherdisk (ERC-721) the frontend uses. Ownership/capacity reads go through the backend. */
 export const vaultNftAbi = [
   {
+    type: "event",
+    name: "DriveMinted",
+    inputs: [
+      { name: "tokenId", type: "uint256", indexed: true },
+      { name: "owner", type: "address", indexed: true },
+      { name: "tierId", type: "uint256", indexed: true },
+    ],
+  },
+  {
     type: "function",
     name: "tierCount",
     stateMutability: "view",

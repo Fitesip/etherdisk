@@ -2,7 +2,6 @@
 pragma solidity 0.8.28;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
@@ -11,11 +10,13 @@ import {EtherdiskArt} from "./EtherdiskArt.sol";
 /// @title Etherdisk
 /// @notice Each token is an encrypted storage drive. The token's tier defines its capacity in GB.
 ///         The contract only proves ownership and capacity; files and keys live off-chain.
-///         Transfers are plain ERC-721 transfers (no restrictions).
+///         Transfers are plain ERC-721 transfers (no restrictions). There is no on-chain
+///         per-owner enumeration (it made every mint and transfer cost more): lists of a
+///         wallet's drives come from `Transfer` events, and access always checks `ownerOf`.
 ///         Mint payments go straight to the contract owner; if that transfer fails they stay
 ///         here for `withdraw`. Ownership moves in two steps (the new owner accepts), and it
 ///         can't be renounced: a typo or a slip can't leave the contract without an owner.
-contract Etherdisk is ERC721Enumerable, Ownable2Step {
+contract Etherdisk is ERC721, Ownable2Step {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
         uint256 price; // wei, can be updated for future mints
@@ -104,13 +105,9 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
         return _tiers[_tokenTier[tokenId]].capacityGb;
     }
 
-    /// @notice All tokens owned by `account` (for rendering them as separate disks).
-    function tokensOfOwner(address account) external view returns (uint256[] memory ids) {
-        uint256 n = balanceOf(account);
-        ids = new uint256[](n);
-        for (uint256 i; i < n; ++i) {
-            ids[i] = tokenOfOwnerByIndex(account, i);
-        }
+    /// @notice Number of drives minted; ids run from 1 to this (tokens are never burned).
+    function totalSupply() external view returns (uint256) {
+        return _nextTokenId - 1;
     }
 
     /// @notice Fully on-chain metadata: name, capacity attributes and an SVG image.
@@ -139,6 +136,7 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
 
     function setOperator(address operator, bool enabled) external onlyOwner {
         if (operator == address(0)) revert ZeroAddress();
+        // forge-lint: disable-next-line(missing-events-access-control) OperatorSet follows
         isOperator[operator] = enabled;
         emit OperatorSet(operator, enabled);
     }
@@ -179,6 +177,7 @@ contract Etherdisk is ERC721Enumerable, Ownable2Step {
     }
 
     function _setTier(uint256 tierId, uint32 capacityGb, uint256 price, bool active) private {
+        // forge-lint: disable-next-line(require-revert-in-loop) checks the constructor's tiers
         if (capacityGb == 0) revert ZeroCapacity();
         _tiers[tierId] = Tier(capacityGb, price, active);
         emit TierAdded(tierId, capacityGb, price);

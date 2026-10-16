@@ -17,6 +17,7 @@ pub mod range;
 pub mod ratelimit;
 pub mod shares;
 pub mod storage;
+pub mod tiers;
 pub mod volumes;
 pub mod vaults;
 
@@ -90,8 +91,30 @@ pub async fn connect_db(url: &str) -> anyhow::Result<SqlitePool> {
 }
 
 /// Ties the database to one deployment; the first start adopts the configured contract.
-pub async fn bind_deployment(db: &SqlitePool, contract: alloy::primitives::Address, chain_id: u64) -> anyhow::Result<()> {
+/// A database of `legacy` moves on to its successor `contract` (docs/MIGRATION.md): drives
+/// keep their ids, so their files stay theirs. Mint counts per tier start over, since tier
+/// ids belong to a contract.
+pub async fn bind_deployment(
+    db: &SqlitePool,
+    contract: alloy::primitives::Address,
+    chain_id: u64,
+    legacy: Option<alloy::primitives::Address>,
+) -> anyhow::Result<()> {
     let contract = format!("{contract:#x}");
+    if let Some(legacy) = legacy {
+        let legacy = format!("{legacy:#x}");
+        let moved = sqlx::query("UPDATE deployment SET contract = ? WHERE id = 1 AND contract = ? AND chain_id = ?")
+            .bind(&contract)
+            .bind(&legacy)
+            .bind(chain_id as i64)
+            .execute(db)
+            .await?
+            .rows_affected();
+        if moved > 0 {
+            sqlx::query("DELETE FROM tier_mints").execute(db).await?;
+            tracing::info!(%legacy, successor = %contract, "database moved on to the successor contract");
+        }
+    }
     sqlx::query("INSERT OR IGNORE INTO deployment (id, contract, chain_id) VALUES (1, ?, ?)")
         .bind(&contract)
         .bind(chain_id as i64)
@@ -112,6 +135,7 @@ pub fn router(state: AppState) -> Router {
     let public = shares::routes()
         .merge(handover::routes())
         .merge(ideas::routes())
+        .merge(tiers::routes())
         .route_layer(from_fn_with_state(state.clone(), ratelimit::public));
     let rest = vaults::routes()
         .merge(objects::routes())

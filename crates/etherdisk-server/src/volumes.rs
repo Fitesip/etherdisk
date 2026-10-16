@@ -77,6 +77,9 @@ pub struct VolumeStore {
     placed: Mutex<HashMap<String, usize>>,
 }
 
+/// Differences in free space smaller than this don't decide where a new vault goes.
+const FREE_SPACE_TIE: u64 = 1 << 30;
+
 impl VolumeStore {
     pub async fn open(dirs: &[PathBuf], db: SqlitePool) -> anyhow::Result<Self> {
         anyhow::ensure!(!dirs.is_empty(), "DATA_DIR is empty");
@@ -152,7 +155,9 @@ impl VolumeStore {
         Ok(Some(&self.volumes[i]))
     }
 
-    /// The vault's volume; a new vault goes where the most space is free (fewest vaults on a tie).
+    /// The vault's volume; a new vault goes where the most space is free. Free space within
+    /// `FREE_SPACE_TIE` counts as equal (volumes on one disk, or a disk others keep writing
+    /// to, never read exactly the same): then the volume with the fewest vaults wins.
     async fn place(&self, token: &str) -> io::Result<&Volume> {
         if let Some(v) = self.find(token).await? {
             return Ok(v);
@@ -162,7 +167,13 @@ impl VolumeStore {
             let v = self.volumes.iter().find(|v| v.id == info.id).expect("info lists configured volumes");
             let better = match best {
                 None => true,
-                Some((free, vaults, _)) => info.available_bytes > free || (info.available_bytes == free && info.vaults < vaults),
+                Some((free, vaults, _)) => {
+                    if info.available_bytes.abs_diff(free) < FREE_SPACE_TIE {
+                        info.vaults < vaults
+                    } else {
+                        info.available_bytes > free
+                    }
+                }
             };
             if better {
                 best = Some((info.available_bytes, info.vaults, v));

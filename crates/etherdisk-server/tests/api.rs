@@ -19,7 +19,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use etherdisk_crypto::{encrypt_file, FileHeader, KdfParams, Vault};
-use etherdisk_server::chain::{Chain, Ownership};
+use etherdisk_server::chain::{Chain, Ownership, WithLegacy};
 use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{bind_deployment, connect_db, indexer, AppState, Config};
 
@@ -48,12 +48,6 @@ impl Chain for FakeChain {
     async fn capacity_gb(&self, id: U256) -> anyhow::Result<Option<u32>> {
         Ok(self.tokens.lock().unwrap().get(&id).map(|t| t.1))
     }
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>> {
-        let mut ids: Vec<U256> =
-            self.tokens.lock().unwrap().iter().filter(|(_, t)| t.0 == owner).map(|(id, _)| *id).collect();
-        ids.sort();
-        Ok(ids)
-    }
     async fn contract_owner(&self) -> anyhow::Result<Address> {
         Ok(*self.admin.lock().unwrap())
     }
@@ -66,6 +60,8 @@ struct App {
     router: Router,
     state: AppState,
     chain: Arc<FakeChain>,
+    /// The legacy contract, read only when `legacy_contract_address` is configured.
+    legacy: Arc<FakeChain>,
     data_dir: tempfile::TempDir,
 }
 
@@ -81,6 +77,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         data_dirs: vec![data_dir.path().join("blobs")],
         rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
+        legacy_contract_address: None,
         chain_id: CHAIN_ID,
         start_block: 0,
         log_block_range: 500,
@@ -92,6 +89,7 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         telegram_bot_token: None,
         telegram_chat_id: None,
         telegram_api_url: String::new(),
+        telegram_proxy: None,
         alert_thresholds: etherdisk_server::monitor::Thresholds {
             free_percent: 15,
             critical_percent: 5,
@@ -105,9 +103,14 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     let db = connect_db(&config.database_url).await.unwrap();
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap());
     let chain = Arc::new(FakeChain::default());
+    let legacy = Arc::new(FakeChain::default());
+    let reads: Arc<dyn Chain> = match config.legacy_contract_address {
+        Some(_) => Arc::new(WithLegacy { current: chain.clone(), current_address: config.contract_address, legacy: legacy.clone() }),
+        None => chain.clone(),
+    };
     // TTL 0: every request sees the fake chain's current state.
-    let state = AppState::new(db, store, Ownership::new(chain.clone(), Duration::ZERO), config);
-    App { router: etherdisk_server::router(state.clone()), state, chain, data_dir }
+    let state = AppState::new(db, store, Ownership::new(reads, Duration::ZERO), config);
+    App { router: etherdisk_server::router(state.clone()), state, chain, legacy, data_dir }
 }
 
 struct Resp {
@@ -123,6 +126,12 @@ impl Resp {
 }
 
 impl App {
+    /// Mints on the fake chain and records the owner as the indexer would.
+    async fn mint(&self, id: u64, owner: Address, gb: u32) {
+        self.chain.mint(id, owner, gb);
+        indexer::on_transfer(&self.state, Address::ZERO, owner, U256::from(id)).await.unwrap();
+    }
+
     async fn req(&self, method: Method, uri: &str, token: Option<&str>, body: Body, ctype: &str, extra: &[(&str, &str)]) -> Resp {
         let mut b = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, ctype);
         if let Some(t) = token {
@@ -260,8 +269,8 @@ async fn siwe_rejects_replay_wrong_domain_and_unknown_nonce() {
 async fn key_blob_lifecycle_and_ownership() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 4);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 4).await;
     let (ta, tb) = (app.login(&alice).await, app.login(&bob).await);
 
     let list = app.get("/api/vaults", Some(&ta)).await.json();
@@ -303,7 +312,7 @@ async fn key_blob_lifecycle_and_ownership() {
 async fn upload_download_and_range() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let plain: Vec<u8> = (0..1000u32).map(|i| (i * 31) as u8).collect();
@@ -340,7 +349,7 @@ async fn upload_download_and_range() {
 async fn upload_validation_and_rollback() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _blob) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -390,7 +399,7 @@ async fn upload_validation_and_rollback() {
 async fn quota_counts_reservations() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let gb = 1u64 << 30;
     let create = |size: u64| json!({ "id": Uuid::new_v4(), "metadata": "AA==", "size": size });
@@ -407,7 +416,7 @@ async fn quota_counts_reservations() {
 async fn folders_move_and_recursive_delete() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -449,8 +458,8 @@ async fn folders_move_and_recursive_delete() {
 async fn folder_path_for_breadcrumbs() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let folder = |id: Uuid, parent: Option<Uuid>| json!({ "id": id, "parent_id": parent, "metadata": "AA==" });
@@ -471,7 +480,7 @@ async fn folder_path_for_breadcrumbs() {
 async fn vault_profile() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
 
     let v = app.get("/api/vaults/1", Some(&t)).await.json();
@@ -488,12 +497,56 @@ async fn vault_profile() {
 b" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "fill": "red" })).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(put(json!({ "fill": "#12345g" })).await.status, StatusCode::BAD_REQUEST);
-    // Null/blank resets to defaults.
+    // Fields left out keep their value; null/blank resets to defaults.
     let r = put(json!({ "name": " ", "stroke": null })).await.json();
-    assert!(r["name"].is_null() && r["stroke"].is_null() && r["fill"].is_null());
+    assert!(r["name"].is_null() && r["stroke"].is_null());
+    assert_eq!(r["fill"], "#112233", "a field left out is kept");
+    let r = put(json!({ "fill": null })).await.json();
+    assert!(r["fill"].is_null());
+
+    // Icon and cover: ids from the app's sets.
+    let r = put(json!({ "icon": "camera", "cover": "waves-2", "cover_color": "#F97316" })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["cover_color"], "#f97316");
+    assert_eq!((r.json()["icon"].clone(), r.json()["cover"].clone()), (json!("camera"), json!("waves-2")));
+    assert_eq!(put(json!({ "cover_color": "orange" })).await.status, StatusCode::BAD_REQUEST);
+    // An app from before icons and covers saves just the name: the look stays.
+    let kept = put(json!({ "name": "Photos", "stroke": null, "fill": null })).await.json();
+    assert_eq!((kept["icon"].clone(), kept["cover"].clone(), kept["cover_color"].clone()), (json!("camera"), json!("waves-2"), json!("#f97316")));
+    let reset = put(json!({ "icon": null, "cover": null, "cover_color": null })).await.json();
+    assert!(reset["icon"].is_null() && reset["cover"].is_null() && reset["cover_color"].is_null());
+    assert_eq!(put(json!({ "icon": "Camera" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "cover": "<svg>" })).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(json!({ "icon": "a".repeat(33) })).await.status, StatusCode::BAD_REQUEST);
 
     let tb = app.login(&bob).await;
     assert_eq!(app.json(Method::PUT, "/api/vaults/1/profile", Some(&tb), json!({ "name": "mine" })).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn vault_prefs_are_the_holders_and_go_with_a_format() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(1, alice.address(), 1).await;
+    let t = app.login(&alice).await;
+    let get = || app.get("/api/vaults/1/prefs", Some(&t));
+    assert_eq!(get().await.json(), json!({ "blob": null }));
+
+    let put = |blob: Value| app.json(Method::PUT, "/api/vaults/1/prefs", Some(&t), json!({ "blob": blob }));
+    assert_eq!(put(json!(b64(b"sealed labels"))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(get().await.json()["blob"], b64(b"sealed labels"));
+    assert_eq!(put(json!(b64(&vec![0; 64 * 1024 + 1]))).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(get().await.json()["blob"], b64(b"sealed labels"), "a rejected write keeps the old prefs");
+
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults/1/prefs", Some(&tb)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.json(Method::PUT, "/api/vaults/1/prefs", Some(&tb), json!({ "blob": b64(b"x") })).await.status, StatusCode::FORBIDDEN);
+
+    app.json(Method::POST, "/api/vaults/1/reset", Some(&t), json!({ "confirm": "DELETE" })).await;
+    assert_eq!(get().await.json(), json!({ "blob": null }), "a format drops them with the key");
+    assert_eq!(put(json!(b64(b"new"))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(put(json!(null)).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(get().await.json(), json!({ "blob": null }));
 }
 
 #[tokio::test]
@@ -501,18 +554,89 @@ async fn database_is_bound_to_one_contract() {
     let dir = tempfile::tempdir().unwrap();
     let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
     let (a, b) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
-    bind_deployment(&db, a, 1).await.unwrap();
-    bind_deployment(&db, a, 1).await.unwrap(); // restart: fine
-    let err = bind_deployment(&db, b, 1).await.unwrap_err().to_string();
+    bind_deployment(&db, a, 1, None).await.unwrap();
+    bind_deployment(&db, a, 1, None).await.unwrap(); // restart: fine
+    let err = bind_deployment(&db, b, 1, None).await.unwrap_err().to_string();
     assert!(err.contains("DATABASE_URL"), "{err}");
-    assert!(bind_deployment(&db, a, 2).await.is_err(), "other chain");
+    assert!(bind_deployment(&db, a, 2, None).await.is_err(), "other chain");
+}
+
+#[tokio::test]
+async fn a_database_moves_on_to_the_successor_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
+    let (legacy, successor, other) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb), Address::repeat_byte(0xcc));
+    bind_deployment(&db, legacy, 1, None).await.unwrap();
+    sqlx::query("INSERT INTO tier_mints (token_id, tier_id) VALUES ('1', 0)").execute(&db).await.unwrap();
+    // Only from the contract the database belongs to, on the same chain.
+    assert!(bind_deployment(&db, successor, 1, Some(other)).await.is_err(), "not this database's contract");
+    assert!(bind_deployment(&db, successor, 2, Some(legacy)).await.is_err(), "other chain");
+    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
+    let bound: String = sqlx::query_scalar("SELECT contract FROM deployment").fetch_one(&db).await.unwrap();
+    assert_eq!(bound, format!("{successor:#x}"));
+    let mints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tier_mints").fetch_one(&db).await.unwrap();
+    assert_eq!(mints, 0, "tier ids belong to a contract: the counts start over");
+    // Restarts keep working, with or without the legacy address.
+    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
+    bind_deployment(&db, successor, 1, None).await.unwrap();
+}
+
+/// The swap of docs/MIGRATION.md: a legacy drive becomes the successor's drive with the same
+/// id, and keeps its files, key, recovery key and links.
+#[tokio::test]
+async fn a_swapped_drive_keeps_its_data() {
+    let (legacy_addr, successor) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+    let app = app_with(|c| {
+        c.contract_address = successor;
+        c.legacy_contract_address = Some(legacy_addr);
+    })
+    .await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+
+    // A drive minted before the successor existed works from the legacy contract.
+    app.legacy.mint(1, alice.address(), 4);
+    indexer::on_legacy_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
+    let ta = app.login(&alice).await;
+    let (_vault, file, ct) = setup_vault_with_file(&app, &ta, b"kept").await;
+    let r = app
+        .json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" }))
+        .await;
+    let sid = r.json()["id"].as_str().unwrap().to_owned();
+    let before = app.get("/api/vaults", Some(&ta)).await.json();
+    assert_eq!(before[0]["capacity_bytes"], 4u64 << 30);
+
+    // The swap: the legacy token goes to the successor, which mints the same id to Alice.
+    app.legacy.transfer(1, successor);
+    indexer::on_legacy_transfer(&app.state, alice.address(), successor, U256::from(1)).await.unwrap();
+    app.chain.mint(1, alice.address(), 4);
+    indexer::on_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
+
+    assert_eq!(app.get("/api/vaults", Some(&ta)).await.json(), before, "same drive, same look and usage");
+    let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
+    assert_eq!(key["needs_new_key"], false, "the swap is no change of hands");
+    assert_eq!(app.get(&format!("/api/vaults/1/files/{file}/content"), Some(&ta)).await.body, ct);
+    assert_eq!(app.get(&format!("/api/shares/{sid}/files/{file}/content"), None).await.body, ct, "links still work");
+
+    // Afterwards, a sale on the successor is a change of hands as usual.
+    app.chain.transfer(1, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::NOT_FOUND);
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults", Some(&tb)).await.json().as_array().unwrap().len(), 1);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::FORBIDDEN);
+
+    // A legacy drive sent to the successor with a plain transfer (no swap) is nobody's until
+    // the successor's owner rescues it: its old holder no longer opens it.
+    app.legacy.mint(2, alice.address(), 1);
+    app.legacy.transfer(2, successor);
+    assert_eq!(app.get("/api/vaults/2", Some(&ta)).await.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn trash_restore_and_purge() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
 
@@ -574,7 +698,7 @@ async fn trash_restore_and_purge() {
 async fn unfinished_uploads_can_be_listed_and_resumed() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (vault, _) = Vault::create_with_params("p", FAST).unwrap();
     let ct = encrypt(&vault, &[7u8; 5000], 1024);
@@ -617,7 +741,7 @@ async fn unfinished_uploads_can_be_listed_and_resumed() {
 async fn share_expiry_and_trashed_files() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_vault, file, _) = setup_vault_with_file(&app, &t, b"shared").await;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -661,6 +785,43 @@ async fn new_owner_is_not_turned_away_by_a_stale_cache() {
     assert!(owners.require_owner(U256::from(1), alice).await.is_err(), "and the cache now knows");
 }
 
+/// A previous owner whose check still sees them as the holder (cached owner, lagging RPC
+/// node) must not take the drive back from the new owner's list.
+#[tokio::test]
+async fn a_stale_owner_does_not_overwrite_the_recorded_holder() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(1, alice.address(), 1).await;
+    let ta = app.login(&alice).await;
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
+
+    // The indexer saw the transfer; Alice's next check still hits a node that hasn't.
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
+
+    // The node catches up; nothing else happens on chain.
+    app.chain.transfer(1, bob.address());
+    let tb = app.login(&bob).await;
+    let list = app.get("/api/vaults", Some(&tb)).await.json();
+    assert_eq!(list.as_array().unwrap().len(), 1, "Bob's list has the drive: {list}");
+}
+
+// ------------------------------------------------------------ tier stats
+
+#[tokio::test]
+async fn tier_stats_count_mints_per_tier() {
+    let app = app().await;
+    assert_eq!(app.get("/api/tiers/stats", None).await.json(), json!([]));
+    for (token, tier) in [(1, 1), (2, 1), (3, 0), (4, 1)] {
+        indexer::on_mint(&app.state, U256::from(token), U256::from(tier)).await.unwrap();
+    }
+    // The same event seen twice (a backfill replay) counts once.
+    indexer::on_mint(&app.state, U256::from(2), U256::from(1)).await.unwrap();
+    let r = app.get("/api/tiers/stats", None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json(), json!([{ "tier_id": 0, "minted": 1 }, { "tier_id": 1, "minted": 3 }]));
+}
+
 // ------------------------------------------------------------ rate limits & ideas
 
 #[tokio::test]
@@ -691,10 +852,10 @@ async fn ideas_board_one_vote_per_nft() {
     let signers: Vec<PrivateKeySigner> = (0..5).map(|_| PrivateKeySigner::random()).collect();
     let [alice, bob, carol, admin, nobody] = <[PrivateKeySigner; 5]>::try_from(signers).unwrap();
     *app.chain.admin.lock().unwrap() = admin.address();
-    app.chain.mint(1, alice.address(), 1);
-    app.chain.mint(2, alice.address(), 1);
-    app.chain.mint(3, bob.address(), 1);
-    app.chain.mint(4, carol.address(), 1);
+    app.mint(1, alice.address(), 1).await;
+    app.mint(2, alice.address(), 1).await;
+    app.mint(3, bob.address(), 1).await;
+    app.mint(4, carol.address(), 1).await;
     let (ta, tb, tc) = (app.login(&alice).await, app.login(&bob).await, app.login(&carol).await);
     let (tadm, tn) = (app.login(&admin).await, app.login(&nobody).await);
 
@@ -791,7 +952,7 @@ async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
     let app = app_with(|c| c.ideas_admins = vec![moderator.address()]).await;
     // The contract owner is someone else (a multisig, say).
     *app.chain.admin.lock().unwrap() = Address::repeat_byte(0x5a);
-    app.chain.mint(1, author.address(), 1);
+    app.mint(1, author.address(), 1).await;
     let (tm, ta, ts) = (app.login(&moderator).await, app.login(&author).await, app.login(&stranger).await);
     let id = app.json(Method::POST, "/api/ideas", Some(&ta), json!({ "title": "Dark mode" })).await.json()["id"].as_i64().unwrap();
 
@@ -813,7 +974,7 @@ async fn configured_wallets_moderate_ideas_besides_the_contract_owner() {
 async fn a_new_owner_is_asked_for_a_new_key() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let (vault, _, _) = setup_vault_with_file(&app, &ta, b"x").await;
     let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
@@ -858,13 +1019,43 @@ async fn a_new_owner_is_asked_for_a_new_key() {
     assert_eq!(app.get("/api/vaults/1/key", Some(&ta)).await.json()["needs_new_key"], true);
 }
 
+// ------------------------------------------------------------ drive lists
+
+#[tokio::test]
+async fn drive_lists_follow_transfer_events_and_ownerof() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    app.mint(2, alice.address(), 1).await;
+    app.mint(10, alice.address(), 4).await;
+    let (ta, tb) = (app.login(&alice).await, app.login(&bob).await);
+    let ids = |v: Value| v.as_array().unwrap().iter().map(|d| d["token_id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(ids(app.get("/api/vaults", Some(&ta)).await.json()), ["2", "10"], "by number, not as text");
+
+    // The token moves on chain before the indexer sees it: alice stops seeing it at once
+    // (ownerOf), bob sees it once the event is processed.
+    app.chain.transfer(10, bob.address());
+    assert_eq!(ids(app.get("/api/vaults", Some(&ta)).await.json()), ["2"]);
+    assert!(ids(app.get("/api/vaults", Some(&tb)).await.json()).is_empty());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(10)).await.unwrap();
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10"]);
+
+    // A drive just minted: opening it (ownerOf checked) lists it without waiting for the indexer.
+    app.chain.mint(11, bob.address(), 1);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10"]);
+    assert_eq!(app.get("/api/vaults/11", Some(&tb)).await.status, StatusCode::OK);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10", "11"]);
+    // Someone else's drive can't be claimed that way.
+    assert_eq!(app.get("/api/vaults/2", Some(&tb)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(ids(app.get("/api/vaults", Some(&tb)).await.json()), ["10", "11"]);
+}
+
 // ------------------------------------------------------------ recovery key
 
 #[tokio::test]
 async fn recovery_key_is_per_holder_and_dropped_on_transfer() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let url = "/api/vaults/1/recovery";
     let key = etherdisk_crypto::RecoveryKey::generate().unwrap();
@@ -957,7 +1148,7 @@ async fn inbox_keys_are_bound_to_the_wallet() {
 async fn drive_key_handover() {
     let app = app().await;
     let (alice, bob, carol, dave) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     setup_vault_with_file(&app, &ta, b"x").await;
     let sealed = b64(&[9u8; etherdisk_server::handover::SEALED_LEN]);
@@ -1027,7 +1218,7 @@ async fn drive_key_handover() {
 async fn transfer_without_the_key_asks_for_nothing() {
     let app = app().await;
     let (alice, bob, carol) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     setup_vault_with_file(&app, &ta, b"x").await;
 
@@ -1056,7 +1247,7 @@ async fn transfer_without_the_key_asks_for_nothing() {
 async fn share_links_and_transfer_revocation() {
     let app = app().await;
     let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let ta = app.login(&alice).await;
     let (vault, shared, ct) = setup_vault_with_file(&app, &ta, b"shared content").await;
     let (private, _) = upload(&app, &ta, &vault, None, b"private").await;
@@ -1102,7 +1293,7 @@ async fn share_links_and_transfer_revocation() {
 async fn indexer_revokes_links_on_transfer_event() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_, f, _) = setup_vault_with_file(&app, &t, b"x").await;
     let body = json!({ "object_ids": [f], "manifest": "AA==", "owner_metadata": "AA==" });
@@ -1121,7 +1312,7 @@ async fn indexer_revokes_links_on_transfer_event() {
 async fn reset_wipes_everything() {
     let app = app().await;
     let alice = PrivateKeySigner::random();
-    app.chain.mint(1, alice.address(), 1);
+    app.mint(1, alice.address(), 1).await;
     let t = app.login(&alice).await;
     let (_, f, _) = setup_vault_with_file(&app, &t, b"gone").await;
 

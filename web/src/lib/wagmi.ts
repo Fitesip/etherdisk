@@ -1,13 +1,14 @@
+import type { Transport } from "viem";
 import { createConfig, fallback, http } from "wagmi";
-import { sepolia } from "wagmi/chains";
 import { injected, walletConnect } from "wagmi/connectors";
 
+import { CHAIN } from "./chain";
 import { RPC_URLS, WC_PROJECT_ID } from "./config";
 
 // Browser wallets (MetaMask, Rabby, ...) are discovered via EIP-6963 automatically;
 // `injected()` is the fallback for wallets that don't announce themselves.
 export const wagmiConfig = createConfig({
-  chains: [sepolia],
+  chains: [CHAIN],
   connectors: [
     injected(),
     ...(WC_PROJECT_ID
@@ -18,18 +19,19 @@ export const wagmiConfig = createConfig({
               name: "Etherdisk",
               description: "Encrypted storage you own as an NFT",
               url: typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
-              icons: [],
+              // Shown by the wallet next to connection and signature requests.
+              icons: typeof window === "undefined" ? [] : [`${window.location.origin}/icons/icon-192.png`],
             },
           }),
         ]
       : []),
   ],
   // Several endpoints: the next one takes over when one fails.
-  transports: { [sepolia.id]: RPC_URLS.length ? fallback(RPC_URLS.map((url) => http(url))) : http() },
+  transports: { [CHAIN.id]: RPC_URLS.length ? fallback(RPC_URLS.map((url) => http(url))) : http() } as Record<typeof CHAIN.id, Transport>,
   ssr: true,
 });
 
-export const CHAIN = sepolia;
+export { CHAIN };
 
 declare module "wagmi" {
   interface Register {

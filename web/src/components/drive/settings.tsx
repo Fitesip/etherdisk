@@ -10,6 +10,7 @@ import { useConnection, usePublicClient, useWaitForTransactionReceipt, useWriteC
 
 import { useT } from "@/i18n";
 import { api, type VaultInfo } from "@/lib/api";
+import { explorerNftUrl } from "@/lib/chain";
 import { CONTRACT_ADDRESS } from "@/lib/config";
 import { vaultNft } from "@/lib/contract";
 import { sealDriveKey, verifiedInbox } from "@/lib/inbox";
@@ -279,7 +280,7 @@ export function DriveSettingsPanel({ token, info }: { token: string; info: Vault
           <dt className="text-muted">{t("driveSettings.contract")}</dt>
           <dd>
             <a
-              href={`https://sepolia.etherscan.io/nft/${CONTRACT_ADDRESS}/${tokenId}`}
+              href={explorerNftUrl(CONTRACT_ADDRESS, tokenId)}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 font-mono text-accent hover:underline"

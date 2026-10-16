@@ -8,7 +8,7 @@ import type { Address } from "viem";
 import { createSiweMessage } from "viem/siwe";
 import { useConnection, useSignMessage } from "wagmi";
 
-import { api, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, UNAUTHORIZED_EVENT } from "./api";
 import { readStored, useStored, writeStored } from "./storage";
 import { CHAIN } from "./wagmi";
 
@@ -33,13 +33,19 @@ interface Session {
   token: string | null;
   signIn: () => Promise<void>;
   signingIn: boolean;
+  /** Why the last sign-in failed ("rejected": the wallet declined), or null. */
+  signInError: "rejected" | string | null;
+  /** Signing goes through WalletConnect: the request waits in the wallet app. */
+  viaWalletConnect: boolean;
   signOut: () => void;
 }
 
 const SessionContext = createContext<Session | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const { address } = useConnection();
+  const { address, connector } = useConnection();
+  const viaWalletConnect = connector?.type === "walletConnect";
+  const [signInError, setSignInError] = useState<string | null>(null);
   const signMessage = useSignMessage();
   const raw = useStored(address ? storageKey(address) : null);
   const token = useMemo(() => parse(raw), [raw]);
@@ -63,6 +69,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async () => {
     if (!address) return;
     setSigningIn(true);
+    setSignInError(null);
     try {
       const { nonce } = await api.nonce();
       const message = createSiweMessage({
@@ -74,19 +81,59 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         chainId: CHAIN.id,
         nonce,
       });
-      const signature = await signMessage.mutateAsync({ message });
+      const signing = signMessage.mutateAsync({ message });
+      // WalletConnect only relays the request: on a phone, bring the wallet app up for it.
+      if (viaWalletConnect && connector) void openWalletApp(connector);
+      const signature = await signing;
       const s = await api.verify(message, signature);
       writeStored(storageKey(address), JSON.stringify({ token: s.token, expiresAt: s.expires_at } satisfies Stored));
+    } catch (e) {
+      setSignInError(isRejection(e) ? "rejected" : errorReason(e));
+      throw e;
     } finally {
       setSigningIn(false);
     }
-  }, [address, signMessage]);
+  }, [address, signMessage, viaWalletConnect, connector]);
 
   const value = useMemo(
-    () => ({ address, token, signIn, signingIn, signOut }),
-    [address, token, signIn, signingIn, signOut],
+    () => ({ address, token, signIn, signingIn, signInError, viaWalletConnect, signOut }),
+    [address, token, signIn, signingIn, signInError, viaWalletConnect, signOut],
   );
   return <SessionContext value={value}>{children}</SessionContext>;
+}
+
+/** A short reason, never empty (a gateway error such as 502 comes without a message). */
+function errorReason(e: unknown): string {
+  const first = e instanceof Error ? e.message.split("\n")[0].trim() : String(e ?? "").trim();
+  if (e instanceof ApiError) return first ? `${first} (HTTP ${e.status})` : `the server didn't answer (HTTP ${e.status})`;
+  return first || "unknown error";
+}
+
+/** The wallet declined (EIP-1193 code 4001, or viem's UserRejectedRequestError). */
+function isRejection(e: unknown): boolean {
+  for (let err = e as { code?: number; name?: string; cause?: unknown } | undefined; err; err = err.cause as typeof err) {
+    if (err.code === 4001 || err.name === "UserRejectedRequestError") return true;
+  }
+  return false;
+}
+
+/**
+ * On a phone, opens the wallet app a WalletConnect session belongs to (its deep link from
+ * the session's metadata), so a pending request shows up there. Does nothing on desktop:
+ * the request reaches the phone that scanned the QR code by itself.
+ */
+async function openWalletApp(connector: { getProvider: () => Promise<unknown> }) {
+  if (!matchMedia("(pointer: coarse)").matches) return;
+  try {
+    const provider = (await connector.getProvider()) as {
+      session?: { peer?: { metadata?: { redirect?: { native?: string; universal?: string } } } };
+    };
+    const redirect = provider.session?.peer?.metadata?.redirect;
+    const link = redirect?.native || redirect?.universal;
+    if (link) window.location.href = link;
+  } catch {
+    // No deep link: the user opens the wallet app themselves (the hint says so).
+  }
 }
 
 export function useSession(): Session {

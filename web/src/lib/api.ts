@@ -63,6 +63,11 @@ export interface VaultInfo {
   name: string | null;
   stroke: string | null;
   fill: string | null;
+  /** Ids from lib/drive-look (null = default). */
+  icon: string | null;
+  cover: string | null;
+  /** Color of the cover pattern; null = the fill color. */
+  cover_color: string | null;
 }
 
 export interface DriveKey {
@@ -74,7 +79,7 @@ export interface DriveKey {
   needs_new_key: boolean;
 }
 
-export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill">;
+export type VaultProfile = Pick<VaultInfo, "name" | "stroke" | "fill" | "icon" | "cover" | "cover_color">;
 
 export interface ObjectRow {
   id: string;
@@ -188,6 +193,9 @@ export const api = {
   deleteRecovery: (token: string, id: string) => empty(request(`/vaults/${id}/recovery`, { method: "DELETE", token })),
   setProfile: (token: string, id: string, profile: VaultProfile) =>
     json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),
+  /** Drive-wide settings sealed with the drive key (lib/prefs); blob is base64 or null. */
+  prefs: (token: string, id: string) => json<{ blob: string | null }>(request(`/vaults/${id}/prefs`, { token })),
+  setPrefs: (token: string, id: string, blob: string | null) => empty(request(`/vaults/${id}/prefs`, { method: "PUT", token, json: { blob } })),
   reset: (token: string, id: string) =>
     empty(request(`/vaults/${id}/reset`, { method: "POST", token, json: { confirm: "DELETE" } })),
 
@@ -266,6 +274,8 @@ export const api = {
   outgoingHandovers: (token: string) => json<OutgoingHandover[]>(request("/handovers/outgoing", { token })),
   declineHandover: (token: string, vault: string) => empty(request(`/handovers/outgoing/${vault}`, { method: "DELETE", token })),
 
+  /** Drives minted per tier (tiers with none are left out). */
+  tierStats: () => json<{ tier_id: number; minted: number }[]>(request("/tiers/stats")),
   ideas: (token: string | null) => json<Idea[]>(request("/ideas", { token })),
   ideasMe: (token: string) => json<IdeasMe>(request("/ideas/me", { token })),
   proposeIdea: (token: string, title: string, body: string) =>

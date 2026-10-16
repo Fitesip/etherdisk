@@ -9,9 +9,18 @@ test("landing shows the tiers from the contract", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /Cloud storage you buy once/ })).toBeVisible();
   await expect(page.getByText("0.0005 ETH", { exact: true })).toBeVisible();
   await expect(page.getByText("Best value per GB")).toBeVisible();
-  // A tier that isn't on sale yet is listed, without a way to buy it.
-  await expect(page.getByText("8 GB", { exact: true })).toBeVisible();
+  // A tier that isn't on sale yet is listed (with its drive picture), without a way to buy it.
+  const tiers = page.locator("section", { has: page.getByRole("heading", { name: "Pay once. Keep it." }) });
+  await expect(tiers.getByText("8 GB", { exact: true }).and(tiers.locator("div"))).toBeVisible();
+  await expect(tiers.getByRole("img", { name: "Etherdisk 8 GB" })).toBeVisible();
   await expect(page.getByText("Coming soon").first()).toBeVisible();
+  // The legal pages, from the footer.
+  await page.getByRole("link", { name: "Terms of Service" }).click();
+  await expect(page.getByRole("heading", { name: "Etherdisk Terms of Service" })).toBeVisible();
+  await page.goto("/");
+  await page.getByRole("link", { name: "Privacy Policy" }).click();
+  await expect(page.getByRole("heading", { name: "Etherdisk Privacy Policy" })).toBeVisible();
+  await expect(page.getByRole("table")).toBeVisible();
 });
 
 test("drive: upload, search, trash with undo, password link", async ({ page, browser }) => {
@@ -131,9 +140,13 @@ test("ideas: propose, vote for and against, not on your own idea", async ({ page
   const bob = await (await browser.newContext()).newPage();
   await installWallet(bob, BOB);
   await signIn(bob);
-  await bob.goto("/ideas");
   const his = bob.locator("li", { hasText: "Dark mode for shared pages" });
   const score = (n: number) => his.getByLabel(new RegExp(`^Score ${n}:`));
+  // Bob counts as the holder once the indexer has seen the transfer (one poll, ~12 s).
+  await expect(async () => {
+    await bob.goto("/ideas");
+    await expect(his.getByRole("button", { name: "Vote for" })).toBeEnabled({ timeout: 3_000 });
+  }).toPass({ timeout: 45_000 });
   await his.getByRole("button", { name: "Vote for" }).click();
   await expect(score(1)).toBeVisible();
   await expect(his.getByRole("button", { name: "You voted for" })).toHaveAttribute("aria-pressed", "true");
@@ -258,4 +271,138 @@ test("transfer with the passphrase: the new owner makes the drive theirs", async
   await bob.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill("Mine#Now7");
   await bob.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(bob.getByRole("button", { name: /told\.txt/ })).toBeVisible();
+});
+
+test("customization: drive icon and cover, starred files, labels, folder color and icon", async ({ page }) => {
+  await installWallet(page, ALICE);
+  await signIn(page);
+  const tokenId = await mintAndSetUp(page);
+  // The file list (the uploads panel has a list too).
+  const list = page.locator("main ul").filter({ has: page.getByRole("checkbox", { name: /^Select / }) });
+  const row = (name: string) => list.locator("li", { hasText: name });
+  const menu = async (name: string, item: string) => {
+    await row(name).getByRole("button", { name: "Actions" }).click();
+    await page.getByRole("button", { name: item }).click();
+  };
+
+  await upload(page, [text("alpha.txt", "a"), text("zeta.txt", "z")]);
+  await page.getByRole("button", { name: "New folder" }).click();
+  await page.locator("dialog[open] input").fill("Photos");
+  await page.locator("dialog[open]").getByRole("button", { name: "Create", exact: true }).click();
+  await expect(row("Photos")).toBeVisible();
+  await expect(row("zeta.txt")).toBeVisible();
+  // Files dropped anywhere on the page (here on the header, outside the list) are uploaded
+  // into the open folder; the window-wide overlay shows while dragging.
+  const files = await page.evaluateHandle(() => {
+    const d = new DataTransfer();
+    d.items.add(new File(["dropped"], "dropped.txt", { type: "text/plain" }));
+    return d;
+  });
+  await page.getByRole("banner").dispatchEvent("dragenter", { dataTransfer: files });
+  const overlay = page.getByText("Drop files to upload");
+  await expect(overlay).toBeVisible();
+  await overlay.dispatchEvent("drop", { dataTransfer: files });
+  await expect(overlay).toHaveCount(0);
+  await expect(row("dropped.txt")).toBeVisible();
+
+  // The finished uploads panel covers the bottom right corner of the list.
+  await page.getByRole("button", { name: "Clear finished" }).click();
+
+  // Right click opens the same actions at the pointer; Escape closes them.
+  await row("alpha.txt").click({ button: "right" });
+  await expect(page.getByRole("menu").getByRole("button", { name: "Rename" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
+  // A starred file goes to the top, above folders, and the "Starred" filter shows only it
+  // (starred here from the right-click menu).
+  await row("zeta.txt").click({ button: "right" });
+  await page.getByRole("menu").getByRole("button", { name: "Star" }).click();
+  await expect(list.locator("li").first()).toContainText("zeta.txt");
+  await page.getByRole("button", { name: "Starred" }).click();
+  await expect(list.locator("li")).toHaveCount(1);
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
+  // A new label on alpha.txt; its chip filters the list.
+  await menu("alpha.txt", "Labels…");
+  await page.getByRole("button", { name: "New label" }).click();
+  await page.getByLabel("Label name").fill("Work");
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.locator("dialog[open]").getByRole("checkbox")).toBeChecked();
+  await page.locator("dialog[open]").getByRole("button", { name: "Save" }).click();
+  await expect(row("alpha.txt").locator('[title="Work"]')).toBeVisible();
+  await page.getByRole("button", { name: "Work" }).click();
+  await expect(list.locator("li")).toHaveCount(1);
+  await expect(list.locator("li")).toContainText("alpha.txt");
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
+  // Right click on one of several selected items: the actions apply to all of them.
+  await page.getByRole("checkbox", { name: "Select alpha.txt" }).click();
+  await page.getByRole("checkbox", { name: "Select Photos" }).click();
+  await row("alpha.txt").click({ button: "right" });
+  const group = page.getByRole("menu");
+  await expect(group.getByText("2 selected")).toBeVisible();
+  await expect(group.getByRole("button", { name: "Download as ZIP" })).toBeVisible();
+  await expect(group.getByRole("button", { name: "Rename" })).toHaveCount(0);
+  await group.getByRole("button", { name: "Star" }).click();
+  await expect(row("alpha.txt").locator("svg.lucide-star")).toBeVisible();
+  await expect(row("Photos").locator("svg.lucide-star")).toBeVisible();
+  await row("Photos").click({ button: "right" });
+  await page.getByRole("menu").getByRole("button", { name: "Remove star" }).click();
+  await expect(list.locator("svg.lucide-star")).toHaveCount(1);
+  // On an item outside the selection, the menu is that item's own.
+  await row("zeta.txt").click({ button: "right" });
+  await expect(page.getByRole("menu").getByRole("button", { name: "Rename" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("2 selected")).toHaveCount(0);
+
+  // A folder's color and icon.
+  await menu("Photos", "Color and icon…");
+  await page.locator("dialog[open]").getByRole("button", { name: "#ef4444" }).click();
+  await page.locator("dialog[open]").getByRole("button", { name: "camera" }).click();
+  await page.locator("dialog[open]").getByRole("button", { name: "Save" }).click();
+  await expect(row("Photos").locator("svg.lucide-camera")).toHaveCSS("color", "rgb(239, 68, 68)");
+
+  // The drive's icon and cover show on the drives page.
+  await page.goto(`/drive/${tokenId}/settings`);
+  await page.getByRole("button", { name: "camera" }).click();
+  await page.getByRole("button", { name: "dots" }).click();
+  await page.getByRole("button", { name: "Save" }).first().click();
+  await expect(page.getByText("Saved")).toBeVisible();
+  await page.goto("/drive");
+  const card = page.locator(`a[href="/drive/${tokenId}"]`);
+  await expect(card.locator("svg.lucide-camera")).toBeVisible();
+  await expect(card.locator("[aria-hidden][style*='radial-gradient']")).toHaveCount(1);
+  await page.screenshot({ path: "test-results/customization-drives.png" });
+
+  // Ids the app doesn't know (set through the API, e.g. by a previous owner) fall back to
+  // the defaults, including names every JS object has.
+  const status = await page.evaluate(async (id) => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith("etherdisk.session."))!;
+    const { token } = JSON.parse(localStorage.getItem(key)!);
+    const r = await fetch(`http://localhost:8788/api/vaults/${id}/profile`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ icon: "constructor", cover: "constructor" }),
+    });
+    return r.status;
+  }, tokenId);
+  expect(status).toBe(200);
+  await page.reload();
+  await expect(card.locator("svg.lucide-hard-drive")).toBeVisible();
+
+  // Labels and stars survive a reload (sealed prefs and metadata on the server).
+  await page.goto(`/drive/${tokenId}`);
+  // A navigation locks the drive unless "stay unlocked" is on: wait for either screen.
+  const unlockHeading = page.getByRole("heading", { name: /^Unlock / });
+  await expect(unlockHeading.or(page.getByRole("button", { name: "Upload" }))).toBeVisible();
+  if (await unlockHeading.isVisible()) {
+    await page.getByPlaceholder("Passphrase", { exact: true }).filter({ visible: true }).fill(PASSPHRASE);
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  }
+  await expect(page.getByRole("button", { name: "Work" })).toBeVisible();
+  await expect(list.locator("li").first()).toContainText("zeta.txt");
+  await page.screenshot({ path: "test-results/customization-files.png", fullPage: true });
 });

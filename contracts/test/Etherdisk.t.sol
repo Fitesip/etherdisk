@@ -69,10 +69,10 @@ contract EtherdiskTest is Test {
         disk.mint{value: 0.0005 ether}(0);
         disk.mint{value: 0.001 ether}(2);
         vm.stopPrank();
-        uint256[] memory ids = disk.tokensOfOwner(alice);
-        assertEq(ids.length, 2);
-        assertEq(disk.capacityOf(ids[0]), 1);
-        assertEq(disk.capacityOf(ids[1]), 4);
+        assertEq(disk.balanceOf(alice), 2);
+        assertEq(disk.totalSupply(), 2);
+        assertEq(disk.capacityOf(1), 1);
+        assertEq(disk.capacityOf(2), 4);
     }
 
     function test_transferKeepsTier() public {
@@ -82,8 +82,8 @@ contract EtherdiskTest is Test {
         disk.transferFrom(alice, bob, id);
         assertEq(disk.ownerOf(id), bob);
         assertEq(disk.capacityOf(id), 4);
-        assertEq(disk.tokensOfOwner(alice).length, 0);
-        assertEq(disk.tokensOfOwner(bob).length, 1);
+        assertEq(disk.balanceOf(alice), 0);
+        assertEq(disk.balanceOf(bob), 1);
     }
 
     function test_addTierDoesNotAffectExistingTokens() public {

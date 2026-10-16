@@ -20,15 +20,15 @@ sol! {
     #[sol(rpc)]
     interface IEtherdisk {
         event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+        event DriveMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed tierId);
 
         function ownerOf(uint256 tokenId) external view returns (address);
         function capacityOf(uint256 tokenId) external view returns (uint32);
-        function tokensOfOwner(address account) external view returns (uint256[] memory);
         function owner() external view returns (address);
     }
 }
 
-pub use IEtherdisk::Transfer;
+pub use IEtherdisk::{DriveMinted, Transfer};
 
 /// What the server needs from the chain. Abstracted so tests can run without an RPC node.
 #[async_trait]
@@ -37,7 +37,6 @@ pub trait Chain: Send + Sync {
     async fn owner_of(&self, token_id: U256) -> anyhow::Result<Option<Address>>;
     /// Capacity in GB, `None` if the token does not exist.
     async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>>;
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>>;
     /// The contract's admin (`Ownable.owner()`): moderates the ideas board.
     async fn contract_owner(&self) -> anyhow::Result<Address>;
 }
@@ -88,12 +87,40 @@ impl Chain for RpcChain {
         none_if_reverted(self.contract.capacityOf(token_id).call().await)
     }
 
-    async fn tokens_of_owner(&self, owner: Address) -> anyhow::Result<Vec<U256>> {
-        Ok(self.contract.tokensOfOwner(owner).call().await?)
-    }
 
     async fn contract_owner(&self) -> anyhow::Result<Address> {
         Ok(self.contract.owner().call().await?)
+    }
+}
+
+/// A successor contract and the legacy one its drives were swapped from (docs/MIGRATION.md).
+/// A drive lives on the successor once swapped (same token id, same capacity); until then it
+/// lives on the legacy contract. A legacy drive held by the successor but not swapped (sent
+/// with a plain `transferFrom`) belongs to nobody until the owner rescues it.
+pub struct WithLegacy {
+    pub current: Arc<dyn Chain>,
+    pub current_address: Address,
+    pub legacy: Arc<dyn Chain>,
+}
+
+#[async_trait]
+impl Chain for WithLegacy {
+    async fn owner_of(&self, token_id: U256) -> anyhow::Result<Option<Address>> {
+        if let Some(owner) = self.current.owner_of(token_id).await? {
+            return Ok(Some(owner));
+        }
+        Ok(self.legacy.owner_of(token_id).await?.filter(|owner| *owner != self.current_address))
+    }
+
+    async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>> {
+        match self.current.capacity_gb(token_id).await? {
+            Some(gb) => Ok(Some(gb)),
+            None => self.legacy.capacity_gb(token_id).await,
+        }
+    }
+
+    async fn contract_owner(&self) -> anyhow::Result<Address> {
+        self.current.contract_owner().await
     }
 }
 
@@ -154,9 +181,6 @@ impl Ownership {
         Ok(gb as u64 * BYTES_PER_GB)
     }
 
-    pub async fn tokens_of_owner(&self, owner: Address) -> AppResult<Vec<U256>> {
-        Ok(self.chain.tokens_of_owner(owner).await?)
-    }
 
     pub async fn is_admin(&self, who: Address) -> AppResult<bool> {
         Ok(self.chain.contract_owner().await? == who)

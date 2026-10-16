@@ -18,11 +18,20 @@ export interface FileMeta {
   /** Id of the drive key the content and thumbnail are encrypted with (hex). Missing on
    *  files from before drive keys were replaced: those use the drive's first key. */
   keyId?: string;
+  starred?: boolean;
+  /** Ids of the drive's labels (lib/prefs); ids no longer defined are ignored. */
+  labels?: string[];
 }
 
 export interface FolderMeta {
   v: 1;
   name: string;
+  starred?: boolean;
+  labels?: string[];
+  /** '#rrggbb' */
+  color?: string;
+  /** Id from lib/drive-look. */
+  icon?: string;
 }
 
 /** Binds metadata to its object id so the server cannot swap it between objects. */

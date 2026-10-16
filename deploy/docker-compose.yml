@@ -1,0 +1,54 @@
+# Etherdisk on one machine: nginx (TLS) → web (Next.js) and server (Rust).
+# Run from this directory:  docker compose up -d --build
+# Settings: .env next to this file (build arguments and paths, see .env.example) and
+# server.env (the server's own settings, see server.env.example).
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/server.Dockerfile
+    env_file: server.env
+    environment:
+      DATABASE_URL: sqlite:///data/db/etherdisk.db
+    volumes:
+      - ${DB_DIR:-./db}:/data/db
+      # One line per storage volume (RAID array); list the same paths in DATA_DIR in server.env.
+      - ${VOLUME_1:-./volume1}:/mnt/volume1
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      args:
+        NEXT_PUBLIC_CHAIN_ID: ${NEXT_PUBLIC_CHAIN_ID:-1}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://etherdisk.app}
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL}
+        NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
+        NEXT_PUBLIC_WC_PROJECT_ID: ${NEXT_PUBLIC_WC_PROJECT_ID:-}
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    # Host ports: HTTP_PORT / HTTPS_PORT in .env (a bare port or ADDRESS:PORT). Only nginx is
+    # published; server (8787) and web (3000) are reachable only inside the compose network.
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/etherdisk.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./letsencrypt:/etc/letsencrypt:ro
+      - ./certbot-www:/var/www/certbot:ro
+    depends_on:
+      - server
+      - web
+    restart: unless-stopped
+
+  # Certificates: `docker compose run --rm certbot ...` (see README.md); not a long-running service.
+  certbot:
+    image: certbot/certbot:v3.1.0
+    profiles: ["tools"]
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./certbot-www:/var/www/certbot

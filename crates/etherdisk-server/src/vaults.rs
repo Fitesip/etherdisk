@@ -19,6 +19,7 @@ pub fn routes() -> Router<AppState> {
         .route("/vaults/{token_id}/recovery", get(get_recovery).put(put_recovery).delete(delete_recovery))
         .route("/vaults/{token_id}/reset", post(reset))
         .route("/vaults/{token_id}/profile", put(put_profile))
+        .route("/vaults/{token_id}/prefs", get(get_prefs).put(put_prefs))
 }
 
 pub(crate) fn parse_token(s: &str) -> AppResult<U256> {
@@ -55,16 +56,34 @@ pub struct VaultInfo {
     profile: Profile,
 }
 
-/// Owner-chosen name and colors. Plaintext, so the drive list can show them while locked.
+/// Owner-chosen name, colors, icon and cover. Plaintext, so the drive list can show them
+/// while locked.
 #[derive(Serialize, Deserialize, Default, sqlx::FromRow)]
 pub struct Profile {
     name: Option<String>,
     /// '#rrggbb'
     stroke: Option<String>,
     fill: Option<String>,
+    /// Ids from the app's icon and cover sets (`[a-z0-9-]`); the app falls back to its
+    /// default for ids it doesn't know.
+    icon: Option<String>,
+    cover: Option<String>,
+    /// '#rrggbb' of the cover pattern; null = the fill color.
+    cover_color: Option<String>,
 }
 
 pub const MAX_NAME_CHARS: usize = 64;
+const MAX_STYLE_ID: usize = 32;
+/// Sealed drive-wide settings (labels and the like): a few KiB in practice.
+pub const MAX_PREFS: usize = 64 * 1024;
+
+async fn profile_of(st: &AppState, token: &str) -> AppResult<Profile> {
+    Ok(sqlx::query_as::<_, Profile>("SELECT name, stroke, fill, icon, cover, cover_color FROM vault_profiles WHERE token_id = ?")
+        .bind(token)
+        .fetch_optional(&st.db)
+        .await?
+        .unwrap_or_default())
+}
 
 /// `owner`: the caller, who holds the token (recovery keys are per holder).
 async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
@@ -80,11 +99,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     .bind(format!("{owner:#x}"))
     .fetch_optional(&st.db)
     .await?;
-    let profile = sqlx::query_as::<_, Profile>("SELECT name, stroke, fill FROM vault_profiles WHERE token_id = ?")
-        .bind(&token)
-        .fetch_optional(&st.db)
-        .await?
-        .unwrap_or_default();
+    let profile = profile_of(st, &token).await?;
     Ok(VaultInfo {
         profile,
         capacity_bytes: st.chain.capacity_bytes(id).await?,
@@ -95,17 +110,46 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
     })
 }
 
+/// The drives `owner` holds: listed from Transfer events (`token_owners`), each one
+/// confirmed with `ownerOf`, so a lagging indexer can hide a new drive for a moment but
+/// never show someone else's.
+pub(crate) async fn drives_of(st: &AppState, owner: Address) -> AppResult<Vec<U256>> {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT token_id FROM token_owners WHERE owner = ? ORDER BY CAST(token_id AS INTEGER)")
+        .bind(format!("{owner:#x}"))
+        .fetch_all(&st.db)
+        .await?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = parse_token(&id)?;
+        if st.chain.owner_of(id).await? == Some(owner) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
 /// All vaults of the signed-in wallet (rendered as separate disks).
 async fn list(State(st): State<AppState>, user: AuthUser) -> AppResult<Json<Vec<VaultInfo>>> {
     let mut out = Vec::new();
-    for id in st.chain.tokens_of_owner(user.0).await? {
+    for id in drives_of(&st, user.0).await? {
         out.push(info(&st, id, user.0).await?);
     }
     Ok(Json(out))
 }
 
+/// One drive of the caller. Also records them as its holder (just checked with ownerOf) if
+/// the drive has no recorded holder yet, so a drive minted a moment ago is listed before the
+/// indexer sees its Transfer event. A recorded holder is left to the indexer: the check may
+/// have hit a cached owner or a lagging node, and must not undo a transfer it already saw.
 async fn one(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<VaultInfo>> {
-    let (id, _) = owned(&st, &user, &token_id).await?;
+    let (id, token) = owned(&st, &user, &token_id).await?;
+    sqlx::query(
+        "INSERT INTO token_owners (token_id, owner) VALUES (?, ?) ON CONFLICT (token_id) DO NOTHING",
+    )
+    .bind(&token)
+    .bind(format!("{:#x}", user.0))
+    .execute(&st.db)
+    .await?;
     Ok(Json(info(&st, id, user.0).await?))
 }
 
@@ -125,24 +169,84 @@ fn clean_color(c: Option<String>) -> AppResult<Option<String>> {
     }
 }
 
-/// Replaces the whole profile; `null` fields reset to defaults.
+fn clean_style_id(id: Option<String>, what: &str) -> AppResult<Option<String>> {
+    match id {
+        None => Ok(None),
+        Some(s) if !s.is_empty() && s.len() <= MAX_STYLE_ID && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => Ok(Some(s)),
+        Some(_) => Err(AppError::bad(format!("{what} must be 1..={MAX_STYLE_ID} of a-z, 0-9, -"))),
+    }
+}
+
+/// A field of a profile update: absent = keep, null = reset to the default, value = set.
+#[derive(Default)]
+enum Change {
+    #[default]
+    Keep,
+    Set(Option<String>),
+}
+
+impl<'de> Deserialize<'de> for Change {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Option::<String>::deserialize(d).map(Change::Set)
+    }
+}
+
+impl Change {
+    fn or(self, current: Option<String>) -> Option<String> {
+        match self {
+            Change::Keep => current,
+            Change::Set(v) => v,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ProfileUpdate {
+    #[serde(default)]
+    name: Change,
+    #[serde(default)]
+    stroke: Change,
+    #[serde(default)]
+    fill: Change,
+    #[serde(default)]
+    icon: Change,
+    #[serde(default)]
+    cover: Change,
+    #[serde(default)]
+    cover_color: Change,
+}
+
+/// Updates the profile: fields left out keep their value (so an app from before a field
+/// existed doesn't reset it); `null` or blank fields reset to defaults.
 async fn put_profile(
     State(st): State<AppState>,
     user: AuthUser,
     Path(token_id): Path<String>,
-    Json(req): Json<Profile>,
+    Json(req): Json<ProfileUpdate>,
 ) -> AppResult<Json<VaultInfo>> {
     let (id, token) = owned(&st, &user, &token_id).await?;
-    let p = Profile { name: clean_name(req.name)?, stroke: clean_color(req.stroke)?, fill: clean_color(req.fill)? };
+    let old = profile_of(&st, &token).await?;
+    let p = Profile {
+        name: clean_name(req.name.or(old.name))?,
+        stroke: clean_color(req.stroke.or(old.stroke))?,
+        fill: clean_color(req.fill.or(old.fill))?,
+        icon: clean_style_id(req.icon.or(old.icon), "icon")?,
+        cover: clean_style_id(req.cover.or(old.cover), "cover")?,
+        cover_color: clean_color(req.cover_color.or(old.cover_color))?,
+    };
     sqlx::query(
-        "INSERT INTO vault_profiles (token_id, name, stroke, fill, updated_at) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO vault_profiles (token_id, name, stroke, fill, icon, cover, cover_color, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (token_id) DO UPDATE SET name = excluded.name, stroke = excluded.stroke,
-            fill = excluded.fill, updated_at = excluded.updated_at",
+            fill = excluded.fill, icon = excluded.icon, cover = excluded.cover,
+            cover_color = excluded.cover_color, updated_at = excluded.updated_at",
     )
     .bind(&token)
     .bind(&p.name)
     .bind(&p.stroke)
     .bind(&p.fill)
+    .bind(&p.icon)
+    .bind(&p.cover)
+    .bind(&p.cover_color)
     .bind(now())
     .execute(&st.db)
     .await?;
@@ -351,7 +455,43 @@ struct ResetRequest {
     confirm: String,
 }
 
-/// Irreversibly wipes the vault: files, thumbnails, metadata, links and the key blob.
+#[derive(Serialize, Deserialize)]
+struct Prefs {
+    /// Sealed by the app with the drive key; null if never saved.
+    #[serde(with = "b64::option")]
+    blob: Option<Vec<u8>>,
+}
+
+/// Drive-wide settings, sealed: only the holder reads or replaces them.
+async fn get_prefs(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>) -> AppResult<Json<Prefs>> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let blob = sqlx::query_scalar("SELECT blob FROM vault_prefs WHERE token_id = ?").bind(&token).fetch_optional(&st.db).await?;
+    Ok(Json(Prefs { blob }))
+}
+
+/// Replaces the settings; a null or empty blob removes them.
+async fn put_prefs(State(st): State<AppState>, user: AuthUser, Path(token_id): Path<String>, Json(req): Json<Prefs>) -> AppResult<StatusCode> {
+    let (_, token) = owned(&st, &user, &token_id).await?;
+    let Some(blob) = req.blob.filter(|b| !b.is_empty()) else {
+        sqlx::query("DELETE FROM vault_prefs WHERE token_id = ?").bind(&token).execute(&st.db).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    if blob.len() > MAX_PREFS {
+        return Err(AppError::bad(format!("prefs must be at most {MAX_PREFS} bytes")));
+    }
+    sqlx::query(
+        "INSERT INTO vault_prefs (token_id, blob, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT (token_id) DO UPDATE SET blob = excluded.blob, updated_at = excluded.updated_at",
+    )
+    .bind(&token)
+    .bind(&blob)
+    .bind(now())
+    .execute(&st.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Irreversibly wipes the vault: files, thumbnails, metadata, links, labels and the key blob.
 /// The token stays; the owner sets up a new passphrase afterwards.
 async fn reset(
     State(st): State<AppState>,
@@ -375,6 +515,7 @@ async fn wipe(st: &AppState, token: &str) -> AppResult<()> {
     sqlx::query("DELETE FROM handovers WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM handover_skips WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM vault_recovery WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM vault_prefs WHERE token_id = ?").bind(token).execute(&mut *tx).await?;
     tx.commit().await?;
     st.store.delete_vault(token).await?;
     Ok(())

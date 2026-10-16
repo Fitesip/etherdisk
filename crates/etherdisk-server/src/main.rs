@@ -8,7 +8,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
-use etherdisk_server::chain::{Ownership, RpcChain};
+use etherdisk_server::chain::{Ownership, RpcChain, WithLegacy};
 use etherdisk_server::monitor::Monitor;
 use etherdisk_server::volumes::VolumeStore;
 use etherdisk_server::{connect_db, ideas, indexer, objects, AppState, Config};
@@ -28,13 +28,24 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let db = connect_db(&config.database_url).await?;
-    etherdisk_server::bind_deployment(&db, config.contract_address, config.chain_id).await?;
+    etherdisk_server::bind_deployment(&db, config.contract_address, config.chain_id, config.legacy_contract_address).await?;
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await?);
     for v in store.info().await? {
         tracing::info!(volume = %v.id, path = %v.root.display(), free_gb = v.available_bytes >> 30, total_gb = v.total_bytes >> 30, drives = v.vaults, "storage volume");
     }
     let rpc = Arc::new(RpcChain::new(&config.rpc_urls, config.contract_address)?);
-    let chain = Ownership::new(rpc.clone(), OWNER_CACHE_TTL);
+    let chain = match config.legacy_contract_address {
+        Some(legacy) => {
+            tracing::info!(%legacy, "drives not swapped yet are read from the legacy contract");
+            let both = WithLegacy {
+                current: rpc.clone(),
+                current_address: config.contract_address,
+                legacy: Arc::new(RpcChain::new(&config.rpc_urls, legacy)?),
+            };
+            Ownership::new(Arc::new(both), OWNER_CACHE_TTL)
+        }
+        None => Ownership::new(rpc.clone(), OWNER_CACHE_TTL),
+    };
     let state = AppState::new(db, store.clone(), chain, config.clone());
 
     tokio::spawn(indexer::run(state.clone(), rpc.clone()));

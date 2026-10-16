@@ -1,0 +1,18 @@
+# Build context for deploy/*.Dockerfile: sources only.
+.git
+.idea
+target
+data
+design
+docs
+contracts
+web/node_modules
+web/.next
+web/test-results
+web/playwright-report
+web/src/wasm
+web/public/crypto
+web/public/crypto-sw
+**/.env
+**/.env.*
+!**/.env.example

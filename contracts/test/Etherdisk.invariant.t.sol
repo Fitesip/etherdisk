@@ -123,17 +123,17 @@ contract EtherdiskInvariantTest is Test {
         }
     }
 
-    /// Supply matches the mints and the per-owner lists; ids are 1..n.
+    /// Supply matches the mints and the balances; every id 1..n exists and is held.
     function invariant_supplyAddsUp() public view {
         uint256 n = handler.minted();
         assertEq(disk.totalSupply(), n);
-        uint256 listed;
+        uint256 held;
         for (uint256 i; i < 4; i++) {
-            listed += disk.tokensOfOwner(handler.users(i)).length;
+            held += disk.balanceOf(handler.users(i));
         }
-        assertEq(listed, n);
-        for (uint256 i; i < n; i++) {
-            assertEq(disk.tokenByIndex(i), i + 1);
+        assertEq(held, n);
+        for (uint256 id = 1; id <= n; id++) {
+            assertTrue(disk.ownerOf(id) != address(0));
         }
     }
 }
