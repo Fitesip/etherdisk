@@ -67,3 +67,78 @@ async fn existing_data_is_adopted_and_duplicates_refused() {
     // The same directory twice is a config mistake.
     assert!(VolumeStore::open(&[old.clone(), old], db).await.is_err());
 }
+
+#[tokio::test]
+async fn a_drive_keeps_its_unused_capacity_reserved_on_disk() {
+    const MB: u64 = 1 << 20;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", tmp.path().join("t.db").display())).await.unwrap();
+    let dir = tmp.path().join("v");
+    // Kept free 0: the test may run on a nearly full disk.
+    let store = VolumeStore::open(std::slice::from_ref(&dir), db.clone()).await.unwrap().keep_free(0);
+    let reserve = |token: &str| std::fs::metadata(dir.join(token).join(".reserve")).map(|m| m.len()).unwrap_or(0);
+
+    // A new drive takes its whole capacity; uploads shrink it, deletions grow it back.
+    assert_eq!(store.reserve("1", 64 * MB, 0).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 64 * MB);
+    assert_eq!(store.info().await.unwrap()[0].reserved_bytes, 64 * MB);
+    assert_eq!(store.reserve("1", 64 * MB, 48 * MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 16 * MB);
+    store.put("1/x", Bytes::from_static(b"data")).await.unwrap();
+    assert_eq!(read(&store, "1/x").await, b"data", "the reservation sits next to the drive's files");
+    assert_eq!(store.reserve("1", 64 * MB, 0).await.unwrap(), 0);
+    assert_eq!(reserve("1"), 64 * MB);
+    assert!(store.shortages().is_empty());
+    assert_eq!(store.shortage("1"), 0);
+
+    // What doesn't fit is reported, not forced: here the whole volume is kept free, so a new
+    // drive gets nothing (it can store 0 bytes until storage is added).
+    let full = VolumeStore::open(std::slice::from_ref(&dir), db.clone()).await.unwrap().keep_free(100);
+    assert_eq!(full.reserve("2", 8 * MB, 0).await.unwrap(), 8 * MB);
+    assert_eq!(full.shortages(), [("2".to_owned(), 8 * MB)]);
+    assert_eq!(full.shortage("2"), 8 * MB);
+    assert_eq!(reserve("2"), 0);
+    // A drive that got only part of its capacity (16 of 64 MB here) keeps that part: its
+    // uploads come out of its own reservation, never out of the volume's kept-free space.
+    std::fs::create_dir_all(dir.join("4")).unwrap();
+    std::fs::File::create(dir.join("4/.reserve")).unwrap().set_len(16 * MB).unwrap();
+    assert_eq!(full.reserve("4", 64 * MB, 0).await.unwrap(), 48 * MB);
+    assert_eq!(full.reserve("4", 64 * MB, 4 * MB).await.unwrap(), 48 * MB, "still 16 MB backed");
+    assert_eq!(reserve("4"), 12 * MB, "the 4 MB upload took its room from the drive's reservation");
+    // Shrinking always works, and a format frees the place and the shortage.
+    assert_eq!(full.reserve("1", 64 * MB, 63 * MB).await.unwrap(), 0);
+    assert_eq!(reserve("1"), MB);
+    full.delete_vault("2").await.unwrap();
+    assert_eq!(full.shortages(), [("4".to_owned(), 48 * MB)], "only the drive that is still short");
+    full.delete_vault("4").await.unwrap();
+    assert!(full.shortages().is_empty());
+}
+
+#[tokio::test]
+async fn a_short_drive_moves_to_a_volume_with_room() {
+    const MB: u64 = 1 << 20;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", tmp.path().join("t.db").display())).await.unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+
+    // On a volume with no room (all of it kept free) the drive gets nothing reserved...
+    let only_a = VolumeStore::open(std::slice::from_ref(&a), db.clone()).await.unwrap().keep_free(100);
+    assert_eq!(only_a.reserve("5", 8 * MB, 0).await.unwrap(), 8 * MB);
+    only_a.put("5/x", Bytes::from_static(b"kept")).await.unwrap();
+    drop(only_a);
+
+    // ...and once another volume has room for its whole capacity, it moves there with its files.
+    let both = VolumeStore::open(&[a.clone(), b.clone()], db.clone()).await.unwrap().keep_free(0);
+    assert!(both.relocate("5", 8 * MB).await.unwrap());
+    assert_eq!(read(&both, "5/x").await, b"kept");
+    assert!(b.join("5/x").exists() && !a.join("5").exists(), "copied, and the old copy removed");
+    assert!(!b.join("5.moving").exists());
+    both.put("5/y", Bytes::from_static(b"new")).await.unwrap();
+    assert!(b.join("5/y").exists(), "new writes go to the new volume");
+    assert!(!both.relocate("5", 1 << 50).await.unwrap(), "no volume has room: it stays");
+    drop(both);
+
+    // The move is recorded: after a restart the drive is found on its new volume.
+    let again = VolumeStore::open(&[b.clone(), a.clone()], db).await.unwrap();
+    assert_eq!(read(&again, "5/x").await, b"kept");
+}

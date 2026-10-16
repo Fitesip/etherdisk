@@ -19,6 +19,10 @@ pub enum AppError {
     Conflict(String),
     #[error("vault storage quota exceeded")]
     QuotaExceeded,
+    /// The upload fits the drive's capacity, but the server has no disk space reserved for
+    /// that part of it yet (storage ran out): not the user's doing.
+    #[error("the server has no room for this drive's full capacity yet")]
+    StorageShort,
     #[error("too many requests")]
     RateLimited(u64),
     #[error("requested range not satisfiable")]
@@ -57,6 +61,7 @@ impl IntoResponse for AppError {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::QuotaExceeded => (StatusCode::INSUFFICIENT_STORAGE, "quota_exceeded"),
+            Self::StorageShort => (StatusCode::INSUFFICIENT_STORAGE, "storage_short"),
             Self::RateLimited(retry) => return crate::ratelimit::too_many(*retry),
             Self::RangeNotSatisfiable { len } => {
                 return (

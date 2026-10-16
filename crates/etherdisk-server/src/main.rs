@@ -49,6 +49,10 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(db, store.clone(), chain, config.clone());
 
     tokio::spawn(indexer::run(state.clone(), rpc.clone()));
+    tokio::spawn({
+        let st = state.clone();
+        async move { etherdisk_server::reserve::sync_all(&st).await }
+    });
     tokio::spawn(Arc::new(Monitor::new(state.clone(), store, rpc)).run());
     tokio::spawn({
         let st = state.clone();

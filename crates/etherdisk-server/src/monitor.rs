@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +38,8 @@ pub struct Snapshot {
     pub volumes: Vec<VolumeInfo>,
     /// Volumes that hold drives but are not configured or not mounted: (id, drives).
     pub missing_volumes: Vec<(String, i64)>,
+    /// Drives whose capacity couldn't be fully reserved on their volume: (token, bytes).
+    pub shortages: Vec<(String, u64)>,
     /// Free and total bytes where the database lives.
     pub db_disk: Option<(PathBuf, u64, u64)>,
     /// Next block to index and the confirmed chain head, or the RPC error.
@@ -91,11 +93,12 @@ fn space_problems(out: &mut Vec<Problem>, places: Vec<Place>, t: &Thresholds) {
         let pc = pct(free, total);
         let key = d.iter().map(|p| p.key.as_str()).collect::<Vec<_>>().join("+");
         let what = d.iter().map(|p| p.label.as_str()).collect::<Vec<_>>().join(", ");
-        let detail = format!("свободно {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
+        // Volumes reserve their drives' capacity: free space is what no drive has been sold.
+        let detail = format!("свободно (не занято и не зарезервировано за дисками) {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
         if pc < t.critical_percent {
-            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}") });
+            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}. Новые диски не поместятся: закройте продажи или добавьте хранилище") });
         } else if pc < t.free_percent {
-            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}") });
+            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}. Пора планировать расширение хранилища") });
         }
     }
 }
@@ -112,6 +115,18 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
         places.push(Place { key: "db".into(), label: format!("база данных ({})", dir.display()), free: *free, total: *total });
     }
     space_problems(&mut out, places, t);
+    if !s.shortages.is_empty() {
+        let total: u64 = s.shortages.iter().map(|(_, b)| b).sum();
+        let drives: Vec<String> = s.shortages.iter().map(|(t, b)| format!("#{t} ({})", fmt_bytes(*b))).collect();
+        out.push(Problem {
+            key: "reserve".into(),
+            text: format!(
+                "🔴 Не хватает места на резерв дисков: {} не зарезервировано ({}). Эти диски могут упереться в полный том: добавьте хранилище и закройте продажи",
+                fmt_bytes(total),
+                drives.join(", ")
+            ),
+        });
+    }
     for (id, drives) in &s.missing_volumes {
         out.push(Problem {
             key: format!("missing:{id}"),
@@ -190,31 +205,60 @@ fn strip_icon(text: &str) -> &str {
 /// Sends messages to one chat through the Bot API. Errors drop the URL: it holds the token.
 #[derive(Clone)]
 pub struct Telegram {
-    client: reqwest::Client,
+    /// One client per route: each proxy in order, or a direct connection without proxies.
+    routes: Arc<Vec<reqwest::Client>>,
+    /// The route that worked last, tried first next time.
+    current: Arc<AtomicUsize>,
     /// `{api}/bot{token}`
     base: String,
     chat: String,
 }
 
 impl Telegram {
-    /// `proxy`: a URL `reqwest::Proxy::all` accepts (see `Config::telegram_proxy`).
-    pub fn new(api: &str, token: &str, chat: &str, proxy: Option<&str>) -> anyhow::Result<Self> {
-        let mut client = reqwest::Client::builder().timeout(Duration::from_secs(70));
-        if let Some(p) = proxy {
-            client = client.proxy(reqwest::Proxy::all(p).map_err(|_| anyhow::anyhow!("invalid Telegram proxy URL"))?);
+    /// `proxies`: URLs `reqwest::Proxy::all` accepts (see `Config::telegram_proxies`), tried
+    /// in order when one fails; none for a direct connection.
+    pub fn new(api: &str, token: &str, chat: &str, proxies: &[String]) -> anyhow::Result<Self> {
+        let builder = || reqwest::Client::builder().timeout(Duration::from_secs(70)).connect_timeout(Duration::from_secs(10));
+        let routes = if proxies.is_empty() {
+            vec![builder().build()?]
+        } else {
+            proxies
+                .iter()
+                .map(|p| Ok(builder().proxy(reqwest::Proxy::all(p).map_err(|_| anyhow::anyhow!("invalid Telegram proxy URL"))?).build()?))
+                .collect::<anyhow::Result<_>>()?
+        };
+        Ok(Self {
+            routes: Arc::new(routes),
+            current: Arc::default(),
+            base: format!("{}/bot{token}", api.trim_end_matches('/')),
+            chat: chat.to_owned(),
+        })
+    }
+
+    /// Calls a Bot API method, starting with the route that worked last and moving on to the
+    /// next when one can't connect (a dead proxy). Any answer from Telegram counts as working.
+    async fn call(&self, method: &str, body: &serde_json::Value) -> anyhow::Result<reqwest::Response> {
+        let n = self.routes.len();
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last = None;
+        for i in 0..n {
+            let route = (start + i) % n;
+            match self.routes[route].post(format!("{}/{method}", self.base)).json(body).send().await {
+                Ok(r) => {
+                    if route != start {
+                        tracing::info!(route = route + 1, "monitor: Telegram reached through another route");
+                    }
+                    self.current.store(route, Ordering::Relaxed);
+                    return Ok(r);
+                }
+                Err(e) => last = Some(e.without_url()),
+            }
         }
-        let client = client.build()?;
-        Ok(Self { client, base: format!("{}/bot{token}", api.trim_end_matches('/')), chat: chat.to_owned() })
+        Err(last.expect("at least one route").into())
     }
 
     pub async fn send(&self, text: &str) -> anyhow::Result<()> {
-        let r = self
-            .client
-            .post(format!("{}/sendMessage", self.base))
-            .json(&json!({ "chat_id": self.chat, "text": text, "disable_web_page_preview": true }))
-            .send()
-            .await
-            .map_err(|e| e.without_url())?;
+        let r = self.call("sendMessage", &json!({ "chat_id": self.chat, "text": text, "disable_web_page_preview": true })).await?;
         anyhow::ensure!(r.status().is_success(), "Telegram answered {}", r.status());
         Ok(())
     }
@@ -222,12 +266,8 @@ impl Telegram {
     /// Long-polls for new messages; returns (next offset, texts from our chat).
     async fn updates(&self, offset: i64) -> anyhow::Result<(i64, Vec<String>)> {
         let r: serde_json::Value = self
-            .client
-            .post(format!("{}/getUpdates", self.base))
-            .json(&json!({ "offset": offset, "timeout": 50, "allowed_updates": ["message"] }))
-            .send()
-            .await
-            .map_err(|e| e.without_url())?
+            .call("getUpdates", &json!({ "offset": offset, "timeout": 50, "allowed_updates": ["message"] }))
+            .await?
             .json()
             .await
             .map_err(|e| e.without_url())?;
@@ -247,12 +287,64 @@ impl Telegram {
     }
 }
 
+/// Messages kept while Telegram can't be reached; sent in order once it can, marked late.
+#[derive(Default)]
+pub struct Outbox {
+    queue: std::collections::VecDeque<(i64, String)>,
+    /// Older messages dropped to keep the queue bounded.
+    dropped: usize,
+}
+
+/// More than this many waiting messages: the oldest give way.
+const OUTBOX_MAX: usize = 50;
+/// A message sent this much later than it was written says so.
+const LATE_SECS: i64 = 60;
+
+impl Outbox {
+    pub fn push(&mut self, at: i64, text: String) {
+        if self.queue.len() == OUTBOX_MAX {
+            self.queue.pop_front();
+            self.dropped += 1;
+        }
+        self.queue.push_back((at, text));
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Sends what's waiting, oldest first; stops at the first failure (kept for next time).
+    pub async fn flush(&mut self, tg: &Telegram, now: i64) {
+        if self.dropped > 0 {
+            let note = format!("⚠️ Telegram был недоступен: {} старых сообщений не сохранилось (подробности в логе сервера)", self.dropped);
+            if let Err(e) = tg.send(&note).await {
+                return tracing::warn!(waiting = self.queue.len(), "monitor: Telegram: {e:#}");
+            }
+            self.dropped = 0;
+        }
+        while let Some((at, text)) = self.queue.front() {
+            let late = now - at;
+            let text = if late >= LATE_SECS { format!("⏳ С опозданием на {} мин (Telegram был недоступен):\n{text}", late / 60) } else { text.clone() };
+            if let Err(e) = tg.send(&text).await {
+                return tracing::warn!(waiting = self.queue.len(), "monitor: Telegram: {e:#}");
+            }
+            self.queue.pop_front();
+        }
+    }
+}
+
 pub struct Monitor {
     state: AppState,
     store: Arc<VolumeStore>,
     rpc: Arc<RpcChain>,
     thresholds: Thresholds,
     telegram: Option<Telegram>,
+    /// Alerts not delivered yet (Telegram or every proxy down).
+    outbox: tokio::sync::Mutex<Outbox>,
     interval: Duration,
 }
 
@@ -260,9 +352,13 @@ impl Monitor {
     pub fn new(state: AppState, store: Arc<VolumeStore>, rpc: Arc<RpcChain>) -> Self {
         let c = &state.config;
         let telegram = match (&c.telegram_bot_token, &c.telegram_chat_id) {
-            (Some(token), Some(chat)) => match Telegram::new(&c.telegram_api_url, token, chat, c.telegram_proxy.as_deref()) {
+            (Some(token), Some(chat)) => match Telegram::new(&c.telegram_api_url, token, chat, &c.telegram_proxies) {
                 Ok(tg) => {
-                    let via = if c.telegram_proxy.is_some() { " through TELEGRAM_PROXY" } else { "" };
+                    let via = match c.telegram_proxies.len() {
+                        0 => String::new(),
+                        1 => " through TELEGRAM_PROXY".to_owned(),
+                        n => format!(" through TELEGRAM_PROXY ({n} proxies, the next when one fails)"),
+                    };
                     tracing::info!(chat = %chat, "monitor: alerts go to Telegram{via}");
                     Some(tg)
                 }
@@ -285,6 +381,7 @@ impl Monitor {
             }
         };
         Self {
+            outbox: tokio::sync::Mutex::default(),
             thresholds: c.alert_thresholds.clone(),
             interval: Duration::from_secs(c.monitor_interval_secs.max(10)),
             telegram,
@@ -301,6 +398,7 @@ impl Monitor {
             Err(e) => tracing::warn!("monitor: volumes: {e}"),
         }
         s.missing_volumes = self.store.missing().await.unwrap_or_default();
+        s.shortages = self.store.shortages();
         let db_dir = db_dir(&self.state.config.database_url);
         if let (Ok(free), Ok(total)) = (fs4::available_space(&db_dir), fs4::total_space(&db_dir)) {
             s.db_disk = Some((db_dir, free, total));
@@ -321,9 +419,9 @@ impl Monitor {
     async fn say(&self, text: &str) {
         tracing::warn!("{text}");
         if let Some(tg) = &self.telegram {
-            if let Err(e) = tg.send(text).await {
-                tracing::warn!("monitor: Telegram: {e:#}");
-            }
+            let mut outbox = self.outbox.lock().await;
+            outbox.push(now(), text.to_owned());
+            outbox.flush(tg, now()).await;
         }
     }
 
@@ -334,14 +432,23 @@ impl Monitor {
         let s = self.snapshot(0).await;
         if let Some(tg) = &self.telegram {
             let text = format!("🟢 Сервер Etherdisk запущен\n\n{}", status_text(&s, 0));
-            if let Err(e) = tg.send(&text).await {
-                tracing::warn!("monitor: Telegram: {e:#}");
-            }
+            let mut outbox = self.outbox.lock().await;
+            outbox.push(now(), text);
+            outbox.flush(tg, now()).await;
         }
         let mut tracker = Tracker::default();
         let mut seen_errors = self.state.server_errors.load(Ordering::Relaxed);
         loop {
             tokio::time::sleep(self.interval).await;
+            // Drives that found no room take space freed since (deleted files, a cleaned
+            // volume) without waiting for their owner to open them.
+            for (token, _) in self.store.shortages() {
+                crate::reserve::sync_logged(&self.state, &token).await;
+            }
+            // Messages that couldn't be sent go out once Telegram answers again.
+            if let Some(tg) = &self.telegram {
+                self.outbox.lock().await.flush(tg, now()).await;
+            }
             let total = self.state.server_errors.load(Ordering::Relaxed);
             let s = self.snapshot(total - seen_errors).await;
             seen_errors = total;
@@ -381,11 +488,12 @@ pub fn status_text(s: &Snapshot, problems: usize) -> String {
     let mut lines = vec!["📊 Состояние".to_owned()];
     for v in &s.volumes {
         lines.push(format!(
-            "• Том {}: свободно {} из {} ({}%), дисков: {}",
+            "• Том {}: свободно {} из {} ({}%), зарезервировано за дисками {}, дисков: {}",
             v.root.display(),
             fmt_bytes(v.available_bytes),
             fmt_bytes(v.total_bytes),
             pct(v.available_bytes, v.total_bytes),
+            fmt_bytes(v.reserved_bytes),
             v.vaults
         ));
     }
@@ -418,7 +526,7 @@ mod tests {
     const GB: u64 = 1 << 30;
 
     fn vol(id: &str, free: u64, total: u64) -> VolumeInfo {
-        VolumeInfo { id: id.into(), root: PathBuf::from(format!("/mnt/{id}")), total_bytes: total, available_bytes: free, vaults: 3 }
+        VolumeInfo { id: id.into(), root: PathBuf::from(format!("/mnt/{id}")), total_bytes: total, available_bytes: free, reserved_bytes: 0, vaults: 3 }
     }
 
     #[test]
@@ -426,12 +534,15 @@ mod tests {
         let s = Snapshot {
             volumes: vec![vol("a", 50 * GB, 100 * GB), vol("b", 10 * GB, 100 * GB), vol("c", 2 * GB, 100 * GB)],
             missing_volumes: vec![("d".into(), 4)],
+            shortages: vec![("7".into(), 3 * GB)],
             db_disk: Some((PathBuf::from("data"), 90 * GB, 100 * GB)),
             indexer: Some(Ok((1000, 1400))),
             errors: 25,
         };
-        let keys: Vec<String> = problems(&s, &T).into_iter().map(|p| p.key).collect();
-        assert_eq!(keys, ["volume:b:low", "volume:c:critical", "missing:d", "indexer", "errors"]);
+        let found = problems(&s, &T);
+        let keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["volume:b:low", "volume:c:critical", "reserve", "missing:d", "indexer", "errors"]);
+        assert!(found[2].text.contains("#7 (3.0 ГБ)"), "{}", found[2].text);
         // A volume and the database on one disk: one message naming both.
         let shared = Snapshot {
             volumes: vec![vol("a", 2 * GB, 100 * GB)],

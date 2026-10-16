@@ -15,10 +15,11 @@ import { CONTRACT_ADDRESS } from "@/lib/config";
 import { vaultNft } from "@/lib/contract";
 import { sealDriveKey, verifiedInbox } from "@/lib/inbox";
 import { driveName } from "@/lib/drive-style";
-import { formatBytes, shortAddress } from "@/lib/format";
+import { shortAddress } from "@/lib/format";
 import { IDLE_CHOICES, useLockSettings } from "@/lib/lock-settings";
 import { useUnlocked } from "@/lib/unlocked";
 
+import { DriveSize } from "../drive-size";
 import { useToast } from "../toast";
 import { Button, cn, Dialog, Input, Notice } from "../ui";
 import { ChangePassphraseForm, DriveLookForm, LinksList, ResetDialog, type DriveCtx } from "./dialogs";
@@ -276,7 +277,9 @@ export function DriveSettingsPanel({ token, info }: { token: string; info: Vault
           <dt className="text-muted">{t("driveSettings.token")}</dt>
           <dd className="font-mono">#{tokenId}</dd>
           <dt className="text-muted">{t("driveSettings.capacity")}</dt>
-          <dd>{formatBytes(info.capacity_bytes)}</dd>
+          <dd>
+            <DriveSize info={info} />
+          </dd>
           <dt className="text-muted">{t("driveSettings.contract")}</dt>
           <dd>
             <a

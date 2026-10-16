@@ -179,6 +179,10 @@ async fn set_owner(st: &AppState, to: Address, token: &str) -> AppResult<()> {
 pub async fn on_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
     st.chain.invalidate(token_id);
     set_owner(st, to, &token_id.to_string()).await?;
+    if from == Address::ZERO {
+        // A new drive: its capacity is reserved on a volume right away.
+        crate::reserve::sync_logged(st, &token_id.to_string()).await;
+    }
     if from != Address::ZERO {
         let token = token_id.to_string();
         let n = revoke_all(st, &token).await?;
