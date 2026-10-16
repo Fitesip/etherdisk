@@ -96,7 +96,7 @@ async fn app_keeping_free(keep_free: u64, tweak: impl FnOnce(&mut Config)) -> Ap
         telegram_bot_token: None,
         telegram_chat_id: None,
         telegram_api_url: String::new(),
-        telegram_proxy: None,
+        telegram_proxies: Vec::new(),
         alert_thresholds: etherdisk_server::monitor::Thresholds {
             free_percent: 15,
             critical_percent: 5,
