@@ -5,6 +5,7 @@
 // derived from the link key and the password, so the link alone opens nothing.
 
 import { api } from "./api";
+import { siteUrl } from "./config";
 import { concat, decryptWithKey, encryptWithKey, fromB64, fromUtf8, randomBytes, toB64, toB64Url, utf8, type WasmVault } from "./crypto";
 import { isFileMeta, openItem, SHARE_AAD, type Item } from "./meta";
 
@@ -78,7 +79,7 @@ export async function collectFiles(
 }
 
 export const shareLink = (id: string, key: Uint8Array, password = false) =>
-  `${window.location.origin}/s/${id}#${toB64Url(key)}${password ? PASSWORD_SUFFIX : ""}`;
+  `${siteUrl()}/s/${id}#${toB64Url(key)}${password ? PASSWORD_SUFFIX : ""}`;
 
 /** Splits a link fragment into the key and whether a password is needed. */
 export function parseFragment(fragment: string): { key: string; password: boolean } {

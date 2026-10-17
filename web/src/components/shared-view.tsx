@@ -1,13 +1,13 @@
 "use client";
 
 import { Download, File as FileIcon, Folder, KeyRound } from "lucide-react";
-import { useParams } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useT } from "@/i18n";
 import { api } from "@/lib/api";
 import { fromB64, loadCrypto, nextFrame } from "@/lib/crypto";
 import { formatBytes, viewKind } from "@/lib/format";
+import { useRouteParam } from "@/lib/route-param";
 import { openManifest, parseFragment, type Manifest, type ManifestFile } from "@/lib/share";
 import { downloadFile, downloadZip, shareSource } from "@/lib/stream";
 import { useThumbnail } from "@/lib/thumbs";
@@ -60,7 +60,7 @@ type State =
 export function SharedView() {
   const t = useT();
   const toast = useToast();
-  const { id } = useParams<{ id: string }>();
+  const id = useRouteParam("id", 1);
   const [state, setState] = useState<State>({ phase: "loading" });
   const [gallery, setGallery] = useState<Gallery | null>(null);
   const [password, setPassword] = useState("");

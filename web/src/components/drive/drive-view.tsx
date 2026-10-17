@@ -3,13 +3,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Settings } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
 import { useState } from "react";
 
 import { useT } from "@/i18n";
 import { api, ApiError, type VaultInfo } from "@/lib/api";
 import { driveName, driveVars } from "@/lib/drive-style";
 import { hasKept } from "@/lib/kept-keys";
+import { useRouteParam } from "@/lib/route-param";
 import { useSession } from "@/lib/session";
 import { useStored } from "@/lib/storage";
 import { useUnlocked } from "@/lib/unlocked";
@@ -151,6 +151,6 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
 }
 
 export function DriveView({ tab = "files" }: { tab?: DriveTab }) {
-  const { tokenId } = useParams<{ tokenId: string }>();
+  const tokenId = useRouteParam("tokenId", 1);
   return <RequireSession>{(token) => <DriveGate token={token} tokenId={tokenId} tab={tab} />}</RequireSession>;
 }
