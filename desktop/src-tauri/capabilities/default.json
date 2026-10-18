@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The app's pages use no native commands: links leave through the navigation handler.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

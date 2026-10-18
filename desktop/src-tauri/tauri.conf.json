@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Etherdisk",
+  "version": "1.2.0",
+  "identifier": "app.etherdisk.desktop",
+  "build": {
+    "beforeBuildCommand": "npm run web",
+    "frontendDist": "../../web/out"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg", "appimage", "deb"],
+    "publisher": "Etherdisk",
+    "homepage": "https://etherdisk.app",
+    "category": "Productivity",
+    "shortDescription": "Encrypted cloud storage you own as an NFT",
+    "longDescription": "End-to-end encrypted cloud storage: each drive is an ERC-721 token on Ethereum. Files are encrypted on your computer before upload.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
