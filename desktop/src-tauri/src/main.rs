@@ -129,7 +129,11 @@ fn main() {
                 .title("Etherdisk")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(420.0, 560.0)
-                // Links to other sites (Etherscan, wallets, the docs) open in the browser.
+                // Files dropped on the window go to the page (uploads), not to Tauri's own handler.
+                .disable_drag_drop_handler()
+                // Links to other sites (Etherscan, wallets, the docs) open in the browser. New-window
+                // links become plain navigations first (links.js): WebView2 doesn't report them.
+                .initialization_script(include_str!("links.js"))
                 .on_navigation(move |url| {
                     if is_app(url) || url.scheme() == "about" {
                         return true;
