@@ -157,6 +157,60 @@ jobs:
       - name: Build
         run: npx next build
 
+  desktop:
+    name: Desktop app (Windows installer)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    # The pages built into the app: the mainnet settings of desktop/.env.example.
+    env:
+      NEXT_PUBLIC_API_URL: https://etherdisk.app
+      NEXT_PUBLIC_SITE_URL: https://etherdisk.app
+      NEXT_PUBLIC_CHAIN_ID: "1"
+      NEXT_PUBLIC_CONTRACT_ADDRESS: "0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0"
+      NEXT_PUBLIC_RPC_URL: https://ethereum-rpc.publicnode.com,https://mainnet.gateway.tenderly.co
+      # Not a secret (the site ships it too): a repository variable, so forks build without it.
+      NEXT_PUBLIC_WC_PROJECT_ID: ${{ vars.WC_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+      # Pinned: wasm-pack moved to the wasm-bindgen org and "latest" can resolve to 0.9.1.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - run: npm ci --prefix ../web && npm ci
+      - name: Build the pages (static export)
+        run: npm run web
+      - name: Lint
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: desktop/src-tauri
+        run: cargo test
+      - name: Installer
+        run: npx tauri build --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etherdisk-windows
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest

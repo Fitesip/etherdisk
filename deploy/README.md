@@ -1,7 +1,7 @@
 # Развёртывание в Docker
 
 Три контейнера: **nginx** (HTTPS, etherdisk.app) → **web** (Next.js) и **server** (Rust, API на `/api/`).
-Сайт и API на одном домене, поэтому CORS не нужен. Порядок выхода в mainnet — в `docs/LAUNCH.md`.
+Сайт и API на одном домене, поэтому сайту CORS не нужен; приложению для ПК (`desktop/`) его разрешает `CORS_ORIGINS` в `server.env`. Порядок выхода в mainnet — в `docs/LAUNCH.md`.
 
 ## 1. Подготовка хоста
 

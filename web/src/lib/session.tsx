@@ -9,6 +9,7 @@ import { createSiweMessage } from "viem/siwe";
 import { useConnection, useSignMessage } from "wagmi";
 
 import { api, ApiError, UNAUTHORIZED_EVENT } from "./api";
+import { siteUrl } from "./config";
 import { readStored, useStored, writeStored } from "./storage";
 import { CHAIN } from "./wagmi";
 
@@ -73,10 +74,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       const { nonce } = await api.nonce();
       const message = createSiweMessage({
-        domain: window.location.host,
+        domain: new URL(siteUrl()).host,
         address,
         statement: "Sign in to Etherdisk",
-        uri: window.location.origin,
+        uri: siteUrl(),
         version: "1",
         chainId: CHAIN.id,
         nonce,

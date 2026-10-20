@@ -10,3 +10,8 @@ export default function SharePage() {
     </Suspense>
   );
 }
+
+// The static export (the desktop app) has one page, for `_`, served for every id (lib/route-param.ts).
+export function generateStaticParams() {
+  return [{ id: "_" }];
+}

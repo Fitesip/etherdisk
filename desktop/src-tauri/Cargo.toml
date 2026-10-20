@@ -1,0 +1,24 @@
+[package]
+name = "etherdisk-desktop"
+version = "1.2.0"
+edition = "2021"
+description = "Etherdisk for Windows, macOS and Linux"
+publish = false
+
+# Its own workspace: the server's CI (Linux, no WebKitGTK) doesn't build the desktop app.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2.7"
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-window-state = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

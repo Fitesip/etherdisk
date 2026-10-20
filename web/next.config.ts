@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 import { mainnet, sepolia } from "viem/chains";
 
 const isDev = process.env.NODE_ENV === "development";
+// A static export for the desktop app (NEXT_OUTPUT=export): plain HTML, JS and WASM files.
+const isExport = process.env.NEXT_OUTPUT === "export";
 // Same rule as src/lib/chain.ts: mainnet when NEXT_PUBLIC_CHAIN_ID=1, Sepolia otherwise.
 const chain = process.env.NEXT_PUBLIC_CHAIN_ID === "1" ? mainnet : sepolia;
 const origin = (url: string | undefined) => {
@@ -55,8 +57,10 @@ const csp = [
 const nextConfig: NextConfig = {
   // The Docker image runs the self-contained server (deploy/web.Dockerfile sets NEXT_OUTPUT).
   ...(process.env.NEXT_OUTPUT === "standalone" && { output: "standalone" as const }),
-  cacheComponents: true,
-  partialPrefetching: true,
+  ...(isExport && { output: "export" as const }),
+  // Partial prerendering needs a server.
+  cacheComponents: !isExport,
+  partialPrefetching: !isExport,
   turbopack: {
     rules: {
       "*.css": {
@@ -67,25 +71,29 @@ const nextConfig: NextConfig = {
       "*.md": { type: "text" },
     },
   },
-  async headers() {
-    return [
-      {
-        source: "/(.*)",
-        headers: [
-          { key: "Content-Security-Policy", value: csp },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "Referrer-Policy", value: "no-referrer" },
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=(), payment=()" },
-        ],
-      },
-      {
-        // The service worker must be able to control the whole site.
-        source: "/sw.js",
-        headers: [{ key: "Service-Worker-Allowed", value: "/" }],
-      },
-    ];
-  },
+  // A static export (the desktop app) has no server to send headers: its pages carry the
+  // same policy in a <meta> tag (where frame-ancestors doesn't apply).
+  ...(isExport ? { env: { EXPORT_CSP: csp.replace("; frame-ancestors 'none'", "") } } : { headers }),
 };
+
+async function headers() {
+  return [
+    {
+      source: "/(.*)",
+      headers: [
+        { key: "Content-Security-Policy", value: csp },
+        { key: "X-Content-Type-Options", value: "nosniff" },
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=(), payment=()" },
+      ],
+    },
+    {
+      // The service worker must be able to control the whole site.
+      source: "/sw.js",
+      headers: [{ key: "Service-Worker-Allowed", value: "/" }],
+    },
+  ];
+}
 
 export default nextConfig;

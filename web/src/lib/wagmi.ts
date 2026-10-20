@@ -3,7 +3,7 @@ import { createConfig, fallback, http } from "wagmi";
 import { injected, walletConnect } from "wagmi/connectors";
 
 import { CHAIN } from "./chain";
-import { RPC_URLS, WC_PROJECT_ID } from "./config";
+import { RPC_URLS, siteUrl, WC_PROJECT_ID } from "./config";
 
 // Browser wallets (MetaMask, Rabby, ...) are discovered via EIP-6963 automatically;
 // `injected()` is the fallback for wallets that don't announce themselves.
@@ -18,9 +18,9 @@ export const wagmiConfig = createConfig({
             metadata: {
               name: "Etherdisk",
               description: "Encrypted storage you own as an NFT",
-              url: typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
+              url: siteUrl(),
               // Shown by the wallet next to connection and signature requests.
-              icons: typeof window === "undefined" ? [] : [`${window.location.origin}/icons/icon-192.png`],
+              icons: typeof window === "undefined" ? [] : [`${siteUrl()}/icons/icon-192.png`],
             },
           }),
         ]
