@@ -52,6 +52,7 @@ export const en = {
       "Every drive is an NFT. No subscription, no account: mint it, fill it, give it away or sell it — the files go with it, readable only with your passphrase.",
     ctaPrimary: "Open your drives",
     ctaSecondary: "How it works",
+    downloadWindows: "Download for Windows",
     demo: {
       ready: "Ready to upload",
       encrypting: "Encrypting chunk {n} of {total}",

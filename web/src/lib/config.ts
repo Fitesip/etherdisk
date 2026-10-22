@@ -14,6 +14,11 @@ export const RPC_URLS = (process.env.NEXT_PUBLIC_RPC_URL ?? "")
  */
 export const siteUrl = () =>
   (process.env.NEXT_PUBLIC_SITE_URL || (typeof window === "undefined" ? "http://localhost:3000" : window.location.origin)).replace(/\/$/, "");
+/**
+ * The Windows installer of the latest release (desktop/). The release workflow uploads it
+ * under this fixed name next to the versioned one, with its SHA-256 and build provenance.
+ */
+export const WINDOWS_DOWNLOAD_URL = "https://github.com/Fitesip/etherdisk/releases/latest/download/Etherdisk-windows-x64-setup.exe";
 export const WC_PROJECT_ID = process.env.NEXT_PUBLIC_WC_PROJECT_ID || undefined;
 
 /** Passphrase policy for new passphrases (the crypto crate only rejects empty ones). */

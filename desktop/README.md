@@ -41,6 +41,8 @@ npm run build            # статическая сборка web/ → web/out,
 
 В сборку попадают только настройки из `desktop/.env` (или переменных окружения): `web/.env.local` не используется, так что локальные настройки разработки в релиз не уйдут.
 
+**Релизы.** При публикации релиза в публичном репозитории workflow `.github/workflows/release.yml` собирает установщик из коммита тега, записывает его происхождение (аттестация GitHub) и прикладывает к релизу `Etherdisk-windows-x64-setup.exe` с SHA-256; в описание релиза дописывается, как это проверить (`gh attestation verify Etherdisk-windows-x64-setup.exe --repo Fitesip/etherdisk`). Кнопка «Download for Windows» на сайте ведёт на этот файл последнего релиза. Версия в `src-tauri/tauri.conf.json` должна совпадать с тегом (без даты), и в репозитории должна быть переменная `WC_PROJECT_ID` — иначе workflow остановится.
+
 CI собирает установщик для Windows на каждый PR (задача «Desktop app», артефакт `etherdisk-windows`). WalletConnect в нём работает, если в репозитории задана переменная `WC_PROJECT_ID` (Settings → Secrets and variables → Actions → Variables).
 
 ## Разработка
