@@ -34,6 +34,7 @@ import { entriesFromDrop, entriesFromInput, type TreeEntry } from "@/lib/folder-
 import { formatBytes, viewKind } from "@/lib/format";
 import { isFileMeta, itemName, openItem, type FileMeta, type Item } from "@/lib/meta";
 import { useDrivePrefs } from "@/lib/prefs";
+import { subscribeShared, takeSharedFor } from "@/lib/shared-files";
 import { useStored, writeStored } from "@/lib/storage";
 import { downloadFile, ownerSource } from "@/lib/stream";
 import { useUnlocked, type Unlocked } from "@/lib/unlocked";
@@ -353,6 +354,22 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       entriesFromDrop(data).then((entries) => plan(entries, target));
     };
   });
+
+  // Desktop app: files sent from the system to this drive upload into the open folder as
+  // soon as it is unlocked and listed (shared-files.tsx), or when they arrive later.
+  const takeShared = useRef(() => {});
+  useEffect(() => {
+    takeShared.current = () => {
+      if (inTrash || !objects.data) return;
+      const entries = takeSharedFor(tokenId);
+      if (entries) plan(entries, current);
+    };
+  });
+  const ready = !!objects.data;
+  useEffect(() => {
+    if (ready) takeShared.current();
+  }, [ready]);
+  useEffect(() => subscribeShared(() => takeShared.current()), []);
   useEffect(() => {
     // Only files from the computer: drags of drive items (moves) carry no "Files". The
     // overlay that shows up then covers the window, so its own dragleave means the drag

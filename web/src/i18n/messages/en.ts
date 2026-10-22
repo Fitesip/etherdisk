@@ -480,6 +480,17 @@ export const en = {
     },
     audit: "Signatures",
   },
+  sharedFiles: {
+    title: "Files to upload: {n}",
+    reading: "Reading files from the computer: {n}…",
+    more: "and {n} more",
+    pick: "Which drive should they go to?",
+    afterUnlock: "They upload to {name} once it is open (unlock it if it asks).",
+    signIn: "Connect your wallet to choose a drive.",
+    noDrives: "You have no drives yet: buy one to upload them.",
+    discard: "Discard",
+    readError: "Couldn't read the files: {error}",
+  },
   share: {
     createTitle: "Share “{name}”",
     createText: "Anyone with the link can view and download. The key is in the part after #, which never reaches the server.",

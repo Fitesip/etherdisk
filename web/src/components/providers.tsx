@@ -9,6 +9,7 @@ import { SessionProvider } from "@/lib/session";
 import { UnlockedProvider } from "@/lib/unlocked";
 import { wagmiConfig } from "@/lib/wagmi";
 
+import { SharedFiles } from "./shared-files";
 import { ToastProvider } from "./toast";
 
 export function Providers({ children }: { children: ReactNode }) {
@@ -21,7 +22,10 @@ export function Providers({ children }: { children: ReactNode }) {
         <I18nProvider>
           <SessionProvider>
             <UnlockedProvider>
-              <ToastProvider>{children}</ToastProvider>
+              <ToastProvider>
+                {children}
+                <SharedFiles />
+              </ToastProvider>
             </UnlockedProvider>
           </SessionProvider>
         </I18nProvider>
