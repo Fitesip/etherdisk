@@ -52,6 +52,7 @@ export const en = {
       "Every drive is an NFT. No subscription, no account: mint it, fill it, give it away or sell it — the files go with it, readable only with your passphrase.",
     ctaPrimary: "Open your drives",
     ctaSecondary: "How it works",
+    downloadWindows: "Download for Windows",
     demo: {
       ready: "Ready to upload",
       encrypting: "Encrypting chunk {n} of {total}",
@@ -479,6 +480,17 @@ export const en = {
       declined: "Declined",
     },
     audit: "Signatures",
+  },
+  sharedFiles: {
+    title: "Files to upload: {n}",
+    reading: "Reading files from the computer: {n}…",
+    more: "and {n} more",
+    pick: "Which drive should they go to?",
+    afterUnlock: "They upload to {name} once it is open (unlock it if it asks).",
+    signIn: "Connect your wallet to choose a drive.",
+    noDrives: "You have no drives yet: buy one to upload them.",
+    discard: "Discard",
+    readError: "Couldn't read the files: {error}",
   },
   share: {
     createTitle: "Share “{name}”",

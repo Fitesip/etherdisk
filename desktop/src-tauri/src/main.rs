@@ -7,11 +7,14 @@
 // No console window next to the app on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod share;
+
 use std::borrow::Cow;
+use std::path::Path;
 
 use tauri::http::{header, Response, StatusCode};
 use tauri::webview::NewWindowResponse;
-use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
 /// The scheme the pages are served from: `app://localhost` (macOS, Linux) or
@@ -79,10 +82,37 @@ fn csp(index_html: &[u8]) -> Option<String> {
     ))
 }
 
+/// Files sent from the system that the page hasn't picked up yet (see share.rs).
+#[tauri::command]
+fn shared_files(shared: State<share::Shared>) -> Vec<share::Item> {
+    shared.take()
+}
+
+/// A piece of a sent file, as raw bytes (an ArrayBuffer in the page).
+#[tauri::command]
+fn read_shared(
+    shared: State<share::Shared>,
+    id: String,
+    offset: u64,
+    len: u64,
+) -> Result<tauri::ipc::Response, String> {
+    shared.read(&id, offset, len).map(tauri::ipc::Response::new)
+}
+
+#[tauri::command]
+fn forget_shared(shared: State<share::Shared>, ids: Vec<String>) {
+    shared.forget(&ids);
+}
+
 fn main() {
     tauri::Builder::default()
-        // A second launch brings the open window forward instead of starting another app.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .manage(share::Shared::default())
+        // A second launch brings the open window forward instead of starting another app,
+        // handing over the files it was started for ("Upload to Etherdisk", "Send to").
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            if app.state::<share::Shared>().add_args(args, Path::new(&cwd)) > 0 {
+                let _ = app.emit("shared-files", ());
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -108,8 +138,12 @@ fn main() {
                 .status(status)
                 .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
                 .header(header::REFERRER_POLICY, "no-referrer");
-            if let Some(policy) = resolver
-                .get("index.html".into())
+            // Not for the service worker: it keeps the policy it was installed with until its
+            // own script changes, and a new version (e.g. another API address) would then
+            // block its fetches. It only fetches what the pages hand it.
+            if let Some(policy) = (path != "/sw.js")
+                .then(|| resolver.get("index.html".into()))
+                .flatten()
                 .and_then(|i| csp(&i.bytes))
             {
                 response = response.header(header::CONTENT_SECURITY_POLICY, policy);
@@ -122,7 +156,15 @@ fn main() {
             }
             .expect("valid response")
         })
+        .invoke_handler(tauri::generate_handler![
+            shared_files,
+            read_shared,
+            forget_shared
+        ])
         .setup(|app| {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            app.state::<share::Shared>()
+                .add_args(std::env::args(), &cwd);
             let handle = app.handle().clone();
             let opener = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::CustomProtocol(app_url(START)))

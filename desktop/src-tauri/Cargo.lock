@@ -923,8 +923,9 @@ dependencies = [
 
 [[package]]
 name = "etherdisk-desktop"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

@@ -5,6 +5,7 @@ import {
   ArrowRightLeft,
   Check,
   Cpu,
+  Download,
   FileText,
   Film,
   HardDrive,
@@ -17,12 +18,14 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent, type ReactNode } from "react";
 import { formatEther } from "viem";
 
 import { useT, type MessageKey } from "@/i18n";
 import { IS_TESTNET } from "@/lib/chain";
+import { WINDOWS_DOWNLOAD_URL } from "@/lib/config";
 import { formatCapacity } from "@/lib/format";
+import { isDesktop } from "@/lib/shared-files";
 import { useTiers } from "@/lib/tiers";
 
 import { DriveArt, driveColor } from "./drive-art";
@@ -323,6 +326,7 @@ function Hero() {
             >
               {t("landing.ctaSecondary")}
             </a>
+            <DownloadApp />
           </div>
         </div>
 
@@ -707,6 +711,24 @@ function CurrentYear() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- the clock is only read on the client
   useEffect(() => setYear(new Date().getFullYear()), []);
   return <span suppressHydrationWarning>{year ?? ""}</span>;
+}
+
+const noSubscribe = () => () => {};
+
+/** The Windows app's installer (not shown inside the app itself). */
+function DownloadApp() {
+  const t = useT();
+  const inApp = useSyncExternalStore(noSubscribe, isDesktop, () => false);
+  if (inApp) return null;
+  return (
+    <a
+      href={WINDOWS_DOWNLOAD_URL}
+      className="inline-flex h-12 items-center gap-2 rounded-xl border border-border bg-card/70 px-6 text-sm font-medium backdrop-blur transition hover:bg-bg-subtle"
+    >
+      <Download className="h-4 w-4" />
+      {t("landing.downloadWindows")}
+    </a>
+  );
 }
 
 export function Landing() {

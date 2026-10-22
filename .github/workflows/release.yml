@@ -1,0 +1,78 @@
+name: Release
+
+# When a release is published: builds the Windows installer from the tagged commit, records
+# its build provenance (GitHub artifact attestation) and attaches it with its SHA-256. Runs
+# in the public repository only: attestations of private ones need GitHub Enterprise.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  windows:
+    name: Windows installer
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    # The pages built into the app: the mainnet settings of desktop/.env.example.
+    env:
+      NEXT_PUBLIC_API_URL: https://etherdisk.app
+      NEXT_PUBLIC_SITE_URL: https://etherdisk.app
+      NEXT_PUBLIC_CHAIN_ID: "1"
+      NEXT_PUBLIC_CONTRACT_ADDRESS: "0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0"
+      NEXT_PUBLIC_RPC_URL: https://ethereum-rpc.publicnode.com,https://mainnet.gateway.tenderly.co
+      NEXT_PUBLIC_WC_PROJECT_ID: ${{ vars.WC_PROJECT_ID }}
+      TAG: ${{ github.event.release.tag_name }}
+      # The download button on the site links to this name in the latest release.
+      INSTALLER: Etherdisk-windows-x64-setup.exe
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: The app's version matches the tag
+        run: |
+          app=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          [ "$app" = "$(echo "$TAG" | cut -d. -f1-3)" ] || { echo "tauri.conf.json has $app, the tag is $TAG"; exit 1; }
+          [ -n "$NEXT_PUBLIC_WC_PROJECT_ID" ] || { echo "set the WC_PROJECT_ID variable: without it the app can't sign in"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # Pinned: wasm-pack moved to the wasm-bindgen org and "latest" can resolve to 0.9.1.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --prefix ../web && npm ci
+      - name: Installer
+        run: |
+          npx tauri build --bundles nsis
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe "$INSTALLER"
+          sha256sum "$INSTALLER" > "$INSTALLER.sha256"
+          cat "$INSTALLER.sha256"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: desktop/${{ env.INSTALLER }}
+      - name: Attach to the release
+        run: |
+          gh release upload "$TAG" "$INSTALLER" "$INSTALLER.sha256" --clobber
+          hash=$(cut -d' ' -f1 "$INSTALLER.sha256")
+          gh release view "$TAG" --json body -q .body > notes.md
+          cat >> notes.md <<EOF
+
+          ### Установщик для Windows
+          \`$INSTALLER\` собран GitHub Actions из этого репозитория на коммите \`$GITHUB_SHA\`.
+
+          - SHA-256: \`$hash\`
+          - Происхождение: \`gh attestation verify $INSTALLER --repo $GITHUB_REPOSITORY\`
+          EOF
+          gh release edit "$TAG" --notes-file notes.md

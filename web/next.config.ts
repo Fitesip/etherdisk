@@ -31,6 +31,8 @@ const connect = [
   "https://api.web3modal.org",
   "https://api.web3modal.com",
   ...(isDev ? ["ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"] : []),
+  // The desktop app's IPC (Tauri): without it, binary answers arrive as JSON number arrays.
+  ...(isExport ? ["ipc:", "http://ipc.localhost"] : []),
 ].filter(Boolean);
 
 // Scripts: 'unsafe-inline' remains because Next.js streams inline scripts and a nonce
