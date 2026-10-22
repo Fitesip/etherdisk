@@ -1,7 +1,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { WagmiProvider } from "wagmi";
 
 import { I18nProvider } from "@/i18n";
@@ -24,7 +24,10 @@ export function Providers({ children }: { children: ReactNode }) {
             <UnlockedProvider>
               <ToastProvider>
                 {children}
-                <SharedFiles />
+                {/* Reads the route: outside of it, prerendering a dynamic page would bail out. */}
+                <Suspense fallback={null}>
+                  <SharedFiles />
+                </Suspense>
               </ToastProvider>
             </UnlockedProvider>
           </SessionProvider>
