@@ -186,7 +186,12 @@ pub async fn on_transfer(st: &AppState, from: Address, to: Address, token_id: U2
     if from != Address::ZERO {
         let token = token_id.to_string();
         let n = revoke_all(st, &token).await?;
+        let sale = crate::sale::on_transfer(st, from, &token).await?;
         handover::on_transfer(st, from, to, &token).await?;
+        if sale.is_some_and(|s| !s.with_key) {
+            // Sold without the key: the seller isn't asked for it.
+            handover::drop_request(st, &token).await?;
+        }
         ideas::on_transfer(st, &token).await?;
         vaults::on_transfer(st, to, &token).await?;
         tracing::info!(%token_id, revoked_links = n, "vault transferred");

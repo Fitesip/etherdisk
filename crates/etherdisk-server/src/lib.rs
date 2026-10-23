@@ -16,6 +16,7 @@ pub mod objects;
 pub mod range;
 pub mod ratelimit;
 pub mod reserve;
+pub mod sale;
 pub mod shares;
 pub mod storage;
 pub mod tiers;
@@ -137,8 +138,10 @@ pub fn router(state: AppState) -> Router {
         .merge(handover::routes())
         .merge(ideas::routes())
         .merge(tiers::routes())
+        .merge(sale::public_routes())
         .route_layer(from_fn_with_state(state.clone(), ratelimit::public));
     let rest = vaults::routes()
+        .merge(sale::routes())
         .merge(objects::routes())
         .route_layer(from_fn_with_state(state.clone(), ratelimit::default));
     Router::new()

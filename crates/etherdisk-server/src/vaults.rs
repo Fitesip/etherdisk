@@ -55,6 +55,8 @@ pub struct VaultInfo {
     initialized: bool,
     /// When the current owner saved a recovery key, if they did.
     recovery_at: Option<i64>,
+    /// Put up for sale by the current owner (sale.rs).
+    sale: Option<crate::sale::Sale>,
     #[serde(flatten)]
     profile: Profile,
 }
@@ -110,6 +112,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
         used_bytes: used_bytes(st, &token).await?,
         initialized,
         recovery_at,
+        sale: crate::sale::sale_of(st, &token, owner).await?,
         token_id: token,
     })
 }
