@@ -24,6 +24,7 @@ import { useToast } from "../toast";
 import { Button, cn, Dialog, Input, Notice } from "../ui";
 import { ChangePassphraseForm, DriveLookForm, LinksList, ResetDialog, type DriveCtx } from "./dialogs";
 import { RecoverySettings } from "./recovery";
+import { SaleSettings } from "./sale";
 
 const CONFIRM_WORD = "TRANSFER";
 
@@ -270,6 +271,10 @@ export function DriveSettingsPanel({ token, info }: { token: string; info: Vault
 
       <Section title={t("driveSettings.links")} text={t("share.revokedOnTransfer")}>
         {ctx ? <LinksList ctx={ctx} /> : needsUnlock}
+      </Section>
+
+      <Section title={t("sale.title")} text={t("sale.text")}>
+        <SaleSettings token={token} info={info} />
       </Section>
 
       <Section title={t("driveSettings.about")}>
