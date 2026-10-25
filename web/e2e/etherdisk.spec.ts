@@ -406,3 +406,34 @@ test("customization: drive icon and cover, starred files, labels, folder color a
   await expect(list.locator("li").first()).toContainText("zeta.txt");
   await page.screenshot({ path: "test-results/customization-files.png", fullPage: true });
 });
+
+test("sale: the drive's page tells buyers whether they get the files", async ({ page, browser }) => {
+  await installWallet(page, ALICE);
+  await signIn(page);
+  const tokenId = await mintAndSetUp(page);
+  await upload(page, [text("for-the-buyer.txt", "kept for whoever buys the drive")]);
+  await expect(page.getByRole("button", { name: "for-the-buyer.txt", exact: true })).toBeVisible();
+
+  await page.goto(`/drive/${tokenId}/settings`);
+  await expect(page.getByRole("radio", { name: /With the files/ })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Put up for sale" }).click();
+  await expect(page.getByText("For sale", { exact: true })).toBeVisible();
+  const link = await page.getByRole("textbox", { name: "Drive page" }).inputValue();
+  expect(link).toMatch(new RegExp(`/nft/${tokenId}$`));
+
+  // A buyer without a wallet: the sale, what comes with it, how much is used.
+  const buyer = await (await browser.newContext()).newPage();
+  await buyer.goto(`/nft/${tokenId}`);
+  await expect(buyer.getByRole("heading", { name: `Etherdisk drive #${tokenId}` })).toBeVisible();
+  await expect(buyer.getByText("The buyer gets the files")).toBeVisible();
+  await expect(buyer.getByText(/ of 1\.0 GB used$/)).toBeVisible();
+
+  // The owner's drive list marks it; taking it off sale clears the page.
+  await page.goto("/drive");
+  await expect(page.locator(`a[href="/drive/${tokenId}"]`).getByText("For sale")).toBeVisible();
+  await page.goto(`/drive/${tokenId}/settings`);
+  await page.getByRole("button", { name: "Take off sale" }).click();
+  await expect(page.getByRole("button", { name: "Put up for sale" })).toBeVisible();
+  await buyer.reload();
+  await expect(buyer.getByText(/isn't for sale/)).toBeVisible();
+});

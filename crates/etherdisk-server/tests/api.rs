@@ -1289,6 +1289,75 @@ async fn transfer_without_the_key_asks_for_nothing() {
     assert_eq!(app.get("/api/vaults/1/handover", Some(&tc)).await.status, StatusCode::OK);
 }
 
+#[tokio::test]
+async fn a_drive_for_sale_shows_its_state_until_it_changes_hands() {
+    let app = app().await;
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    for id in 1..=4 {
+        app.mint(id, alice.address(), 1).await;
+    }
+    let ta = app.login(&alice).await;
+    let tb = app.login(&bob).await;
+    let sale = |id: u64, with_key: bool, token: &str| {
+        let token = token.to_owned();
+        let app = &app;
+        async move { app.json(Method::PUT, &format!("/api/vaults/{id}/sale"), Some(&token), json!({ "with_key": with_key })).await }
+    };
+
+    // Public, without a session: not for sale, nothing about the drive's use.
+    let p = app.get("/api/nft/1", None).await;
+    assert_eq!(p.status, StatusCode::OK);
+    assert_eq!(p.json()["capacity_bytes"], 1u64 << 30);
+    assert!(p.json().get("sale").is_none());
+    assert_eq!(app.get("/api/nft/99", None).await.status, StatusCode::NOT_FOUND);
+
+    // A drive never set up has no key to promise; without the key it can be listed.
+    assert_eq!(sale(2, true, &ta).await.status, StatusCode::CONFLICT);
+    assert_eq!(sale(2, false, &ta).await.status, StatusCode::OK);
+    let p = app.get("/api/nft/2", None).await.json();
+    assert_eq!((p["sale"]["with_key"].as_bool(), p["sale"]["initialized"].as_bool(), p["sale"]["used_bytes"].as_u64()), (Some(false), Some(false), Some(0)));
+
+    // With the key: buyers see that, and how much is used. Only the owner lists.
+    setup_vault_with_file(&app, &ta, b"for the buyer").await;
+    assert_eq!(sale(1, true, &tb).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(sale(1, true, &ta).await.status, StatusCode::OK);
+    let p = app.get("/api/nft/1", None).await.json();
+    assert_eq!(p["sale"]["with_key"], true);
+    assert_eq!(p["sale"]["initialized"], true);
+    assert!(p["sale"]["used_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.json()["sale"]["with_key"], true);
+
+    // Sold: the listing goes away, and the seller is asked for the key they promised.
+    app.chain.transfer(1, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    assert!(app.get("/api/nft/1", None).await.json().get("sale").is_none());
+    assert!(app.get("/api/vaults/1", Some(&tb)).await.json()["sale"].is_null());
+    let asked: Vec<String> = app.get("/api/handovers/outgoing", Some(&ta)).await.json().as_array().unwrap().iter().map(|h| h["token_id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(asked, ["1"]);
+
+    // Sold without the key: nobody asks the seller for it.
+    let (_, blob) = Vault::create_with_params("pass", FAST).unwrap();
+    let r = app.json(Method::PUT, "/api/vaults/3/key", Some(&ta), json!({ "key_blob": b64(&blob), "previous_etag": null })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(sale(3, false, &ta).await.status, StatusCode::OK);
+    app.chain.transfer(3, bob.address());
+    indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(3)).await.unwrap();
+    let asked = app.get("/api/handovers/outgoing", Some(&ta)).await.json();
+    assert_eq!(asked.as_array().unwrap().len(), 1, "still only drive 1: {asked}");
+
+    // A transfer the indexer hasn't seen yet: the former owner's listing doesn't show.
+    assert_eq!(sale(4, true, &ta).await.status, StatusCode::CONFLICT);
+    assert_eq!(sale(4, false, &ta).await.status, StatusCode::OK);
+    app.chain.transfer(4, bob.address());
+    assert!(app.get("/api/nft/4", None).await.json().get("sale").is_none());
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sales WHERE token_id = '4'").fetch_one(&app.state.db).await.unwrap();
+    assert_eq!(left, 0);
+
+    // Taken off sale by the owner.
+    assert_eq!(app.req(Method::DELETE, "/api/vaults/2/sale", Some(&ta), Body::empty(), "application/json", &[]).await.status, StatusCode::NO_CONTENT);
+    assert!(app.get("/api/nft/2", None).await.json().get("sale").is_none());
+}
+
 // ------------------------------------------------------------ shares & transfer
 
 #[tokio::test]

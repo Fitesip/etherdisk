@@ -276,6 +276,12 @@ async fn decline(State(st): State<AppState>, user: AuthUser, Path(token_id): Pat
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Drops the request for the key that a transfer made (the drive was sold without it).
+pub async fn drop_request(st: &AppState, token: &str) -> AppResult<()> {
+    sqlx::query("DELETE FROM handovers WHERE token_id = ? AND sealed IS NULL").bind(token).execute(&st.db).await?;
+    Ok(())
+}
+
 /// Indexer hook: a transfer of an initialized drive asks the previous owner for its key,
 /// unless they already sealed it for exactly this recipient or chose to send none.
 pub async fn on_transfer(st: &AppState, from: Address, to: Address, token: &str) -> AppResult<()> {

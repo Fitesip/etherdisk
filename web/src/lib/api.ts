@@ -52,6 +52,21 @@ const empty = async (p: Promise<Response>): Promise<void> => {
 
 // ------------------------------------------------------------------ types
 
+export interface Sale {
+  /** The buyer gets the drive's key: its files can be opened. */
+  with_key: boolean;
+  /** Unix seconds. */
+  since: number;
+}
+
+/** The public page of a drive NFT (no session): what a buyer sees. */
+export interface NftInfo {
+  token_id: string;
+  capacity_bytes: number;
+  /** Only while for sale. */
+  sale?: Sale & { used_bytes: number; initialized: boolean };
+}
+
 export interface VaultInfo {
   token_id: string;
   capacity_bytes: number;
@@ -61,6 +76,8 @@ export interface VaultInfo {
   initialized: boolean;
   /** When this owner saved a recovery key (unix seconds), or null. */
   recovery_at: number | null;
+  /** Put up for sale by its current owner (null otherwise). */
+  sale: Sale | null;
   /** Owner-chosen look; null = defaults. Plaintext on the server. */
   name: string | null;
   stroke: string | null;
@@ -192,6 +209,9 @@ export const api = {
     orNull(json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { token }))),
   putRecovery: (token: string, id: string, blob: string) =>
     json<{ blob: string; created_at: number }>(request(`/vaults/${id}/recovery`, { method: "PUT", token, json: { blob } })),
+  setSale: (token: string, id: string, withKey: boolean) => json<Sale>(request(`/vaults/${id}/sale`, { method: "PUT", token, json: { with_key: withKey } })),
+  endSale: (token: string, id: string) => empty(request(`/vaults/${id}/sale`, { method: "DELETE", token })),
+  nft: (id: string) => json<NftInfo>(request(`/nft/${id}`)),
   deleteRecovery: (token: string, id: string) => empty(request(`/vaults/${id}/recovery`, { method: "DELETE", token })),
   setProfile: (token: string, id: string, profile: VaultProfile) =>
     json<VaultInfo>(request(`/vaults/${id}/profile`, { method: "PUT", token, json: profile })),

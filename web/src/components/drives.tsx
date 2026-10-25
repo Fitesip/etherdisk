@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, LockOpen, Sparkles } from "lucide-react";
+import { Lock, LockOpen, Sparkles, Tag } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatEther } from "viem";
@@ -35,9 +35,17 @@ function DriveCard({ v }: { v: VaultInfo }) {
       <DriveTile
         info={v}
         status={
-          <span className="flex shrink-0 items-center gap-1 text-xs text-muted">
-            <StatusIcon className="h-3 w-3" />
-            {status}
+          <span className="flex shrink-0 items-center gap-2 text-xs text-muted">
+            {v.sale && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 font-medium text-accent">
+                <Tag className="h-3 w-3" />
+                {t("sale.forSale")}
+              </span>
+            )}
+            <span className="flex items-center gap-1">
+              <StatusIcon className="h-3 w-3" />
+              {status}
+            </span>
           </span>
         }
         footer={
