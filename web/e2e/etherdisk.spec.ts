@@ -412,7 +412,7 @@ test("sale: the drive's page tells buyers whether they get the files", async ({ 
   await signIn(page);
   const tokenId = await mintAndSetUp(page);
   await upload(page, [text("for-the-buyer.txt", "kept for whoever buys the drive")]);
-  await expect(page.locator("main ul").last().getByText("for-the-buyer.txt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "for-the-buyer.txt", exact: true })).toBeVisible();
 
   await page.goto(`/drive/${tokenId}/settings`);
   await expect(page.getByRole("radio", { name: /With the files/ })).toHaveAttribute("aria-checked", "true");
