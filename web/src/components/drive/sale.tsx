@@ -31,7 +31,11 @@ export function SaleSettings({ token, info }: { token: string; info: VaultInfo }
     setBusy(true);
     try {
       await f();
-      await qc.invalidateQueries({ queryKey: ["vaults", token] });
+      // The drive's page and the drive list both show it.
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["vault", token, info.token_id] }),
+        qc.invalidateQueries({ queryKey: ["vaults", token] }),
+      ]);
     } catch (e) {
       toast({ text: e instanceof Error && e.message ? e.message : t("common.error") });
     } finally {
