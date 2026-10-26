@@ -18,7 +18,8 @@ const server = process.env.ETHERDISK_SERVER_BIN ?? join(repo, "target/debug/ethe
 // Anvil account #0 deploys; it is a well-known test key, local chain only.
 const DEPLOYER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
-export const CONTRACT = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const RENDERER = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+export const CONTRACT = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 async function rpc(method, params = []) {
@@ -39,12 +40,16 @@ for (let i = 0; ; i++) {
 }
 
 if ((await rpc("eth_getCode", [CONTRACT, "latest"])) === "0x") {
-  // The testnet tiers, plus 8 GB listed but not on sale ("coming soon").
-  const tiers = ["[1,2,4,8]", "[500000000000000,750000000000000,1000000000000000,2000000000000000]", "[true,true,true,false]"];
-  execFileSync(tool("forge"), ["create", "src/Etherdisk.sol:Etherdisk", "--rpc-url", RPC, "--private-key", DEPLOYER_KEY, "--broadcast", "--constructor-args", DEPLOYER, ...tiers], {
-    cwd: join(repo, "contracts"),
-    stdio: "inherit",
-  });
+  const create = (contract, ...args) =>
+    execFileSync(tool("forge"), ["create", contract, "--rpc-url", RPC, "--private-key", DEPLOYER_KEY, "--broadcast", "--constructor-args", ...args], {
+      cwd: join(repo, "contracts"),
+      stdio: "inherit",
+    });
+  // Deployer nonce 0: the renderer (at RENDERER); nonce 1: Etherdisk (at CONTRACT).
+  create("src/EtherdiskRenderer.sol:EtherdiskRenderer", "http://localhost:3001/nft/");
+  // The testnet tiers, plus 8 GB listed but not on sale ("coming soon"); 5% royalty.
+  const tiers = ["[1,2,4,8]", "[500000000000000,750000000000000,1000000000000000,2000000000000000]", "[true,true,true,false]", "[6514417,1096065,16096779,15485081]"];
+  create("src/Etherdisk.sol:Etherdisk", DEPLOYER, RENDERER, ...tiers, "500");
 }
 await rpc("anvil_setCode", [MULTICALL3, readFileSync(join(here, "fixtures/multicall3.hex"), "utf8").trim()]);
 

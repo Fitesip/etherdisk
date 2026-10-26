@@ -1,7 +1,7 @@
-import { useId } from "react";
+import { useId, useSyncExternalStore } from "react";
 
 import { cn } from "./ui";
-import { log2, tierColor } from "@/lib/drive-style";
+import { log2, subscribeTierColors, tierColor, tierColorsVersion } from "@/lib/drive-style";
 import { formatCapacity } from "@/lib/format";
 
 // The token's picture, as EtherdiskArt.sol draws it (same colors, rings and layout), plus
@@ -26,6 +26,8 @@ export function DriveArt({
   className?: string;
 }) {
   const id = useId().replace(/:/g, "");
+  // Redrawn once the contract's tier colors are known.
+  useSyncExternalStore(subscribeTierColors, tierColorsVersion, () => 0);
   const c = driveColor(capacityGb);
   const label = formatCapacity(capacityGb);
   const rings = ringCount(capacityGb);

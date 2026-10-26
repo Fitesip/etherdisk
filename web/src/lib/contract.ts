@@ -28,8 +28,10 @@ export const vaultNftAbi = [
         type: "tuple",
         components: [
           { name: "capacityGb", type: "uint32" },
-          { name: "price", type: "uint256" },
+          { name: "color", type: "uint24" },
           { name: "active", type: "bool" },
+          { name: "hidden", type: "bool" },
+          { name: "price", type: "uint256" },
         ],
       },
     ],
