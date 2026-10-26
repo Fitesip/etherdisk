@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 /// @title EtherdiskArt
-/// @notice On-chain metadata and SVG image of a drive token, so wallets and marketplaces
-///         show the drive (capacity, number) without any off-chain server.
+/// @notice The SVG image of a drive token and its capacity label, drawn on-chain in the
+///         color of the drive's tier (see EtherdiskRenderer).
 library EtherdiskArt {
     using Strings for uint256;
 
-    /// @dev Accent color: one per power of two, so six consecutive sizes (64 GB … 2 TB on
-    ///      mainnet, 1 … 32 GB on a testnet) all differ.
-    function _color(uint32 capacityGb) private pure returns (string memory) {
-        uint256 i = _log2(capacityGb) % 6;
-        if (i == 0) return "#6366f1";
-        if (i == 1) return "#10b981";
-        if (i == 2) return "#f59e0b";
-        if (i == 3) return "#ec4899";
-        if (i == 4) return "#0ea5e9";
-        return "#a855f7";
+    /// @dev "#rrggbb" from 0xrrggbb.
+    function _color(uint24 rgb) private pure returns (string memory) {
+        bytes memory hex16 = "0123456789abcdef";
+        bytes memory out = new bytes(7);
+        out[0] = "#";
+        for (uint256 i; i < 6; i++) {
+            out[6 - i] = hex16[(uint256(rgb) >> (4 * i)) & 0xf];
+        }
+        return string(out);
     }
 
     function _log2(uint32 x) private pure returns (uint256 n) {
@@ -35,8 +33,8 @@ library EtherdiskArt {
         return n < 6 ? 4 : n > 12 ? 10 : n - 2;
     }
 
-    /// @dev "512 GB", or "1 TB" from 1024 GB up (whole terabytes only).
-    function _capacityLabel(uint32 capacityGb) private pure returns (string memory) {
+    /// @notice "512 GB", or "1 TB" from 1024 GB up (whole terabytes only).
+    function capacityLabel(uint32 capacityGb) internal pure returns (string memory) {
         if (capacityGb >= 1024 && capacityGb % 1024 == 0) {
             return string.concat((uint256(capacityGb) / 1024).toString(), " TB");
         }
@@ -45,8 +43,8 @@ library EtherdiskArt {
 
     /// @notice An opened hard drive: the name and number on a strip in the tier color, the
     ///         capacity on the platter's hub.
-    function svg(uint256 tokenId, uint32 capacityGb) internal pure returns (string memory) {
-        string memory c = _color(capacityGb);
+    function svg(uint256 tokenId, uint32 capacityGb, uint24 rgb) internal pure returns (string memory) {
+        string memory c = _color(rgb);
         return string.concat(_chassis(c, tokenId.toString()), _platter(c, capacityGb), _arm(c), "</svg>");
     }
 
@@ -79,7 +77,7 @@ library EtherdiskArt {
                 accent ? '" stroke-opacity=".35"/>' : '" stroke-opacity=".07"/>'
             );
         }
-        string memory label = _capacityLabel(capacityGb);
+        string memory label = capacityLabel(capacityGb);
         out = string.concat(
             out,
             '<circle cx="200" cy="220" r="40" fill="#0b0b0d" stroke="',
@@ -100,29 +98,5 @@ library EtherdiskArt {
             c,
             '"/><circle cx="88" cy="354" r="5" fill="#3a3a42" stroke="#0b0b0d"/><circle cx="312" cy="86" r="5" fill="#3a3a42" stroke="#0b0b0d"/>'
         );
-    }
-
-    /// @notice ERC-721 metadata JSON as a data URI.
-    function tokenURI(uint256 tokenId, uint32 capacityGb, uint256 tierId) internal pure returns (string memory) {
-        string memory label = _capacityLabel(capacityGb);
-        string memory head = string.concat(
-            '{"name":"Etherdisk #',
-            tokenId.toString(),
-            '","description":"End-to-end encrypted cloud storage owned as an NFT. Capacity: ',
-            label,
-            '. Files are encrypted in the browser and travel with the token.","image":"data:image/svg+xml;base64,',
-            Base64.encode(bytes(svg(tokenId, capacityGb)))
-        );
-        string memory attrs = string.concat(
-            '","attributes":[{"trait_type":"Capacity","value":"',
-            label,
-            '"},{"trait_type":"Capacity (GB)","display_type":"number","value":',
-            uint256(capacityGb).toString(),
-            '},{"trait_type":"Tier","value":',
-            tierId.toString(),
-            "}]}"
-        );
-        string memory json = string.concat(head, attrs);
-        return string.concat("data:application/json;base64,", Base64.encode(bytes(json)));
     }
 }

@@ -33,12 +33,14 @@ cd contracts
 OWNER=<адрес Safe> DEPLOYER=<адрес деплоера> MAX_GWEI=1 ETHERSCAN_API_KEY=<ключ> ./script/deploy-mainnet.sh
 ```
 
+Разворачиваются два контракта: **`EtherdiskRenderer`** (картинка и метаданные NFT; его можно заменить, пока метаданные не заморожены) и **`Etherdisk`** (диски, тарифы, выплаты). Настройки — в `contracts/mainnet-tiers.env`: тарифы, их цвета, роялти (`ROYALTY_BPS`, 500 = 5 %) и адрес страницы диска в метаданных (`PAGE_BASE`).
+
 Скрипт:
 1. Проверяет, что RPC — это mainnet, а у `OWNER` есть код (это Safe, а не опечатка).
-2. Собирает контракт, берёт оценку газа у узла (не у `forge script`), цену газа и баланс деплоера; печатает ожидаемую комиссию. Останавливается, если цена выше `MAX_GWEI` или денег не хватит.
-3. Ждёт, пока вы введёте `DEPLOY`; `forge create` с лимитом «оценка × 1,2» спрашивает пароль keystore `deployer` (ключ скрипт не видит).
-4. Проверяет контракт в сети: `name`, `owner` = Safe, все тарифы из `mainnet-tiers.env`.
-5. Сохраняет адрес, блок и транзакцию в `contracts/deployments/chain-1.json`, верифицирует исходник на Etherscan (если задан ключ) и печатает строки для `.env` сервера и сборки сайта.
+2. Собирает контракты, берёт оценку газа у узла (не у `forge script`) для обоих, цену газа и баланс деплоера; печатает ожидаемую комиссию. Останавливается, если цена выше `MAX_GWEI` или денег не хватит.
+3. Ждёт, пока вы введёте `DEPLOY`; два `forge create` с лимитом «оценка × 1,2», каждый спрашивает пароль keystore `deployer` (ключ скрипт не видит).
+4. Проверяет контракты в сети: `name`, `owner` = Safe, `renderer` и его `pageBase`, роялти, все тарифы с ценами и цветами из `mainnet-tiers.env`.
+5. Сохраняет адреса, блок и транзакции в `contracts/deployments/chain-1.json`, верифицирует оба исходника на Etherscan (если задан ключ) и печатает строки для `.env` сервера и сборки сайта.
 
 Если Foundry не в PATH: `FOUNDRY_BIN=<папка с forge и cast>`. Без `ETHERSCAN_API_KEY` скрипт печатает готовую команду верификации.
 
@@ -49,26 +51,31 @@ C=<адрес контракта>; R=https://ethereum-rpc.publicnode.com
 cast call $C "name()(string)" --rpc-url $R        # Etherdisk
 cast call $C "owner()(address)" --rpc-url $R      # Safe
 cast call $C "tierCount()(uint256)" --rpc-url $R  # 6
-for i in 0 1 2 3 4 5; do cast call $C "getTier(uint256)((uint32,uint256,bool))" $i --rpc-url $R; done
+for i in 0 1 2 3 4 5; do cast call $C "getTier(uint256)((uint32,uint24,bool,bool,uint256))" $i --rpc-url $R; done
+cast call $C "renderer()(address)" --rpc-url $R
+cast call $C "royaltyInfo(uint256,uint256)(address,uint256)" 1 10000 --rpc-url $R   # Safe, 500
 ```
+
+`getTier` отдаёт объём, цвет (`0xrrggbb` числом), «в продаже», «скрыт» и цену.
 
 ## 5. Верификация на Etherscan
 
 Ключ API — etherscan.io → API Keys.
 
-```bash
-forge verify-contract <адрес> src/Etherdisk.sol:Etherdisk --chain mainnet --etherscan-api-key <ключ> --watch \
-  --constructor-args $(cast abi-encode "c(address,uint32[],uint256[],bool[])" <Safe> \
-  "[64,128,256,512,1024,2048]" \
-  "[5000000000000000,10000000000000000,20000000000000000,35000000000000000,65000000000000000,115000000000000000]" \
-  "[true,true,true,false,false,false]")
-```
+Скрипт деплоя верифицирует оба контракта сам, если задан `ETHERSCAN_API_KEY`; иначе печатает обе команды `forge verify-contract` с уже закодированными аргументами конструктора (они же — в `contracts/deployments/chain-1.json`).
 
 После верификации Safe показывает функции контракта сам, ABI вручную вставлять не нужно.
 
 ## 6. Операторы
 
-Из Safe (Transaction Builder): `setOperator(<кошелёк модератора>, true)` для каждого, кто будет открывать и закрывать продажу тарифов.
+Из Safe (Transaction Builder): `setOperator(<кошелёк модератора>, true)` для каждого, кто будет открывать и закрывать продажу тарифов и скрывать их с сайта.
+
+Что ещё может владелец (Safe):
+- `addTier(объём, цена, цвет)` — новый тариф; он не продаётся, пока не открыть продажу (`setTierActive`);
+- `setTierHidden(тариф, true)` — убрать тариф из списка на сайте (купленные диски не меняются); это может и оператор;
+- `setTierPrice`, `setTierColor` — цена и цвет; новый цвет меняет картинки дисков этого тарифа, маркетплейсы получают уведомление (ERC-4906) и обновляют карточки;
+- `setRenderer` — заменить рендерер метаданных (исправить картинку или текст), `freezeMetadata()` — запретить это навсегда (и смену цветов тоже);
+- `setRoyalty(получатель, bps)` — роялти с перепродаж, не больше 10 %.
 
 ## 7. Сервер (`.env`)
 

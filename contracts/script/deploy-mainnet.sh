@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Deploys Etherdisk to Ethereum mainnet with the agreed tiers (mainnet-tiers.env), then checks
-# the contract on chain and (optionally) verifies it on Etherscan. See docs/LAUNCH.md.
+# Deploys Etherdisk to Ethereum mainnet: first its metadata renderer, then the token contract
+# with the agreed tiers, colors and royalty (mainnet-tiers.env). Then checks both on chain and
+# (optionally) verifies them on Etherscan. See docs/LAUNCH.md.
 #
 # Usage (from contracts/):
 #   OWNER=0x<Safe> DEPLOYER=0x<deployer address> ./script/deploy-mainnet.sh
 #
-# The deployer signs with the Foundry keystore account "deployer": forge asks for its password.
-# The script never sees a private key.
+# The deployer signs with the Foundry keystore account "deployer": forge asks for its password
+# (once per transaction: two). The script never sees a private key.
 #
 # Optional:
 #   RPC_URL            default https://ethereum-rpc.publicnode.com
 #   MAX_GWEI           refuse to deploy when the gas price is above this (e.g. 1)
-#   ETHERSCAN_API_KEY  verify the source on Etherscan after the deploy
+#   ETHERSCAN_API_KEY  verify the sources on Etherscan after the deploy
 #   FOUNDRY_BIN        folder with forge/cast if they are not on PATH
 #   WALLET_ARGS        how forge signs, default "--account deployer"
 #   EXPECT_CHAIN_ID    default 1; ALLOW_EOA_OWNER=1 allows a non-contract owner (local tests only)
@@ -27,6 +28,10 @@ WALLET_ARGS=${WALLET_ARGS:---account deployer}
 die() { echo "error: $*" >&2; exit 1; }
 gwei() { awk -v w="$1" 'BEGIN { printf "%.3f", w / 1e9 }'; }
 eth() { awk -v w="$1" 'BEGIN { printf "%.6f", w / 1e18 }'; }
+bytecode() {
+  python -c "import json;print(json.load(open('out/$1.sol/$1.json'))['bytecode']['object'])" 2>/dev/null ||
+    node -e "console.log(require('./out/$1.sol/$1.json').bytecode.object)"
+}
 
 [[ ${OWNER:-} =~ ^0x[0-9a-fA-F]{40}$ ]] || die "OWNER must be the Safe's address (0x…)"
 [[ ${DEPLOYER:-} =~ ^0x[0-9a-fA-F]{40}$ ]] || die "DEPLOYER must be the deployer's address (0x…), the one in the keystore"
@@ -37,7 +42,9 @@ source mainnet-tiers.env
 CAPS="[$TIER_CAPACITIES_GB]"
 PRICES="[$TIER_PRICES_WEI]"
 ACTIVE="[$TIER_ACTIVE]"
-SIG="constructor(address,uint32[],uint256[],bool[])"
+COLORS="[$TIER_COLORS]"
+SIG="constructor(address,address,uint32[],uint256[],bool[],uint24[],uint96)"
+RSIG="constructor(string)"
 
 echo "== Checks"
 chain=$("$CAST" chain-id --rpc-url "$RPC_URL")
@@ -49,22 +56,28 @@ fi
 echo "chain $chain, owner $OWNER (contract: $([[ $code == 0x ]] && echo no || echo yes))"
 
 "$FORGE" build >/dev/null
-BYTECODE=$(python -c "import json;print(json.load(open('out/Etherdisk.sol/Etherdisk.json'))['bytecode']['object'])" 2>/dev/null ||
-  node -e "console.log(require('./out/Etherdisk.sol/Etherdisk.json').bytecode.object)")
+RBYTECODE=$(bytecode EtherdiskRenderer)
+BYTECODE=$(bytecode Etherdisk)
 
-estimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$BYTECODE" "$SIG" "$OWNER" "$CAPS" "$PRICES" "$ACTIVE")
+# Etherdisk's constructor only checks the renderer address isn't zero: any address estimates it.
+restimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$RBYTECODE" "$RSIG" "$PAGE_BASE")
+estimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$BYTECODE" "$SIG" "$OWNER" "$DEPLOYER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
+rlimit=$((restimate * 12 / 10))
 limit=$((estimate * 12 / 10))
 price=$("$CAST" gas-price --rpc-url "$RPC_URL")
 balance=$("$CAST" balance "$DEPLOYER" --rpc-url "$RPC_URL")
-cost=$(awk -v g="$estimate" -v p="$price" 'BEGIN { printf "%.0f", g * p }')
-worst=$(awk -v g="$limit" -v p="$price" 'BEGIN { printf "%.0f", g * p * 2 }')
+cost=$(awk -v g="$((estimate + restimate))" -v p="$price" 'BEGIN { printf "%.0f", g * p }')
+worst=$(awk -v g="$((limit + rlimit))" -v p="$price" 'BEGIN { printf "%.0f", g * p * 2 }')
 
 echo
 echo "== Deploy"
 echo "tiers (GB):    $CAPS"
 echo "prices (wei):  $PRICES"
 echo "on sale:       $ACTIVE"
-echo "gas:           $estimate (limit $limit)"
+echo "colors:        $COLORS"
+echo "royalty:       $ROYALTY_BPS bps to the owner"
+echo "drive page:    ${PAGE_BASE}<id>"
+echo "gas:           renderer $restimate + Etherdisk $estimate (limits $rlimit, $limit)"
 echo "gas price now: $(gwei "$price") gwei"
 echo "expected fee:  $(eth "$cost") ETH"
 echo "deployer:      $DEPLOYER, balance $(eth "$balance") ETH"
@@ -72,23 +85,40 @@ if [[ -n ${MAX_GWEI:-} ]] && awk -v p="$price" -v m="$MAX_GWEI" 'BEGIN { exit !(
   die "gas price $(gwei "$price") gwei is above MAX_GWEI=$MAX_GWEI; try later"
 fi
 if awk -v b="$balance" -v w="$worst" 'BEGIN { exit !(b < w) }'; then
-  die "the deployer needs at least $(eth "$worst") ETH (limit x twice today's price) to send the transaction"
+  die "the deployer needs at least $(eth "$worst") ETH (limits x twice today's price) to send both transactions"
 fi
 
 echo
-read -r -p "Type DEPLOY to send the transaction: " answer
+read -r -p "Type DEPLOY to send the two transactions: " answer
 [[ $answer == DEPLOY ]] || die "cancelled"
+
+# Prints "<address> <tx>" of a `forge create --json`.
+created() {
+  local address tx
+  address=$(echo "$1" | sed -n 's/.*"deployedTo"[^"]*"\(0x[0-9a-fA-F]*\)".*/\1/p' | head -1)
+  tx=$(echo "$1" | sed -n 's/.*"transactionHash"[^"]*"\(0x[0-9a-fA-F]*\)".*/\1/p' | head -1)
+  [[ -n $address && -n $tx ]] || die "could not read the result of forge create: $1"
+  echo "$address $tx"
+}
+report() {
+  local used paid
+  used=$("$CAST" receipt "$2" gasUsed --rpc-url "$RPC_URL")
+  paid=$("$CAST" receipt "$2" effectiveGasPrice --rpc-url "$RPC_URL")
+  echo "$1 in block $("$CAST" receipt "$2" blockNumber --rpc-url "$RPC_URL") (tx $2), gas $used at $(gwei "$paid") gwei = $(eth "$((used * paid))") ETH"
+}
+
+# shellcheck disable=SC2086
+out=$("$FORGE" create src/EtherdiskRenderer.sol:EtherdiskRenderer --rpc-url "$RPC_URL" $WALLET_ARGS --broadcast --json \
+  --gas-limit "$rlimit" --constructor-args "$PAGE_BASE")
+read -r RENDERER RTX <<<"$(created "$out")"
+report "renderer $RENDERER" "$RTX"
 
 # shellcheck disable=SC2086
 out=$("$FORGE" create src/Etherdisk.sol:Etherdisk --rpc-url "$RPC_URL" $WALLET_ARGS --broadcast --json \
-  --gas-limit "$limit" --constructor-args "$OWNER" "$CAPS" "$PRICES" "$ACTIVE")
-ADDRESS=$(echo "$out" | sed -n 's/.*"deployedTo"[^"]*"\(0x[0-9a-fA-F]*\)".*/\1/p' | head -1)
-TX=$(echo "$out" | sed -n 's/.*"transactionHash"[^"]*"\(0x[0-9a-fA-F]*\)".*/\1/p' | head -1)
-[[ -n $ADDRESS && -n $TX ]] || die "could not read the result of forge create: $out"
+  --gas-limit "$limit" --constructor-args "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
+read -r ADDRESS TX <<<"$(created "$out")"
 BLOCK=$("$CAST" receipt "$TX" blockNumber --rpc-url "$RPC_URL")
-used=$("$CAST" receipt "$TX" gasUsed --rpc-url "$RPC_URL")
-paid=$("$CAST" receipt "$TX" effectiveGasPrice --rpc-url "$RPC_URL")
-echo "deployed $ADDRESS in block $BLOCK (tx $TX), gas $used at $(gwei "$paid") gwei = $(eth "$((used * paid))") ETH"
+report "Etherdisk $ADDRESS" "$TX"
 
 echo
 echo "== On-chain check"
@@ -96,20 +126,28 @@ call() { "$CAST" call "$ADDRESS" "$@" --rpc-url "$RPC_URL"; }
 [[ $(call "name()(string)") == '"Etherdisk"' ]] || die "name() is not Etherdisk"
 owner=$(call "owner()(address)")
 [[ ${owner,,} == "${OWNER,,}" ]] || die "owner() is $owner, expected $OWNER"
+renderer=$(call "renderer()(address)")
+[[ ${renderer,,} == "${RENDERER,,}" ]] || die "renderer() is $renderer, expected $RENDERER"
+[[ $("$CAST" call "$RENDERER" "pageBase()(string)" --rpc-url "$RPC_URL") == "\"$PAGE_BASE\"" ]] || die "the renderer's pageBase is not $PAGE_BASE"
+royalty=$(call "royaltyInfo(uint256,uint256)(address,uint256)" 1 10000 | tr '\n' ' ')
+[[ ${royalty,,} == "${OWNER,,} $ROYALTY_BPS " ]] || die "royaltyInfo is ($royalty), expected ($OWNER $ROYALTY_BPS)"
 IFS=, read -r -a caps <<<"$TIER_CAPACITIES_GB"
 IFS=, read -r -a prices <<<"$TIER_PRICES_WEI"
 IFS=, read -r -a active <<<"$TIER_ACTIVE"
+IFS=, read -r -a colors <<<"$TIER_COLORS"
 [[ $(call "tierCount()(uint256)") == "${#caps[@]}" ]] || die "tierCount() is not ${#caps[@]}"
 for i in "${!caps[@]}"; do
-  tier=$(call "getTier(uint256)((uint32,uint256,bool))" "$i")
-  # "(64, 5000000000000000 [5e15], true)" -> "64 5000000000000000 true"
+  tier=$(call "getTier(uint256)((uint32,uint24,bool,bool,uint256))" "$i")
+  # "(64, 6514417 [6.514e6], true, false, 5000000000000000 [5e15])" -> "64 6514417 true false 5000000000000000"
   got=$(echo "$tier" | sed -E 's/\[[^]]*\]//g; s/[(),]//g; s/ +/ /g; s/^ | $//g')
-  [[ $got == "${caps[$i]} ${prices[$i]} ${active[$i]}" ]] || die "tier $i is ($got), expected (${caps[$i]} ${prices[$i]} ${active[$i]})"
-  echo "tier $i: ${caps[$i]} GB, ${prices[$i]} wei, on sale: ${active[$i]}"
+  want="${caps[$i]} $((colors[i])) ${active[$i]} false ${prices[$i]}"
+  [[ $got == "$want" ]] || die "tier $i is ($got), expected ($want)"
+  echo "tier $i: ${caps[$i]} GB, color ${colors[$i]}, on sale: ${active[$i]}, ${prices[$i]} wei"
 done
-echo "owner, name and tiers match"
+echo "owner, name, renderer, royalty and tiers match"
 
-ARGS=$("$CAST" abi-encode "$SIG" "$OWNER" "$CAPS" "$PRICES" "$ACTIVE")
+RARGS=$("$CAST" abi-encode "$RSIG" "$PAGE_BASE")
+ARGS=$("$CAST" abi-encode "$SIG" "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
 mkdir -p deployments
 cat >"deployments/chain-$chain.json" <<EOF
 {
@@ -118,7 +156,12 @@ cat >"deployments/chain-$chain.json" <<EOF
   "block": $BLOCK,
   "transaction": "$TX",
   "owner": "$OWNER",
-  "constructorArgs": "$ARGS"
+  "constructorArgs": "$ARGS",
+  "renderer": {
+    "address": "$RENDERER",
+    "transaction": "$RTX",
+    "constructorArgs": "$RARGS"
+  }
 }
 EOF
 echo "saved deployments/chain-$chain.json"
@@ -126,11 +169,14 @@ echo "saved deployments/chain-$chain.json"
 if [[ -n ${ETHERSCAN_API_KEY:-} ]]; then
   echo
   echo "== Etherscan"
+  "$FORGE" verify-contract "$RENDERER" src/EtherdiskRenderer.sol:EtherdiskRenderer --chain-id "$chain" \
+    --etherscan-api-key "$ETHERSCAN_API_KEY" --constructor-args "$RARGS" --watch
   "$FORGE" verify-contract "$ADDRESS" src/Etherdisk.sol:Etherdisk --chain-id "$chain" \
     --etherscan-api-key "$ETHERSCAN_API_KEY" --constructor-args "$ARGS" --watch
 else
   echo
   echo "Not verified on Etherscan (no ETHERSCAN_API_KEY). Later:"
+  echo "  forge verify-contract $RENDERER src/EtherdiskRenderer.sol:EtherdiskRenderer --chain-id $chain --etherscan-api-key <key> --constructor-args $RARGS --watch"
   echo "  forge verify-contract $ADDRESS src/Etherdisk.sol:Etherdisk --chain-id $chain --etherscan-api-key <key> --constructor-args $ARGS --watch"
 fi
 

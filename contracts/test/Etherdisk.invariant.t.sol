@@ -74,10 +74,10 @@ contract Handler is Test {
         disk.setTierActive(tierId, active);
     }
 
-    function addTier(uint32 capacityGb, uint256 price) external {
+    function addTier(uint32 capacityGb, uint256 price, uint24 color) external {
         if (disk.tierCount() >= 12) return;
         vm.prank(_owner());
-        disk.addTier(uint32(bound(capacityGb, 1, 4096)), bound(price, 0, 10 ether));
+        disk.addTier(uint32(bound(capacityGb, 1, 4096)), bound(price, 0, 10 ether), color);
     }
 
     function withdraw() external {
