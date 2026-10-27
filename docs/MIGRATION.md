@@ -1,41 +1,41 @@
-# Переезд на новый контракт
+# Moving to a new contract
 
-Контракт Etherdisk неизменяем. Если когда-нибудь понадобится новый (новые функции, исправление), диски переезжают на него **без потери данных**: владелец меняет старый NFT на новый с **тем же номером и объёмом** одной транзакцией. Файлы, ключ, ключ восстановления, метки и ссылки привязаны к номеру диска, поэтому остаются на месте; перешифровывать ничего не нужно.
+The Etherdisk contract is immutable. If a new one is ever needed (new features, a fix), drives move to it **without losing data**: an owner swaps the old NFT for a new one with **the same number and capacity** in one transaction. Files, the key, the recovery key, labels and links are bound to the drive's number, so they stay where they are; nothing needs to be re-encrypted.
 
-Текущему контракту для этого ничего не требуется: новый контракт использует обычную передачу ERC-721, `capacityOf`, `totalSupply` и `setTierActive` старого.
+The current contract needs nothing for this: the new contract uses the old one's plain ERC-721 transfers, `capacityOf`, `totalSupply` and `setTierActive`.
 
-## Как устроен обмен
+## How the swap works
 
-Новый контракт наследует `contracts/src/migration/EtherdiskMigration.sol` (рядом со своим ERC-721) и реализует `_mintMigrated` и `_existsHere`. Пример — `Successor` в `contracts/test/EtherdiskMigration.t.sol`.
+The new contract inherits `contracts/src/migration/EtherdiskMigration.sol` (next to its own ERC-721) and implements `_mintMigrated` and `_existsHere`. An example: `Successor` in `contracts/test/EtherdiskMigration.t.sol`.
 
-- **Обмен одной транзакцией:** `legacy.safeTransferFrom(владелец, адрес нового контракта, tokenId)`. Новый контракт получает старый токен и тут же выпускает владельцу диск с тем же номером и объёмом (событие `DriveMigrated`). Старый токен остаётся в новом контракте навсегда, поэтому второй обмен невозможен.
-- **Для кошельков без `safeTransferFrom`:** `legacy.approve(новый контракт, tokenId)`, затем `migrate(tokenId)`.
-- **Только диски старого контракта:** чужие NFT отклоняются (`NotLegacyToken`).
-- **Закрыт, пока владелец не откроет** (`_setMigrationOpen`): сначала сервер должен знать про оба контракта.
-- **Номера новых дисков** берутся через `_nextNewTokenId`: после всех номеров старого контракта. Если номер уже занят, обмен отменяется целиком, и старый диск остаётся у владельца.
-- **Отправлен обычным `transferFrom`** (без обмена) — диск застрял в новом контракте. Владелец контракта (Safe) выпускает его отправителю: `_rescueMigration(tokenId, отправитель)` (отправитель виден в событии `Transfer` старого контракта). Пока не выпущен, диск не открывается ни у кого.
+- **A swap in one transaction:** `legacy.safeTransferFrom(owner, <new contract>, tokenId)`. The new contract receives the old token and at once mints the owner a drive with the same number and capacity (event `DriveMigrated`). The old token stays in the new contract for good, so a second swap is impossible.
+- **For wallets without `safeTransferFrom`:** `legacy.approve(<new contract>, tokenId)`, then `migrate(tokenId)`.
+- **Old contract drives only:** other NFTs are rejected (`NotLegacyToken`).
+- **Closed until the owner opens it** (`_setMigrationOpen`): the server has to know about both contracts first.
+- **New drives' numbers** come from `_nextNewTokenId`: after every number of the old contract. If a number is already taken, the whole swap reverts and the owner keeps the old drive.
+- **Sent with a plain `transferFrom`** (no swap): the drive is stuck in the new contract. The contract owner (the Safe) releases it to the sender: `_rescueMigration(tokenId, sender)` (the sender is in the old contract's `Transfer` event). Until released, the drive opens for nobody.
 
-Тесты: `forge test --match-contract EtherdiskMigrationTest` (обмен, оператор, approve+migrate, повторный и чужой обмен, закрытый обмен, нумерация, спасение застрявшего).
+Tests: `forge test --match-contract EtherdiskMigrationTest` (the swap, an operator, approve + migrate, a repeated and a foreign swap, a closed swap, numbering, rescuing a stuck drive).
 
-## Сервер
+## Server
 
-`LEGACY_CONTRACT_ADDRESS` — адрес старого контракта, `CONTRACT_ADDRESS` — нового:
+`LEGACY_CONTRACT_ADDRESS` is the old contract's address, `CONTRACT_ADDRESS` the new one's:
 
-- владелец и объём диска берутся из нового контракта, а для ещё не обменянных — из старого;
-- передача старого токена в новый контракт — половина обмена, а не смена владельца: ссылки, ключ и голоса остаются; остальные передачи на старом контракте обрабатываются как раньше;
-- база, привязанная к старому контракту, при первом запуске переходит на новый (`deployment`). Счётчики покупок по тарифам («Popular») начинаются заново: номера тарифов у контрактов свои;
-- `START_BLOCK` остаётся блоком деплоя **старого** контракта.
+- a drive's owner and capacity come from the new contract, and from the old one for drives not swapped yet;
+- a transfer of an old token to the new contract is half of a swap, not a change of owner: links, the key and votes stay; other transfers on the old contract are handled as before;
+- a database bound to the old contract moves on to the new one on the first start (`deployment`). Mint counts per tier ("Popular") start afresh: the contracts number their tiers on their own;
+- `START_BLOCK` stays the **old** contract's deploy block.
 
-Тесты: `a_database_moves_on_to_the_successor_contract`, `a_swapped_drive_keeps_its_data` в `crates/etherdisk-server/tests/api.rs`. Весь путь (старый контракт → новый → настоящий сервер на anvil) проверен 15.10.2026.
+Tests: `a_database_moves_on_to_the_successor_contract`, `a_swapped_drive_keeps_its_data` in `crates/etherdisk-server/tests/api.rs`. The whole path (old contract → new one → the real server on anvil) was checked on 2026-10-15.
 
-## Порядок переезда
+## The order of a move
 
-1. **Новый контракт** наследует `EtherdiskMigration`; его продажи и обмен при деплое **закрыты**. Тесты и аудит — как у первого.
-2. **Закрыть продажи старого навсегда:** из Safe `setTierActive(i, false)` для всех тарифов (иначе новые старые диски займут номера, а `_nextNewTokenId` их пропустит, но обмен совпавших номеров не пройдёт).
-3. **Деплой нового** (скрипт по образцу `contracts/script/deploy-mainnet.sh`), верификация на Etherscan.
-4. **Сервер:** `CONTRACT_ADDRESS=<новый>`, `LEGACY_CONTRACT_ADDRESS=<старый>`, `START_BLOCK` прежний; перезапуск. В логе: `database moved on to the successor contract`.
-5. **Сайт:** `NEXT_PUBLIC_CONTRACT_ADDRESS=<новый>`, кнопка «Перенести диск» (вызывает `safeTransferFrom` старого контракта; делается вместе с новым контрактом), сборка.
-6. **Открыть обмен и продажи нового** из Safe (`setMigrationOpen(true)`, `setTierActive`).
-7. Объявить пользователям. Необменянные диски продолжают работать; обменять можно в любой момент.
+1. **The new contract** inherits `EtherdiskMigration`; its sales and the swap are **closed** at deploy time. Tests and an audit, as for the first one.
+2. **Close the old contract's sales for good:** `setTierActive(i, false)` for every tier from the Safe (otherwise new old drives take numbers; `_nextNewTokenId` skips them, but swaps of clashing numbers would fail).
+3. **Deploy the new one** (a script modeled on `contracts/script/deploy-mainnet.sh`), verify it on Etherscan.
+4. **Server:** `CONTRACT_ADDRESS=<new>`, `LEGACY_CONTRACT_ADDRESS=<old>`, the same `START_BLOCK`; restart. The log says `database moved on to the successor contract`.
+5. **Site:** `NEXT_PUBLIC_CONTRACT_ADDRESS=<new>`, a "Move drive" button (calling the old contract's `safeTransferFrom`; made together with the new contract), a build.
+6. **Open the swap and the new contract's sales** from the Safe (`setMigrationOpen(true)`, `setTierActive`).
+7. Tell the users. Drives not swapped keep working; they can be swapped any time.
 
-Нельзя открывать обмен до шага 4: сервер без `LEGACY_CONTRACT_ADDRESS` принял бы обмен за продажу и отозвал бы ссылки диска.
+Don't open the swap before step 4: a server without `LEGACY_CONTRACT_ADDRESS` would take a swap for a sale and revoke the drive's links.

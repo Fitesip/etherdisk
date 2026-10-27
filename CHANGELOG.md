@@ -16,9 +16,10 @@ Versions: `MAJOR.FEATURE.FIX.YYYYMMDD`
   - **Metadata:** one trait, `Capacity` ("1 TB"), instead of three (`Capacity`, `Capacity (GB)` and `Tier`); `external_url` points to the drive's page (`etherdisk.app/nft/<id>`: for sale with or without its files); the description no longer says the files "travel with the token" — they come with it only if the seller hands over the drive key.
   - The deploy script deploys and checks both contracts (renderer, then Etherdisk) and verifies both on Etherscan; `mainnet-tiers.env` adds the tier colors, `ROYALTY_BPS` and `PAGE_BASE`.
 - The site reads the tiers' colors and hidden flags from the contract: hidden tiers are left out of the mint and pricing lists, and drives everywhere take their tier's color.
+- **The desktop app keeps its data in an `Etherdisk` folder** (`%APPDATA%\Etherdisk` on Windows, `~/Library/Application Support/Etherdisk` on macOS) instead of folders named after the bundle identifier (`app.etherdisk.desktop`). The data of earlier versions (the sign-in and settings, the window's position) moves there on the first start; uninstalling with "Delete the application data" removes the new folder too.
 
 ### Changed
-- `CHANGELOG.md` and the release notes are in English.
+- Everything is in English: `CHANGELOG.md`, the release notes, the documentation (`docs/`, `deploy/README.md`, `desktop/README.md`) and the server's Telegram alerts and `/status`.
 
 ## 1.2.2.20261025
 

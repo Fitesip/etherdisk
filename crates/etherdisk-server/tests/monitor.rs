@@ -27,11 +27,11 @@ async fn sends_to_the_configured_chat() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let tg = Telegram::new(&format!("http://{addr}/"), "123:SECRET", "-100500", &[]).unwrap();
-    tg.send("🟠 Мало места").await.unwrap();
+    tg.send("🟠 Low on space").await.unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].0, "bot123:SECRET/sendMessage");
     assert_eq!(seen[0].1["chat_id"], "-100500");
-    assert_eq!(seen[0].1["text"], "🟠 Мало места");
+    assert_eq!(seen[0].1["text"], "🟠 Low on space");
 }
 
 #[tokio::test]
@@ -60,7 +60,7 @@ async fn goes_through_the_proxy() {
     tokio::spawn(async move { axum::serve(listener, proxy).await.unwrap() });
 
     let tg = Telegram::new("http://telegram.invalid", "123:SECRET", "1", &[format!("http://{addr}")]).unwrap();
-    tg.send("через прокси").await.unwrap();
+    tg.send("through the proxy").await.unwrap();
     assert_eq!(seen.lock().unwrap().as_slice(), ["http://telegram.invalid/bot123:SECRET/sendMessage"]);
 }
 
@@ -133,6 +133,6 @@ async fn undelivered_messages_wait_and_go_out_late() {
     assert!(outbox.is_empty());
     let sent = seen.lock().unwrap().clone();
     assert_eq!(sent.len(), 2);
-    assert!(sent[0].starts_with("⏳ С опозданием на 10 мин") && sent[0].ends_with("🔴 Disk is down"), "{}", sent[0]);
+    assert!(sent[0].starts_with("⏳ Late by 10 min") && sent[0].ends_with("🔴 Disk is down"), "{}", sent[0]);
     assert!(sent[1].ends_with("✅ Fixed"));
 }

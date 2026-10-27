@@ -1,125 +1,125 @@
-# Запуск в Ethereum mainnet
+# Launching on Ethereum mainnet
 
-**Контракт в mainnet:** `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`, блок 26193612, 15.10.2026; владелец — Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 из 3); деплой 3 092 394 газа при 0,139 gwei = 0,000430 ETH. Код в сети совпадает со сборкой репозитория; исходник верифицирован на Etherscan и отправлен на Sourcify. Данные деплоя — `contracts/deployments/chain-1.json`.
+**The contract on mainnet:** `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`, block 26193612, 2026-10-15; owned by the Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 of 3); the deploy took 3,092,394 gas at 0.139 gwei = 0.000430 ETH. The code on chain matches the repository's build; the source is verified on Etherscan and submitted to Sourcify. Deploy data: `contracts/deployments/chain-1.json`. The next version of the contract (renderer, tier colors, royalties; see the CHANGELOG) replaces it with a new deploy following the steps below.
 
-Порядок действий для выхода в mainnet. Тарифы и цены — в `contracts/mainnet-tiers.env`.
+The steps of a mainnet launch. Tiers and prices are in `contracts/mainnet-tiers.env`.
 
-## Стоимость (оценка узла mainnet, 15.10.2026; ETH = $2300)
+## Cost (mainnet node estimate, 2026-10-15; ETH = $2300)
 
-| Действие | Газ | При 0,15 gwei | При 1,5 gwei | При 5 gwei | При 20 gwei |
+| Action | Gas | At 0.15 gwei | At 1.5 gwei | At 5 gwei | At 20 gwei |
 | --- | --- | --- | --- | --- | --- |
-| Деплой контракта | 3 118 104 | ≈ 0,00047 ETH ($1,08) | ≈ 0,0047 ETH ($11) | ≈ 0,016 ETH ($36) | ≈ 0,062 ETH ($143) |
-| Минт диска (платит покупатель) | ≈ 141 тыс. | ≈ $0,05 | ≈ $0,49 | ≈ $1,6 | ≈ $6,5 |
-| Передача диска (платит владелец) | ≈ 60 тыс. | ≈ $0,02 | ≈ $0,21 | ≈ $0,7 | ≈ $2,8 |
-| `setOperator` / `setTierActive` из Safe | ≈ 60–90 тыс. | ≈ $0,03 | < $0,3 | < $1 | < $4 |
+| Deploying the contract | 3,118,104 | ≈ 0.00047 ETH ($1.08) | ≈ 0.0047 ETH ($11) | ≈ 0.016 ETH ($36) | ≈ 0.062 ETH ($143) |
+| Minting a drive (the buyer pays) | ≈ 141k | ≈ $0.05 | ≈ $0.49 | ≈ $1.6 | ≈ $6.5 |
+| Transferring a drive (the owner pays) | ≈ 60k | ≈ $0.02 | ≈ $0.21 | ≈ $0.7 | ≈ $2.8 |
+| `setOperator` / `setTierActive` from the Safe | ≈ 60–90k | ≈ $0.03 | < $0.3 | < $1 | < $4 |
 
-В Sepolia тот же деплой стоит ≈ 22 млн газа: там уже действуют новые, более дорогие правила записи кода. Если они дойдут до mainnet раньше запуска, деплой подорожает в 6–7 раз. Перед деплоем всегда смотреть свежую оценку узла (см. шаг 3), а не оценку `forge script`.
+On Sepolia the same deploy costs ≈ 22M gas: the newer, pricier rules for storing code already apply there. If they reach mainnet before the launch, the deploy gets 6–7 times more expensive. Always check the node's fresh estimate before deploying (see step 3), not `forge script`'s.
 
-## 1. Safe в mainnet
+## 1. A Safe on mainnet
 
-- app.safe.global → сеть Ethereum → создать Safe.
-- Владельцы: **2 из 3** (не 2 из 2): например, аппаратный кошелёк, кошелёк на телефоне и запасной ключ, хранящийся отдельно. При «2 из 2» потеря любого ключа блокирует Safe навсегда.
-- Записать адрес Safe.
+- app.safe.global → the Ethereum network → create a Safe.
+- Owners: **2 of 3** (not 2 of 2): say, a hardware wallet, a phone wallet and a spare key kept apart. With "2 of 2", losing either key locks the Safe for good.
+- Write down the Safe's address.
 
-## 2. Кошелёк для деплоя
+## 2. The deployer wallet
 
-- `deployer` (keystore Foundry) пополнить с запасом: скрипт требует «лимит газа × двойная текущая цена». При 0,15 gwei это ≈ 0,0012 ETH, удобно положить 0,003 ETH; при 1,5 gwei — ≈ 0,012 ETH (положить 0,02).
-- Деплоер не получает никаких прав: владельцем сразу станет Safe.
+- Fund `deployer` (a Foundry keystore) with a margin: the script wants "gas limit × twice the current price". At 0.15 gwei that is ≈ 0.0012 ETH, 0.003 ETH is comfortable; at 1.5 gwei ≈ 0.012 ETH (put 0.02).
+- The deployer gets no rights: the Safe is the owner from the start.
 
-## 3. Деплой — `contracts/script/deploy-mainnet.sh`
+## 3. Deploying — `contracts/script/deploy-mainnet.sh`
 
 ```bash
 cd contracts
-OWNER=<адрес Safe> DEPLOYER=<адрес деплоера> MAX_GWEI=1 ETHERSCAN_API_KEY=<ключ> ./script/deploy-mainnet.sh
+OWNER=<Safe address> DEPLOYER=<deployer address> MAX_GWEI=1 ETHERSCAN_API_KEY=<key> ./script/deploy-mainnet.sh
 ```
 
-Разворачиваются два контракта: **`EtherdiskRenderer`** (картинка и метаданные NFT; его можно заменить, пока метаданные не заморожены) и **`Etherdisk`** (диски, тарифы, выплаты). Настройки — в `contracts/mainnet-tiers.env`: тарифы, их цвета, роялти (`ROYALTY_BPS`, 500 = 5 %) и адрес страницы диска в метаданных (`PAGE_BASE`).
+Two contracts are deployed: **`EtherdiskRenderer`** (the NFT's picture and metadata; it can be replaced until the metadata is frozen) and **`Etherdisk`** (drives, tiers, payouts). The settings are in `contracts/mainnet-tiers.env`: the tiers, their colors, the royalty (`ROYALTY_BPS`, 500 = 5%) and the drive page address in the metadata (`PAGE_BASE`).
 
-Скрипт:
-1. Проверяет, что RPC — это mainnet, а у `OWNER` есть код (это Safe, а не опечатка).
-2. Собирает контракты, берёт оценку газа у узла (не у `forge script`) для обоих, цену газа и баланс деплоера; печатает ожидаемую комиссию. Останавливается, если цена выше `MAX_GWEI` или денег не хватит.
-3. Ждёт, пока вы введёте `DEPLOY`; два `forge create` с лимитом «оценка × 1,2», каждый спрашивает пароль keystore `deployer` (ключ скрипт не видит).
-4. Проверяет контракты в сети: `name`, `owner` = Safe, `renderer` и его `pageBase`, роялти, все тарифы с ценами и цветами из `mainnet-tiers.env`.
-5. Сохраняет адреса, блок и транзакции в `contracts/deployments/chain-1.json`, верифицирует оба исходника на Etherscan (если задан ключ) и печатает строки для `.env` сервера и сборки сайта.
+The script:
+1. Checks that the RPC is mainnet and that `OWNER` has code (it is the Safe, not a typo).
+2. Builds the contracts, takes the node's gas estimate (not `forge script`'s) for both, the gas price and the deployer's balance; prints the expected fee. Stops if the price is above `MAX_GWEI` or the money won't do.
+3. Waits for you to type `DEPLOY`; two `forge create` runs with an "estimate × 1.2" limit, each asking for the `deployer` keystore password (the script never sees the key).
+4. Checks the contracts on chain: `name`, `owner` = the Safe, `renderer` and its `pageBase`, the royalty, every tier with its price and color from `mainnet-tiers.env`.
+5. Saves the addresses, the block and the transactions to `contracts/deployments/chain-1.json`, verifies both sources on Etherscan (when a key is given) and prints the lines for the server's `.env` and the site's build.
 
-Если Foundry не в PATH: `FOUNDRY_BIN=<папка с forge и cast>`. Без `ETHERSCAN_API_KEY` скрипт печатает готовую команду верификации.
+If Foundry isn't on PATH: `FOUNDRY_BIN=<folder with forge and cast>`. Without `ETHERSCAN_API_KEY` the script prints the verification commands.
 
-## 4. Проверка контракта в сети
+## 4. Checking the contract on chain
 
 ```bash
-C=<адрес контракта>; R=https://ethereum-rpc.publicnode.com
+C=<contract address>; R=https://ethereum-rpc.publicnode.com
 cast call $C "name()(string)" --rpc-url $R        # Etherdisk
-cast call $C "owner()(address)" --rpc-url $R      # Safe
+cast call $C "owner()(address)" --rpc-url $R      # the Safe
 cast call $C "tierCount()(uint256)" --rpc-url $R  # 6
 for i in 0 1 2 3 4 5; do cast call $C "getTier(uint256)((uint32,uint24,bool,bool,uint256))" $i --rpc-url $R; done
 cast call $C "renderer()(address)" --rpc-url $R
-cast call $C "royaltyInfo(uint256,uint256)(address,uint256)" 1 10000 --rpc-url $R   # Safe, 500
+cast call $C "royaltyInfo(uint256,uint256)(address,uint256)" 1 10000 --rpc-url $R   # the Safe, 500
 ```
 
-`getTier` отдаёт объём, цвет (`0xrrggbb` числом), «в продаже», «скрыт» и цену.
+`getTier` returns the capacity, the color (`0xrrggbb` as a number), on sale, hidden and the price.
 
-## 5. Верификация на Etherscan
+## 5. Etherscan verification
 
-Ключ API — etherscan.io → API Keys.
+The API key: etherscan.io → API Keys.
 
-Скрипт деплоя верифицирует оба контракта сам, если задан `ETHERSCAN_API_KEY`; иначе печатает обе команды `forge verify-contract` с уже закодированными аргументами конструктора (они же — в `contracts/deployments/chain-1.json`).
+The deploy script verifies both contracts itself when `ETHERSCAN_API_KEY` is set; otherwise it prints both `forge verify-contract` commands with the constructor arguments already encoded (they are also in `contracts/deployments/chain-1.json`).
 
-После верификации Safe показывает функции контракта сам, ABI вручную вставлять не нужно.
+Once verified, the Safe shows the contract's functions by itself; no need to paste the ABI.
 
-## 6. Операторы
+## 6. Operators
 
-Из Safe (Transaction Builder): `setOperator(<кошелёк модератора>, true)` для каждого, кто будет открывать и закрывать продажу тарифов и скрывать их с сайта.
+From the Safe (Transaction Builder): `setOperator(<moderator's wallet>, true)` for everyone who will open and close tier sales and hide tiers from the site.
 
-Что ещё может владелец (Safe):
-- `addTier(объём, цена, цвет)` — новый тариф; он не продаётся, пока не открыть продажу (`setTierActive`);
-- `setTierHidden(тариф, true)` — убрать тариф из списка на сайте (купленные диски не меняются); это может и оператор;
-- `setTierPrice`, `setTierColor` — цена и цвет; новый цвет меняет картинки дисков этого тарифа, маркетплейсы получают уведомление (ERC-4906) и обновляют карточки;
-- `setRenderer` — заменить рендерер метаданных (исправить картинку или текст), `freezeMetadata()` — запретить это навсегда (и смену цветов тоже);
-- `setRoyalty(получатель, bps)` — роялти с перепродаж, не больше 10 %.
+What else the owner (the Safe) can do:
+- `addTier(capacity, price, color)` — a new tier; not on sale until its sales are opened (`setTierActive`);
+- `setTierHidden(tier, true)` — take a tier off the site's lists (drives already bought don't change); operators can too;
+- `setTierPrice`, `setTierColor` — the price and the color; a new color changes the pictures of the tier's drives, and marketplaces are told to refresh their cards (ERC-4906);
+- `setRenderer` — replace the metadata renderer (fix the picture or the texts); `freezeMetadata()` — forbid that for good (and color changes too);
+- `setRoyalty(receiver, bps)` — the royalty on resales, at most 10%.
 
-## 7. Сервер (`.env`)
+## 7. Server (`.env`)
 
 ```
 CHAIN_ID=1
 RPC_URL=https://ethereum-rpc.publicnode.com,https://mainnet.gateway.tenderly.co
-CONTRACT_ADDRESS=<адрес контракта>
-START_BLOCK=<блок деплоя>
+CONTRACT_ADDRESS=<contract address>
+START_BLOCK=<deploy block>
 CONFIRMATIONS=3
-DATABASE_URL=sqlite:///<путь к базе>/etherdisk.db    # новая база: старая привязана к Sepolia
-DATA_DIR=/mnt/raid1/etherdisk                         # тома через запятую
+DATABASE_URL=sqlite:///<database path>/etherdisk.db    # a new database: the old one is bound to the old contract
+DATA_DIR=/mnt/raid1/etherdisk                          # volumes, comma-separated
 SIWE_DOMAIN=etherdisk.app
-CORS_ORIGINS=https://etherdisk.app,http://app.localhost,app://localhost   # сайт и приложение для ПК
-TRUST_PROXY=true                                      # за nginx
-IDEAS_ADMINS=<кошельки модераторов>
+CORS_ORIGINS=https://etherdisk.app,http://app.localhost,app://localhost   # the site and the desktop app
+TRUST_PROXY=true                                       # behind nginx
+IDEAS_ADMINS=<moderators' wallets>
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 ```
 
-Точку монтирования каждого массива защитить от записи, пока он не примонтирован (`chattr +i` на пустую папку), чтобы сервер не принял её за новый пустой том.
+Make each array's mount point read-only while it isn't mounted (`chattr +i` on the empty folder), so the server doesn't take it for a new empty volume.
 
-## 8. Сайт (`web/.env.local` или переменные сборки)
+## 8. Site (`web/.env.local` or build variables)
 
 ```
 NEXT_PUBLIC_CHAIN_ID=1
-NEXT_PUBLIC_API_URL=https://api.etherdisk.app        # или тот же домен через nginx
+NEXT_PUBLIC_API_URL=https://api.etherdisk.app        # or the same domain through nginx
 NEXT_PUBLIC_RPC_URL=https://ethereum-rpc.publicnode.com,https://mainnet.gateway.tenderly.co
-NEXT_PUBLIC_CONTRACT_ADDRESS=<адрес контракта>
-NEXT_PUBLIC_WC_PROJECT_ID=<id из dashboard.reown.com, домен etherdisk.app в списке разрешённых>
+NEXT_PUBLIC_CONTRACT_ADDRESS=<contract address>
+NEXT_PUBLIC_WC_PROJECT_ID=<id from dashboard.reown.com, with etherdisk.app among the allowed domains>
 ```
 
-`NEXT_PUBLIC_*` вшиваются при сборке: после изменения пересобрать (`npm run build`).
+`NEXT_PUBLIC_*` are baked in at build time: rebuild after changing them (`npm run build`).
 
-## 9. Проверка после запуска
+## 9. Checks after the launch
 
-1. Лендинг: шесть тарифов, у 512 ГБ, 1 ТБ и 2 ТБ — «Coming soon», нигде нет «Sepolia».
-2. Вход кошельком, минт 64 ГБ: оплата приходит на Safe, у диска картинка на Etherscan.
-3. Создание диска, загрузка файла, ссылка, ключ восстановления.
-4. Модератор открывает и закрывает продажу тарифа (`setTierActive`) — сайт показывает изменение после обновления.
-5. `/status` в Telegram: тома, база, индексатор, RPC без проблем.
-6. Сервер в логе: `monitor: alerts go to Telegram`, свободное место томов.
+1. The landing page: six tiers, 512 GB, 1 TB and 2 TB marked "Coming soon", no "Sepolia" anywhere.
+2. Sign in with a wallet and mint 64 GB: the payment reaches the Safe, and the drive has its picture on Etherscan.
+3. Set up the drive, upload a file, create a link and a recovery key.
+4. A moderator opens and closes a tier's sales (`setTierActive`) — the site shows the change after a reload.
+5. `/status` in Telegram: volumes, database, indexer, RPC without problems.
+6. The server's log: `monitor: alerts go to Telegram`, the volumes' free space.
 
-## 10. Потом
+## 10. Later
 
-- Открыть 512 ГБ / 1 ТБ / 2 ТБ операторами, когда вырастет хранилище.
-- Цены при заметном движении курса ETH — `setTierPrice` из Safe.
-- Деньги приходят прямо на Safe; `withdraw` нужен только если выплата не прошла (событие `PaymentHeld`).
+- Open 512 GB / 1 TB / 2 TB with the operators once storage grows.
+- Prices on big moves of the ETH rate: `setTierPrice` from the Safe.
+- Money goes straight to the Safe; `withdraw` is only needed when a payout failed (the `PaymentHeld` event).
