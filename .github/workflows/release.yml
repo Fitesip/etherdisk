@@ -69,10 +69,10 @@ jobs:
           gh release view "$TAG" --json body -q .body > notes.md
           cat >> notes.md <<EOF
 
-          ### Установщик для Windows
-          \`$INSTALLER\` собран GitHub Actions из этого репозитория на коммите \`$GITHUB_SHA\`.
+          ### Windows installer
+          \`$INSTALLER\` was built by GitHub Actions from this repository at commit \`$GITHUB_SHA\`.
 
           - SHA-256: \`$hash\`
-          - Происхождение: \`gh attestation verify $INSTALLER --repo $GITHUB_REPOSITORY\`
+          - Provenance: \`gh attestation verify $INSTALLER --repo $GITHUB_REPOSITORY\`
           EOF
           gh release edit "$TAG" --notes-file notes.md
