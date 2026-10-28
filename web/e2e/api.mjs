@@ -49,7 +49,7 @@ if ((await rpc("eth_getCode", [CONTRACT, "latest"])) === "0x") {
   create("src/EtherdiskRenderer.sol:EtherdiskRenderer", "http://localhost:3001/nft/");
   // The testnet tiers, plus 8 GB listed but not on sale ("coming soon"); 5% royalty.
   const tiers = ["[1,2,4,8]", "[500000000000000,750000000000000,1000000000000000,2000000000000000]", "[true,true,true,false]", "[6514417,1096065,16096779,15485081]"];
-  create("src/Etherdisk.sol:Etherdisk", DEPLOYER, RENDERER, ...tiers, "500");
+  create("src/Etherdisk.sol:Etherdisk", DEPLOYER, RENDERER, ...tiers, "500", "0x0000000000000000000000000000000000000000");
 }
 await rpc("anvil_setCode", [MULTICALL3, readFileSync(join(here, "fixtures/multicall3.hex"), "utf8").trim()]);
 

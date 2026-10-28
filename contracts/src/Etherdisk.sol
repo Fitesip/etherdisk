@@ -9,6 +9,7 @@ import {IERC4906} from "@openzeppelin/contracts/interfaces/IERC4906.sol";
 import {ERC2981} from "@openzeppelin/contracts/token/common/ERC2981.sol";
 
 import {IEtherdiskRenderer} from "./IEtherdiskRenderer.sol";
+import {EtherdiskMigration, IEtherdiskLegacy} from "./migration/EtherdiskMigration.sol";
 
 /// @title Etherdisk
 /// @notice Each token is an encrypted storage drive. The token's tier defines its capacity in GB.
@@ -21,7 +22,9 @@ import {IEtherdiskRenderer} from "./IEtherdiskRenderer.sol";
 ///         can't be renounced: a typo or a slip can't leave the contract without an owner.
 ///         Metadata comes from a renderer the owner can replace (or recolor a tier) until
 ///         `freezeMetadata`; marketplaces are told to refresh (ERC-4906). Royalties: ERC-2981.
-contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
+///         Drives of the previous contract move here with the same id and capacity (their data
+///         stays): see EtherdiskMigration; the legacy token goes to the owner.
+contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigration {
     struct Tier {
         uint32 capacityGb; // immutable after creation: existing tokens must never change size
         uint24 color; // 0xrrggbb: the drive's picture and the site's color for the tier
@@ -70,11 +73,14 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
     error TiersMismatch();
     error MetadataIsFrozen();
     error RoyaltyTooHigh();
+    error NoTierForCapacity(uint32 capacityGb);
 
     /// @param renderer_  builds the tokens' metadata (see IEtherdiskRenderer)
     /// @param capacitiesGb, prices, active, colors  the initial tiers (same length); an
     ///        inactive tier is listed but can't be bought yet ("coming soon")
     /// @param royaltyBps  royalty on resales for the owner, in basis points (500 = 5%)
+    /// @param legacy_  the previous Etherdisk contract whose drives can move here (its sales
+    ///        must be closed for good); address(0) for none
     constructor(
         address initialOwner,
         IEtherdiskRenderer renderer_,
@@ -82,8 +88,9 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
         uint256[] memory prices,
         bool[] memory active,
         uint24[] memory colors,
-        uint96 royaltyBps
-    ) ERC721("Etherdisk", "DISK") Ownable(initialOwner) {
+        uint96 royaltyBps,
+        IEtherdiskLegacy legacy_
+    ) ERC721("Etherdisk", "DISK") Ownable(initialOwner) EtherdiskMigration(legacy_) {
         uint256 n = capacitiesGb.length;
         if (prices.length != n || active.length != n || colors.length != n) revert TiersMismatch();
         _setRenderer(renderer_);
@@ -105,7 +112,9 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
         if (!tier.active) revert TierInactive();
         if (msg.value != tier.price) revert WrongPayment();
 
-        tokenId = _nextTokenId++;
+        // After every id of the previous contract, so its drives can move here with theirs.
+        tokenId = _nextNewTokenId(_nextTokenId);
+        _nextTokenId = tokenId + 1;
         _tokenTier[tokenId] = tierId;
         // Logged before the receiver's callback, so a re-entering minter can't reorder events.
         emit DriveMinted(tokenId, msg.sender, tierId);
@@ -134,9 +143,10 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
         return _tiers[_tokenTier[tokenId]].capacityGb;
     }
 
-    /// @notice Number of drives minted; ids run from 1 to this (tokens are never burned).
+    /// @notice The highest drive id handed out, here or by the previous contracts (ids run
+    ///         from 1 to this; tokens are never burned). The next version numbers after it.
     function totalSupply() external view returns (uint256) {
-        return _nextTokenId - 1;
+        return _nextNewTokenId(_nextTokenId) - 1;
     }
 
     /// @notice On-chain metadata from the renderer: name, capacity, the drive's page, an SVG image.
@@ -214,6 +224,16 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
         revert RenounceDisabled();
     }
 
+    /// Opens moves from the previous contract, once the server follows it (docs/MIGRATION.md).
+    function setMigrationOpen(bool open) external onlyOwner {
+        _setMigrationOpen(open);
+    }
+
+    /// Completes the move of a legacy drive sent here with a plain `transferFrom` (stuck).
+    function rescueMigration(uint256 tokenId, address holder) external onlyOwner {
+        _rescueMigration(tokenId, holder);
+    }
+
     function withdraw(address payable to) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         (bool ok,) = to.call{value: address(this).balance}("");
@@ -257,6 +277,30 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step {
         if (bps > MAX_ROYALTY_BPS) revert RoyaltyTooHigh();
         _setDefaultRoyalty(receiver, bps);
         emit RoyaltySet(receiver, bps);
+    }
+
+    /// A moved drive gets the tier of its capacity here (its color and picture). Without one,
+    /// the owner adds it first (it can stay hidden and off sale).
+    function _mintMigrated(address holder, uint256 tokenId, uint32 capacityGb) internal override {
+        uint256 n = _tiers.length;
+        uint256 tierId = n;
+        for (uint256 i; i < n; i++) {
+            if (_tiers[i].capacityGb == capacityGb) {
+                tierId = i;
+                break;
+            }
+        }
+        if (tierId == n) revert NoTierForCapacity(capacityGb);
+        _tokenTier[tokenId] = tierId;
+        _mint(holder, tokenId);
+    }
+
+    function _existsHere(uint256 tokenId) internal view override returns (bool) {
+        return _ownerOf(tokenId) != address(0);
+    }
+
+    function _migrationReceiver() internal view override returns (address) {
+        return owner();
     }
 
     /// ERC-4906: every token's metadata may have changed.

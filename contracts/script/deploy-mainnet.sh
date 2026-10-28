@@ -15,6 +15,8 @@
 #   ETHERSCAN_API_KEY  verify the sources on Etherscan after the deploy
 #   FOUNDRY_BIN        folder with forge/cast if they are not on PATH
 #   WALLET_ARGS        how forge signs, default "--account deployer"
+#   LEGACY             the previous Etherdisk contract whose drives can move to this one
+#                      (close its sales first; docs/MIGRATION.md); default none (the first version)
 #   EXPECT_CHAIN_ID    default 1; ALLOW_EOA_OWNER=1 allows a non-contract owner (local tests only)
 set -euo pipefail
 
@@ -43,7 +45,9 @@ CAPS="[$TIER_CAPACITIES_GB]"
 PRICES="[$TIER_PRICES_WEI]"
 ACTIVE="[$TIER_ACTIVE]"
 COLORS="[$TIER_COLORS]"
-SIG="constructor(address,address,uint32[],uint256[],bool[],uint24[],uint96)"
+SIG="constructor(address,address,uint32[],uint256[],bool[],uint24[],uint96,address)"
+LEGACY=${LEGACY:-0x0000000000000000000000000000000000000000}
+[[ $LEGACY =~ ^0x[0-9a-fA-F]{40}$ ]] || die "LEGACY must be an address (0x…)"
 RSIG="constructor(string)"
 
 echo "== Checks"
@@ -61,7 +65,7 @@ BYTECODE=$(bytecode Etherdisk)
 
 # Etherdisk's constructor only checks the renderer address isn't zero: any address estimates it.
 restimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$RBYTECODE" "$RSIG" "$PAGE_BASE")
-estimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$BYTECODE" "$SIG" "$OWNER" "$DEPLOYER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
+estimate=$("$CAST" estimate --rpc-url "$RPC_URL" --from "$DEPLOYER" --create "$BYTECODE" "$SIG" "$OWNER" "$DEPLOYER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS" "$LEGACY")
 rlimit=$((restimate * 12 / 10))
 limit=$((estimate * 12 / 10))
 price=$("$CAST" gas-price --rpc-url "$RPC_URL")
@@ -77,6 +81,7 @@ echo "on sale:       $ACTIVE"
 echo "colors:        $COLORS"
 echo "royalty:       $ROYALTY_BPS bps to the owner"
 echo "drive page:    ${PAGE_BASE}<id>"
+echo "moves from:    $([[ $LEGACY == 0x0000000000000000000000000000000000000000 ]] && echo "none (first version)" || echo "$LEGACY")"
 echo "gas:           renderer $restimate + Etherdisk $estimate (limits $rlimit, $limit)"
 echo "gas price now: $(gwei "$price") gwei"
 echo "expected fee:  $(eth "$cost") ETH"
@@ -115,7 +120,7 @@ report "renderer $RENDERER" "$RTX"
 
 # shellcheck disable=SC2086
 out=$("$FORGE" create src/Etherdisk.sol:Etherdisk --rpc-url "$RPC_URL" $WALLET_ARGS --broadcast --json \
-  --gas-limit "$limit" --constructor-args "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
+  --gas-limit "$limit" --constructor-args "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS" "$LEGACY")
 read -r ADDRESS TX <<<"$(created "$out")"
 BLOCK=$("$CAST" receipt "$TX" blockNumber --rpc-url "$RPC_URL")
 report "Etherdisk $ADDRESS" "$TX"
@@ -144,10 +149,12 @@ for i in "${!caps[@]}"; do
   [[ $got == "$want" ]] || die "tier $i is ($got), expected ($want)"
   echo "tier $i: ${caps[$i]} GB, color ${colors[$i]}, on sale: ${active[$i]}, ${prices[$i]} wei"
 done
-echo "owner, name, renderer, royalty and tiers match"
+legacy=$(call "legacy()(address)")
+[[ ${legacy,,} == "${LEGACY,,}" ]] || die "legacy() is $legacy, expected $LEGACY"
+echo "owner, name, renderer, royalty, legacy and tiers match"
 
 RARGS=$("$CAST" abi-encode "$RSIG" "$PAGE_BASE")
-ARGS=$("$CAST" abi-encode "$SIG" "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS")
+ARGS=$("$CAST" abi-encode "$SIG" "$OWNER" "$RENDERER" "$CAPS" "$PRICES" "$ACTIVE" "$COLORS" "$ROYALTY_BPS" "$LEGACY")
 mkdir -p deployments
 cat >"deployments/chain-$chain.json" <<EOF
 {

@@ -7,6 +7,7 @@ import {TestTiers} from "./TestTiers.sol";
 import {EtherdiskArt} from "../src/EtherdiskArt.sol";
 import {EtherdiskRenderer} from "../src/EtherdiskRenderer.sol";
 import {IEtherdiskRenderer} from "../src/IEtherdiskRenderer.sol";
+import {IEtherdiskLegacy} from "../src/migration/EtherdiskMigration.sol";
 import {IERC4906} from "@openzeppelin/contracts/interfaces/IERC4906.sol";
 
 /// Exposes the library's internal functions to tests.
@@ -309,7 +310,7 @@ contract EtherdiskTest is Test {
             colors[i] = uint24(0x101010 * (i + 1));
         }
         IEtherdiskRenderer r = new EtherdiskRenderer(TestTiers.PAGE);
-        Etherdisk main = new Etherdisk(admin, r, caps, prices, active, colors, 500);
+        Etherdisk main = new Etherdisk(admin, r, caps, prices, active, colors, 500, IEtherdiskLegacy(address(0)));
         assertEq(main.tierCount(), 6);
         assertEq(main.getTier(5).capacityGb, 2048);
         assertEq(main.getTier(5).color, 0x606060);
@@ -325,16 +326,16 @@ contract EtherdiskTest is Test {
 
         bool[] memory short = new bool[](5);
         vm.expectRevert(Etherdisk.TiersMismatch.selector);
-        new Etherdisk(admin, r, caps, prices, short, colors, 500);
+        new Etherdisk(admin, r, caps, prices, short, colors, 500, IEtherdiskLegacy(address(0)));
         vm.expectRevert(Etherdisk.TiersMismatch.selector);
-        new Etherdisk(admin, r, caps, prices, active, new uint24[](5), 500);
+        new Etherdisk(admin, r, caps, prices, active, new uint24[](5), 500, IEtherdiskLegacy(address(0)));
         vm.expectRevert(Etherdisk.ZeroAddress.selector);
-        new Etherdisk(admin, IEtherdiskRenderer(address(0)), caps, prices, active, colors, 500);
+        new Etherdisk(admin, IEtherdiskRenderer(address(0)), caps, prices, active, colors, 500, IEtherdiskLegacy(address(0)));
         vm.expectRevert(Etherdisk.RoyaltyTooHigh.selector);
-        new Etherdisk(admin, r, caps, prices, active, colors, 1001);
+        new Etherdisk(admin, r, caps, prices, active, colors, 1001, IEtherdiskLegacy(address(0)));
         caps[0] = 0;
         vm.expectRevert(Etherdisk.ZeroCapacity.selector);
-        new Etherdisk(admin, r, caps, prices, active, colors, 500);
+        new Etherdisk(admin, r, caps, prices, active, colors, 500, IEtherdiskLegacy(address(0)));
     }
 
     function test_operatorsOpenAndCloseSalesOnly() public {

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {Etherdisk} from "../src/Etherdisk.sol";
 import {EtherdiskRenderer} from "../src/EtherdiskRenderer.sol";
+import {IEtherdiskLegacy} from "../src/migration/EtherdiskMigration.sol";
 
 /// Deploys the renderer, then Etherdisk. Settings come from the environment (comma-separated
 /// lists of the same length), the testnet set by default:
@@ -13,6 +14,7 @@ import {EtherdiskRenderer} from "../src/EtherdiskRenderer.sol";
 ///   TIER_COLORS=0x6366f1,0x10b981,...                (0xrrggbb)
 ///   ROYALTY_BPS=500                                  (5% on resales, to the owner)
 ///   PAGE_BASE=https://etherdisk.app/nft/             (the drive's page: this + token id)
+///   LEGACY=0x...                                     (the previous Etherdisk contract, for moves; default none)
 ///   OWNER=0x...                                      (default: the deployer; use the Safe on mainnet)
 contract Deploy is Script {
     function run() external {
@@ -39,12 +41,13 @@ contract Deploy is Script {
         }
         uint96 royalty = uint96(vm.envOr("ROYALTY_BPS", uint256(500)));
         string memory page = vm.envOr("PAGE_BASE", string("https://etherdisk.app/nft/"));
+        IEtherdiskLegacy legacy = IEtherdiskLegacy(vm.envOr("LEGACY", address(0)));
 
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
         address owner = vm.envOr("OWNER", deployer);
         EtherdiskRenderer renderer = new EtherdiskRenderer(page);
-        Etherdisk disk = new Etherdisk(owner, renderer, caps32, prices, active, colors24, royalty);
+        Etherdisk disk = new Etherdisk(owner, renderer, caps32, prices, active, colors24, royalty, legacy);
         vm.stopBroadcast();
         console.log("Owner:", owner);
         console.log("EtherdiskRenderer deployed at:", address(renderer));
