@@ -39,6 +39,10 @@ pub trait Chain: Send + Sync {
     async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>>;
     /// The contract's admin (`Ownable.owner()`): moderates the ideas board.
     async fn contract_owner(&self) -> anyhow::Result<Address>;
+    /// The previous contract a drive still lives on (not moved to the current one yet), if any.
+    async fn legacy_home(&self, _token_id: U256) -> anyhow::Result<Option<Address>> {
+        Ok(None)
+    }
 }
 
 pub struct RpcChain {
@@ -93,34 +97,61 @@ impl Chain for RpcChain {
     }
 }
 
-/// A successor contract and the legacy one its drives were swapped from (docs/MIGRATION.md).
-/// A drive lives on the successor once swapped (same token id, same capacity); until then it
-/// lives on the legacy contract. A legacy drive held by the successor but not swapped (sent
-/// with a plain `transferFrom`) belongs to nobody until the owner rescues it.
+/// The current contract and the earlier ones its drives move from (docs/MIGRATION.md),
+/// newest first. A drive lives on the newest contract that has its id (same id, same
+/// capacity on every version). A token held by one of these contracts (sent with a plain
+/// `transferFrom`, not moved) belongs to nobody until the owner rescues it; an old token the
+/// owner received from a move is ignored, since a newer contract has the id.
 pub struct WithLegacy {
     pub current: Arc<dyn Chain>,
     pub current_address: Address,
-    pub legacy: Arc<dyn Chain>,
+    /// (address, chain) of each earlier contract, newest first.
+    pub legacies: Vec<(Address, Arc<dyn Chain>)>,
+}
+
+impl WithLegacy {
+    fn ours(&self, a: Address) -> bool {
+        a == self.current_address || self.legacies.iter().any(|(l, _)| *l == a)
+    }
+
+    /// The contract the drive lives on and its holder there.
+    async fn home(&self, token_id: U256) -> anyhow::Result<Option<(Option<Address>, Address)>> {
+        if let Some(owner) = self.current.owner_of(token_id).await? {
+            return Ok(Some((None, owner)));
+        }
+        for (address, chain) in &self.legacies {
+            if let Some(owner) = chain.owner_of(token_id).await? {
+                return Ok((!self.ours(owner)).then_some((Some(*address), owner)));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait]
 impl Chain for WithLegacy {
     async fn owner_of(&self, token_id: U256) -> anyhow::Result<Option<Address>> {
-        if let Some(owner) = self.current.owner_of(token_id).await? {
-            return Ok(Some(owner));
-        }
-        Ok(self.legacy.owner_of(token_id).await?.filter(|owner| *owner != self.current_address))
+        Ok(self.home(token_id).await?.map(|(_, owner)| owner))
     }
 
     async fn capacity_gb(&self, token_id: U256) -> anyhow::Result<Option<u32>> {
-        match self.current.capacity_gb(token_id).await? {
-            Some(gb) => Ok(Some(gb)),
-            None => self.legacy.capacity_gb(token_id).await,
+        if let Some(gb) = self.current.capacity_gb(token_id).await? {
+            return Ok(Some(gb));
         }
+        for (_, chain) in &self.legacies {
+            if let Some(gb) = chain.capacity_gb(token_id).await? {
+                return Ok(Some(gb));
+            }
+        }
+        Ok(None)
     }
 
     async fn contract_owner(&self) -> anyhow::Result<Address> {
         self.current.contract_owner().await
+    }
+
+    async fn legacy_home(&self, token_id: U256) -> anyhow::Result<Option<Address>> {
+        Ok(self.home(token_id).await?.and_then(|(contract, _)| contract))
     }
 }
 
@@ -134,11 +165,25 @@ pub struct Ownership {
     ttl: Duration,
     owners: Mutex<HashMap<U256, (Address, Instant)>>,
     capacity: Mutex<HashMap<U256, u32>>,
+    /// Drives known to live on the current contract (a move never goes back).
+    on_current: Mutex<std::collections::HashSet<U256>>,
 }
 
 impl Ownership {
     pub fn new(chain: Arc<dyn Chain>, ttl: Duration) -> Self {
-        Self { chain, ttl, owners: Mutex::default(), capacity: Mutex::default() }
+        Self { chain, ttl, owners: Mutex::default(), capacity: Mutex::default(), on_current: Mutex::default() }
+    }
+
+    /// The previous contract the drive still lives on (it has to move before it can change).
+    pub async fn on_legacy(&self, token_id: U256) -> AppResult<Option<Address>> {
+        if self.on_current.lock().unwrap().contains(&token_id) {
+            return Ok(None);
+        }
+        let home = self.chain.legacy_home(token_id).await?;
+        if home.is_none() {
+            self.on_current.lock().unwrap().insert(token_id);
+        }
+        Ok(home)
     }
 
     pub async fn owner_of(&self, token_id: U256) -> AppResult<Option<Address>> {

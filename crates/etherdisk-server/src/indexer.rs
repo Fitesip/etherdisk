@@ -123,8 +123,8 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
                 }
             } else {
                 let ev = log.log_decode::<Transfer>()?.inner.data;
-                // A swap's legacy half (to the successor) leaves the holder as is.
-                if !(legacy && ev.to == cfg.contract_address) {
+                // A move's legacy halves (to a newer contract, on to its owner) leave the holder as is.
+                if !(legacy && (ours(cfg, ev.from) || ours(cfg, ev.to))) {
                     set_owner(st, ev.to, &ev.tokenId.to_string()).await?;
                 }
             }
@@ -136,18 +136,27 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The contracts whose events matter: the current one and, during a migration, the legacy one.
+/// The contracts whose events matter: the current one and the earlier ones drives move from.
 fn contracts(cfg: &crate::Config) -> Vec<Address> {
-    std::iter::once(cfg.contract_address).chain(cfg.legacy_contract_address).collect()
+    std::iter::once(cfg.contract_address).chain(cfg.legacy_contract_addresses.iter().copied()).collect()
 }
 
-/// A `Transfer` on the legacy contract. Sending a drive to the successor is the first half of
-/// a swap (the successor mints the same id to the same holder right after): not a change of
-/// hands, so links, keys and votes stay. Any other legacy transfer is one.
+fn ours(cfg: &crate::Config, a: Address) -> bool {
+    a == cfg.contract_address || cfg.legacy_contract_addresses.contains(&a)
+}
+
+/// A `Transfer` on an earlier contract. A move sends the drive to a newer contract, which
+/// passes the old token on to its owner and mints the same id to the holder: those halves
+/// are no change of hands, so links, keys and votes stay. Neither is the owner later moving
+/// an old token it got that way (the drive lives on a newer contract). Any other transfer of a
+/// drive that still lives on that contract is one.
 pub async fn on_legacy_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
-    if to == st.config.contract_address {
-        st.chain.invalidate(token_id);
-        tracing::info!(%token_id, holder = %from, "drive sent to the successor contract (swap)");
+    st.chain.invalidate(token_id);
+    if ours(&st.config, from) || ours(&st.config, to) {
+        tracing::info!(%token_id, %from, %to, "drive moving to a newer contract");
+        return Ok(());
+    }
+    if st.chain.owner_of(token_id).await? != Some(to) {
         return Ok(());
     }
     on_transfer(st, from, to, token_id).await

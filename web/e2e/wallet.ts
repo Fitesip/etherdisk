@@ -1,8 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 
-/** Anvil's default accounts (#1, #2): local test chain only. */
+/** Anvil's default accounts (#1, #2, #3): local test chain only. */
 export const ALICE = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
 export const BOB = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+/** Holds drive #1 on the previous contract (e2e/api.mjs). */
+export const CAROL = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
 
 /**
  * Installs an injected wallet (EIP-1193 + EIP-6963) before the app loads. Requests go

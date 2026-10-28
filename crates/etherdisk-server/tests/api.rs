@@ -60,7 +60,7 @@ struct App {
     router: Router,
     state: AppState,
     chain: Arc<FakeChain>,
-    /// The legacy contract, read only when `legacy_contract_address` is configured.
+    /// The previous contract, read only when `legacy_contract_addresses` is configured.
     legacy: Arc<FakeChain>,
     data_dir: tempfile::TempDir,
 }
@@ -75,7 +75,19 @@ async fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
 
 /// `keep_free`: the share of the disk reservations leave free (100: no room for any drive).
 async fn app_keeping_free(keep_free: u64, tweak: impl FnOnce(&mut Config)) -> App {
-    let data_dir = tempfile::tempdir().unwrap();
+    app_in(tempfile::tempdir().unwrap(), keep_free, tweak).await
+}
+
+/// The server restarted on the same data (after a contract update, say).
+async fn reopen(app: App, tweak: impl FnOnce(&mut Config)) -> App {
+    let App { data_dir, state, router, .. } = app;
+    drop(router);
+    state.db.close().await;
+    drop(state);
+    app_in(data_dir, 0, tweak).await
+}
+
+async fn app_in(data_dir: tempfile::TempDir, keep_free: u64, tweak: impl FnOnce(&mut Config)) -> App {
     let mut config = Config {
         bind_addr: String::new(),
         database_url: format!("sqlite://{}", data_dir.path().join("test.db").display()),
@@ -84,7 +96,7 @@ async fn app_keeping_free(keep_free: u64, tweak: impl FnOnce(&mut Config)) -> Ap
         reserve_space: false,
         rpc_urls: Vec::new(),
         contract_address: Address::ZERO,
-        legacy_contract_address: None,
+        legacy_contract_addresses: Vec::new(),
         chain_id: CHAIN_ID,
         start_block: 0,
         log_block_range: 500,
@@ -108,11 +120,16 @@ async fn app_keeping_free(keep_free: u64, tweak: impl FnOnce(&mut Config)) -> Ap
     };
     tweak(&mut config);
     let db = connect_db(&config.database_url).await.unwrap();
+    bind_deployment(&db, config.contract_address, config.chain_id, &config.legacy_contract_addresses).await.unwrap();
     let store = Arc::new(VolumeStore::open(&config.data_dirs, db.clone()).await.unwrap().keep_free(keep_free));
     let chain = Arc::new(FakeChain::default());
     let legacy = Arc::new(FakeChain::default());
-    let reads: Arc<dyn Chain> = match config.legacy_contract_address {
-        Some(_) => Arc::new(WithLegacy { current: chain.clone(), current_address: config.contract_address, legacy: legacy.clone() }),
+    let reads: Arc<dyn Chain> = match config.legacy_contract_addresses.first() {
+        Some(&address) => Arc::new(WithLegacy {
+            current: chain.clone(),
+            current_address: config.contract_address,
+            legacies: vec![(address, legacy.clone() as Arc<dyn Chain>)],
+        }),
         None => chain.clone(),
     };
     // TTL 0: every request sees the fake chain's current state.
@@ -602,11 +619,11 @@ async fn database_is_bound_to_one_contract() {
     let dir = tempfile::tempdir().unwrap();
     let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
     let (a, b) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
-    bind_deployment(&db, a, 1, None).await.unwrap();
-    bind_deployment(&db, a, 1, None).await.unwrap(); // restart: fine
-    let err = bind_deployment(&db, b, 1, None).await.unwrap_err().to_string();
+    bind_deployment(&db, a, 1, &[]).await.unwrap();
+    bind_deployment(&db, a, 1, &[]).await.unwrap(); // restart: fine
+    let err = bind_deployment(&db, b, 1, &[]).await.unwrap_err().to_string();
     assert!(err.contains("DATABASE_URL"), "{err}");
-    assert!(bind_deployment(&db, a, 2, None).await.is_err(), "other chain");
+    assert!(bind_deployment(&db, a, 2, &[]).await.is_err(), "other chain");
 }
 
 #[tokio::test]
@@ -614,58 +631,95 @@ async fn a_database_moves_on_to_the_successor_contract() {
     let dir = tempfile::tempdir().unwrap();
     let db = connect_db(&format!("sqlite://{}", dir.path().join("d.db").display())).await.unwrap();
     let (legacy, successor, other) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb), Address::repeat_byte(0xcc));
-    bind_deployment(&db, legacy, 1, None).await.unwrap();
+    bind_deployment(&db, legacy, 1, &[]).await.unwrap();
     sqlx::query("INSERT INTO tier_mints (token_id, tier_id) VALUES ('1', 0)").execute(&db).await.unwrap();
     // Only from the contract the database belongs to, on the same chain.
-    assert!(bind_deployment(&db, successor, 1, Some(other)).await.is_err(), "not this database's contract");
-    assert!(bind_deployment(&db, successor, 2, Some(legacy)).await.is_err(), "other chain");
-    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
+    assert!(bind_deployment(&db, successor, 1, &[other]).await.is_err(), "not this database's contract");
+    assert!(bind_deployment(&db, successor, 2, &[legacy]).await.is_err(), "other chain");
+    bind_deployment(&db, successor, 1, &[legacy]).await.unwrap();
     let bound: String = sqlx::query_scalar("SELECT contract FROM deployment").fetch_one(&db).await.unwrap();
     assert_eq!(bound, format!("{successor:#x}"));
     let mints: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tier_mints").fetch_one(&db).await.unwrap();
     assert_eq!(mints, 0, "tier ids belong to a contract: the counts start over");
     // Restarts keep working, with or without the legacy address.
-    bind_deployment(&db, successor, 1, Some(legacy)).await.unwrap();
-    bind_deployment(&db, successor, 1, None).await.unwrap();
+    bind_deployment(&db, successor, 1, &[legacy]).await.unwrap();
+    bind_deployment(&db, successor, 1, &[]).await.unwrap();
+    // A server that missed a version moves on over several (the list is newest first).
+    let third = Address::repeat_byte(0xdd);
+    bind_deployment(&db, third, 1, &[successor, legacy]).await.unwrap();
+    let older = tempfile::tempdir().unwrap();
+    let db = connect_db(&format!("sqlite://{}", older.path().join("d.db").display())).await.unwrap();
+    bind_deployment(&db, legacy, 1, &[]).await.unwrap();
+    bind_deployment(&db, third, 1, &[successor, legacy]).await.unwrap();
 }
 
-/// The swap of docs/MIGRATION.md: a legacy drive becomes the successor's drive with the same
-/// id, and keeps its files, key, recovery key and links.
+/// A contract update (docs/MIGRATION.md). Until a drive moves to the new contract it opens and
+/// downloads but doesn't change; the move (holder → new contract → its owner, the Safe, plus
+/// a mint of the same id) keeps its files, key, recovery key and links.
 #[tokio::test]
-async fn a_swapped_drive_keeps_its_data() {
-    let (legacy_addr, successor) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-    let app = app_with(|c| {
-        c.contract_address = successor;
-        c.legacy_contract_address = Some(legacy_addr);
-    })
-    .await;
-    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+async fn a_moved_drive_keeps_its_data() {
+    let (old, new, safe) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22), Address::repeat_byte(0x33));
+    let (alice, bob, carol) = (PrivateKeySigner::random(), PrivateKeySigner::random(), PrivateKeySigner::random());
 
-    // A drive minted before the successor existed works from the legacy contract.
-    app.legacy.mint(1, alice.address(), 4);
-    indexer::on_legacy_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
+    // Before the update: a drive with a file and a link.
+    let app = app_with(|c| c.contract_address = old).await;
+    app.mint(1, alice.address(), 4).await;
     let ta = app.login(&alice).await;
-    let (_vault, file, ct) = setup_vault_with_file(&app, &ta, b"kept").await;
+    let (vault, file, ct) = setup_vault_with_file(&app, &ta, b"kept").await;
     let r = app
         .json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" }))
         .await;
     let sid = r.json()["id"].as_str().unwrap().to_owned();
-    let before = app.get("/api/vaults", Some(&ta)).await.json();
-    assert_eq!(before[0]["capacity_bytes"], 4u64 << 30);
+    let mut before = app.get("/api/vaults", Some(&ta)).await.json();
+    assert_eq!(before[0]["legacy_contract"], Value::Null);
 
-    // The swap: the legacy token goes to the successor, which mints the same id to Alice.
-    app.legacy.transfer(1, successor);
-    indexer::on_legacy_transfer(&app.state, alice.address(), successor, U256::from(1)).await.unwrap();
+    // The server follows the new contract; the drive is still on the old one.
+    let app = reopen(app, |c| {
+        c.contract_address = new;
+        c.legacy_contract_addresses = vec![old];
+    })
+    .await;
+    app.legacy.mint(1, alice.address(), 4);
+    let ta = app.login(&alice).await;
+    let listed = app.get("/api/vaults", Some(&ta)).await.json();
+    assert_eq!(listed[0]["legacy_contract"], format!("{old:#x}"));
+    assert_eq!(listed[0]["capacity_bytes"], 4u64 << 30);
+    assert_eq!(app.get(&format!("/api/vaults/1/files/{file}/content"), Some(&ta)).await.body, ct, "downloads work");
+    assert_eq!(app.get(&format!("/api/shares/{sid}/files/{file}/content"), None).await.body, ct, "links work");
+    // Nothing changes: uploads, folders, the profile, links.
+    let old_contract = |r: Resp| {
+        assert_eq!(r.status, StatusCode::CONFLICT, "{}", String::from_utf8_lossy(&r.body));
+        assert_eq!(r.json()["error"], "old_contract");
+    };
+    let folder = json!({ "id": Uuid::new_v4(), "parent_id": null, "metadata": "AA==" });
+    old_contract(app.json(Method::POST, "/api/vaults/1/folders", Some(&ta), folder.clone()).await);
+    old_contract(app.json(Method::PUT, "/api/vaults/1/profile", Some(&ta), json!({ "name": "x" })).await);
+    old_contract(app.json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" })).await);
+    old_contract(app.req(Method::DELETE, &format!("/api/vaults/1/objects/{file}"), Some(&ta), Body::empty(), "application/json", &[]).await);
+
+    // The move, in the order of its logs; the chain reads already show its outcome.
+    app.legacy.transfer(1, safe);
     app.chain.mint(1, alice.address(), 4);
+    indexer::on_legacy_transfer(&app.state, alice.address(), new, U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, new, safe, U256::from(1)).await.unwrap();
     indexer::on_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
 
+    before[0]["legacy_contract"] = Value::Null;
     assert_eq!(app.get("/api/vaults", Some(&ta)).await.json(), before, "same drive, same look and usage");
     let key = app.get("/api/vaults/1/key", Some(&ta)).await.json();
-    assert_eq!(key["needs_new_key"], false, "the swap is no change of hands");
+    assert_eq!(key["needs_new_key"], false, "the move is no change of hands");
     assert_eq!(app.get(&format!("/api/vaults/1/files/{file}/content"), Some(&ta)).await.body, ct);
     assert_eq!(app.get(&format!("/api/shares/{sid}/files/{file}/content"), None).await.body, ct, "links still work");
+    assert_eq!(app.json(Method::POST, "/api/vaults/1/folders", Some(&ta), folder).await.status, StatusCode::CREATED, "it changes again");
+    upload(&app, &ta, &vault, None, b"more").await;
 
-    // Afterwards, a sale on the successor is a change of hands as usual.
+    // The Safe passing the old token on is nothing to the drive.
+    app.legacy.transfer(1, carol.address());
+    indexer::on_legacy_transfer(&app.state, safe, carol.address(), U256::from(1)).await.unwrap();
+    assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::OK);
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
+
+    // A sale on the new contract is a change of hands as usual.
     app.chain.transfer(1, bob.address());
     indexer::on_transfer(&app.state, alice.address(), bob.address(), U256::from(1)).await.unwrap();
     assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::NOT_FOUND);
@@ -673,11 +727,19 @@ async fn a_swapped_drive_keeps_its_data() {
     assert_eq!(app.get("/api/vaults", Some(&tb)).await.json().as_array().unwrap().len(), 1);
     assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::FORBIDDEN);
 
-    // A legacy drive sent to the successor with a plain transfer (no swap) is nobody's until
-    // the successor's owner rescues it: its old holder no longer opens it.
+    // So is a sale on the old contract of a drive not moved yet.
     app.legacy.mint(2, alice.address(), 1);
-    app.legacy.transfer(2, successor);
-    assert_eq!(app.get("/api/vaults/2", Some(&ta)).await.status, StatusCode::NOT_FOUND);
+    indexer::on_legacy_transfer(&app.state, Address::ZERO, alice.address(), U256::from(2)).await.unwrap();
+    app.legacy.transfer(2, bob.address());
+    indexer::on_legacy_transfer(&app.state, alice.address(), bob.address(), U256::from(2)).await.unwrap();
+    assert_eq!(app.get("/api/vaults/2", Some(&ta)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.get("/api/vaults/2", Some(&tb)).await.json()["legacy_contract"], format!("{old:#x}"));
+
+    // An old drive sent to the new contract with a plain transfer (no move) is nobody's until
+    // the owner rescues it.
+    app.legacy.mint(3, alice.address(), 1);
+    app.legacy.transfer(3, new);
+    assert_eq!(app.get("/api/vaults/3", Some(&ta)).await.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

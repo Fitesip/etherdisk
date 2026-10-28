@@ -169,6 +169,15 @@ export const en = {
     agreeAnd: "and the",
     inactive: "Coming soon",
     capacity: "{size}",
+    oldContract: "Needs moving",
+  },
+  move: {
+    title: "The Etherdisk contract has been updated",
+    text: "Move this drive to the new contract to keep using it: you get the same drive number and capacity, and your files, key and links stay. It costs only the network fee. Until then the drive is read-only: you can open and download files, but not upload or change anything.",
+    button: "Move drive",
+    confirm: "Confirm in wallet…",
+    pending: "Moving…",
+    finishing: "Almost done…",
   },
   vault: {
     setupTitle: "Set up {name}",

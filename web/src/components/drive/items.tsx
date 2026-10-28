@@ -209,10 +209,11 @@ export function Thumb({ ctx, item, className, iconClassName }: { ctx: DriveCtx; 
 export interface ItemActions {
   open: (item: Item) => void;
   download: (item: Item) => void;
-  share: (item: Item) => void;
-  rename: (item: Item) => void;
-  move: (items: Item[]) => void;
-  trash: (items: Item[]) => void;
+  /** Omitted where the drive can't change (it's on an old contract), like the ones below. */
+  share?: (item: Item) => void;
+  rename?: (item: Item) => void;
+  move?: (items: Item[]) => void;
+  trash?: (items: Item[]) => void;
   /** Stars or unstars; omit where it doesn't apply (search results keep it). */
   star?: (items: Item[], on: boolean) => void;
   labels?: (items: Item[]) => void;
@@ -381,8 +382,8 @@ function ItemMenuItems({ item, actions, close }: { item: Item; actions: ItemActi
           onClick={act(() => actions.download(item))}
         />
       )}
-      <MenuItem icon={Share2} label={t("files.share")} onClick={act(() => actions.share(item))} />
-      {item.meta && <MenuItem icon={Pencil} label={t("files.rename")} onClick={act(() => actions.rename(item))} />}
+      {actions.share && <MenuItem icon={Share2} label={t("files.share")} onClick={act(() => actions.share!(item))} />}
+      {item.meta && actions.rename && <MenuItem icon={Pencil} label={t("files.rename")} onClick={act(() => actions.rename!(item))} />}
       {item.meta && actions.star && (
         <MenuItem
           icon={item.meta.starred ? StarOff : Star}
@@ -394,8 +395,8 @@ function ItemMenuItems({ item, actions, close }: { item: Item; actions: ItemActi
       {item.meta && item.row.kind === "folder" && actions.customize && (
         <MenuItem icon={Paintbrush} label={t("custom.folderLook")} onClick={act(() => actions.customize!(item))} />
       )}
-      <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move([item]))} />
-      <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash([item]))} />
+      {actions.move && <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move!([item]))} />}
+      {actions.trash && <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash!([item]))} />}
     </>
   );
 }
@@ -414,8 +415,8 @@ function SelectionMenuItems({ items, actions, close }: { items: Item[]; actions:
         <MenuItem icon={allStarred ? StarOff : Star} label={allStarred ? t("custom.unstar") : t("custom.star")} onClick={act(() => actions.star!(readable, !allStarred))} />
       )}
       {actions.labels && readable.length > 0 && <MenuItem icon={Tag} label={t("custom.labels")} onClick={act(() => actions.labels!(readable))} />}
-      <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move(items))} />
-      <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash(items))} />
+      {actions.move && <MenuItem icon={Move} label={t("files.move")} onClick={act(() => actions.move!(items))} />}
+      {actions.trash && <MenuItem icon={Trash2} label={t("files.delete")} danger onClick={act(() => actions.trash!(items))} />}
     </>
   );
 }
