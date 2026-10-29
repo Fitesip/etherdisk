@@ -178,6 +178,7 @@ export const en = {
     confirm: "Confirm in wallet…",
     pending: "Moving…",
     finishing: "Almost done…",
+    unknown: "This drive's contract isn't one the current contract takes drives from. Nothing was sent; please contact support.",
   },
   vault: {
     setupTitle: "Set up {name}",

@@ -153,7 +153,7 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
       </header>
       {old && (
         <div className="mb-6">
-          <MoveDriveBanner token={token} info={vault} />
+          <MoveDriveBanner key={vault.legacy_contract} token={token} info={vault} />
         </div>
       )}
       <div key={tab} className="animate-fade-up">

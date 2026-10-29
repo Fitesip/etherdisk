@@ -62,7 +62,7 @@ if ((await rpc("eth_getCode", [CONTRACT, "latest"])) === "0x") {
   create(LEGACY_DEPLOYER_KEY, "src/EtherdiskRenderer.sol:EtherdiskRenderer", "http://localhost:3001/nft/");
   create(LEGACY_DEPLOYER_KEY, "src/Etherdisk.sol:Etherdisk", LEGACY_DEPLOYER, LEGACY_RENDERER, ...tiers, "500", ZERO);
   send(CAROL_KEY, LEGACY, "mint(uint256)", "0", "--value", "500000000000000");
-  for (const tier of ["0", "1", "2"]) send(LEGACY_DEPLOYER_KEY, LEGACY, "setTierActive(uint256,bool)", tier, "false");
+  send(LEGACY_DEPLOYER_KEY, LEGACY, "closeSales()");
 
   // Deployer nonce 0: the renderer (at RENDERER); nonce 1: Etherdisk (at CONTRACT), taking
   // the previous version's drives.

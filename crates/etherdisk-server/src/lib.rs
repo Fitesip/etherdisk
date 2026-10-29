@@ -153,24 +153,27 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// A drive still on an earlier contract opens and downloads as before, but nothing about it
-/// changes until it moves to the current one (docs/MIGRATION.md): any write to
-/// `/api/vaults/{id}/…` (links and handover included) is refused with `old_contract`.
+/// changes until it moves to the current one (docs/MIGRATION.md): any write to a route with
+/// the drive's `{token_id}` (links and handover included) is refused with `old_contract`.
 async fn read_only_on_old_contract(
     axum::extract::State(st): axum::extract::State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    use axum::RequestPartsExt;
     let writes = !matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD);
-    // Inside the `/api` nest the path may come without its prefix.
-    let path = req.uri().path();
-    let token = path
-        .strip_prefix("/api")
-        .unwrap_or(path)
-        .strip_prefix("/vaults/")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|id| vaults::parse_token(id).ok());
-    if let (true, Some(token)) = (writes && !st.config.legacy_contract_addresses.is_empty(), token) {
+    if !writes || st.config.legacy_contract_addresses.is_empty() {
+        return next.run(req).await;
+    }
+    // The route's own parameter, decoded as the handler sees it (`%31` and `01` are drive 1).
+    let (mut parts, body) = req.into_parts();
+    let token = match parts.extract::<axum::extract::RawPathParams>().await {
+        Ok(params) => params.iter().find(|(name, _)| *name == "token_id").and_then(|(_, id)| vaults::parse_token(id).ok()),
+        Err(_) => None,
+    };
+    let req = axum::extract::Request::from_parts(parts, body);
+    if let Some(token) = token {
         match st.chain.on_legacy(token).await {
             Ok(Some(_)) => return AppError::OldContract.into_response(),
             Ok(None) => {}

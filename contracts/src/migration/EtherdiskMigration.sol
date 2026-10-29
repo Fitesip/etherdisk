@@ -10,6 +10,8 @@ interface IEtherdiskLegacy is IERC721 {
     function capacityOf(uint256 tokenId) external view returns (uint32);
     /// The highest token id it has handed out (ids run from 1 to this).
     function totalSupply() external view returns (uint256);
+    /// Whether it stopped minting for good (its ids are final).
+    function salesClosed() external view returns (bool);
 }
 
 /// @title EtherdiskMigration
@@ -27,20 +29,28 @@ interface IEtherdiskLegacy is IERC721 {
 ///         Each version inherits this with the previous one as `legacy`, so drives move along
 ///         the chain one version at a time, whenever their holders like. New drives take ids
 ///         after every legacy id (`_nextNewTokenId`), and `totalSupply` counts those too, so the
-///         next version numbers after both. The legacy contract's sales must be closed for good.
+///         next version numbers after both. That holds only while the legacy contract mints no
+///         more: this contract neither mints nor takes moves until the legacy one has closed its
+///         sales for good (`salesClosed`, irreversible), so no id is ever handed out twice.
 ///         Moves are closed until the owner opens them (`_setMigrationOpen`): the server must
 ///         follow the legacy contract first (docs/MIGRATION.md), or it would take a move for a sale.
 abstract contract EtherdiskMigration is IERC721Receiver {
     /// The previous contract; address(0) for the first one (nothing to move).
     IEtherdiskLegacy public immutable legacy;
     bool public migrationOpen;
+    /// No more mints here, ever: set before the next version takes this one's drives.
+    bool public salesClosed;
 
     event MigrationOpened(bool open);
+    event SalesClosed();
     event DriveMigrated(uint256 indexed tokenId, address indexed holder, uint32 capacityGb);
 
     error NotLegacyToken();
     error MigrationClosed();
     error NotStuck();
+    error SalesClosedForGood();
+    /// The previous contract still mints: its ids aren't final yet.
+    error LegacyStillSelling();
 
     constructor(IEtherdiskLegacy legacy_) {
         legacy = legacy_;
@@ -91,6 +101,7 @@ abstract contract EtherdiskMigration is IERC721Receiver {
 
     /// @dev Owner only: open after the server follows the legacy contract.
     function _setMigrationOpen(bool open) internal {
+        if (open) _requireLegacyClosed();
         migrationOpen = open;
         emit MigrationOpened(open);
     }
@@ -101,6 +112,22 @@ abstract contract EtherdiskMigration is IERC721Receiver {
     function _rescueMigration(uint256 tokenId, address holder) internal {
         if (legacy.ownerOf(tokenId) != address(this) || _existsHere(tokenId)) revert NotStuck();
         _migrate(holder, tokenId);
+    }
+
+    /// @dev Owner only, irreversible: this contract mints no more (before the next version).
+    function _closeSales() internal {
+        salesClosed = true;
+        emit SalesClosed();
+    }
+
+    /// @dev Before a mint here: this contract's sales are open and the legacy one's ids are final.
+    function _requireCanMint() internal view {
+        if (salesClosed) revert SalesClosedForGood();
+        _requireLegacyClosed();
+    }
+
+    function _requireLegacyClosed() private view {
+        if (address(legacy) != address(0) && !legacy.salesClosed()) revert LegacyStillSelling();
     }
 
     /// @dev The id for the next new drive: never one a legacy drive has.

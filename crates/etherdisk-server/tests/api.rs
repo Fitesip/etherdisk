@@ -696,12 +696,16 @@ async fn a_moved_drive_keeps_its_data() {
     old_contract(app.json(Method::PUT, "/api/vaults/1/profile", Some(&ta), json!({ "name": "x" })).await);
     old_contract(app.json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" })).await);
     old_contract(app.req(Method::DELETE, &format!("/api/vaults/1/objects/{file}"), Some(&ta), Body::empty(), "application/json", &[]).await);
+    // However the number is spelled in the path.
+    for spelled in ["%31", "01"] {
+        old_contract(app.json(Method::POST, &format!("/api/vaults/{spelled}/folders"), Some(&ta), folder.clone()).await);
+    }
 
     // The move, in the order of its logs; the chain reads already show its outcome.
     app.legacy.transfer(1, safe);
     app.chain.mint(1, alice.address(), 4);
-    indexer::on_legacy_transfer(&app.state, alice.address(), new, U256::from(1)).await.unwrap();
-    indexer::on_legacy_transfer(&app.state, new, safe, U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, alice.address(), new, U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, new, safe, U256::from(1)).await.unwrap();
     indexer::on_transfer(&app.state, Address::ZERO, alice.address(), U256::from(1)).await.unwrap();
 
     before[0]["legacy_contract"] = Value::Null;
@@ -715,7 +719,7 @@ async fn a_moved_drive_keeps_its_data() {
 
     // The Safe passing the old token on is nothing to the drive.
     app.legacy.transfer(1, carol.address());
-    indexer::on_legacy_transfer(&app.state, safe, carol.address(), U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, safe, carol.address(), U256::from(1)).await.unwrap();
     assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::OK);
     assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::OK);
 
@@ -729,9 +733,9 @@ async fn a_moved_drive_keeps_its_data() {
 
     // So is a sale on the old contract of a drive not moved yet.
     app.legacy.mint(2, alice.address(), 1);
-    indexer::on_legacy_transfer(&app.state, Address::ZERO, alice.address(), U256::from(2)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, Address::ZERO, alice.address(), U256::from(2)).await.unwrap();
     app.legacy.transfer(2, bob.address());
-    indexer::on_legacy_transfer(&app.state, alice.address(), bob.address(), U256::from(2)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, alice.address(), bob.address(), U256::from(2)).await.unwrap();
     assert_eq!(app.get("/api/vaults/2", Some(&ta)).await.status, StatusCode::FORBIDDEN);
     assert_eq!(app.get("/api/vaults/2", Some(&tb)).await.json()["legacy_contract"], format!("{old:#x}"));
 
@@ -740,6 +744,41 @@ async fn a_moved_drive_keeps_its_data() {
     app.legacy.mint(3, alice.address(), 1);
     app.legacy.transfer(3, new);
     assert_eq!(app.get("/api/vaults/3", Some(&ta)).await.status, StatusCode::NOT_FOUND);
+}
+
+/// A drive sold on the old contract and moved by its buyer before the server saw the sale:
+/// the move's mint, to someone other than the holder on record, is a change of hands.
+#[tokio::test]
+async fn a_drive_sold_then_moved_changes_hands() {
+    let (old, new, safe) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22), Address::repeat_byte(0x33));
+    let (alice, bob) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+    let app = app_with(|c| c.contract_address = old).await;
+    app.mint(1, alice.address(), 4).await;
+    let ta = app.login(&alice).await;
+    let (_vault, file, _ct) = setup_vault_with_file(&app, &ta, b"alice's").await;
+    let r = app
+        .json(Method::POST, "/api/vaults/1/shares", Some(&ta), json!({ "object_ids": [file], "manifest": "AA==", "owner_metadata": "AA==" }))
+        .await;
+    let sid = r.json()["id"].as_str().unwrap().to_owned();
+
+    let app = reopen(app, |c| {
+        c.contract_address = new;
+        c.legacy_contract_addresses = vec![old];
+    })
+    .await;
+    // Both already happened on chain when the indexer reads the logs.
+    app.legacy.mint(1, safe, 4);
+    app.chain.mint(1, bob.address(), 4);
+    indexer::on_legacy_transfer(&app.state, old, alice.address(), bob.address(), U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, bob.address(), new, U256::from(1)).await.unwrap();
+    indexer::on_legacy_transfer(&app.state, old, new, safe, U256::from(1)).await.unwrap();
+    indexer::on_transfer(&app.state, Address::ZERO, bob.address(), U256::from(1)).await.unwrap();
+
+    assert_eq!(app.get(&format!("/api/shares/{sid}"), None).await.status, StatusCode::NOT_FOUND, "the seller's links are gone");
+    let tb = app.login(&bob).await;
+    assert_eq!(app.get("/api/vaults/1/key", Some(&tb)).await.json()["needs_new_key"], true, "the buyer makes the drive theirs");
+    let ta = app.login(&alice).await;
+    assert_eq!(app.get("/api/vaults/1", Some(&ta)).await.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

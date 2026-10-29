@@ -111,6 +111,7 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
         Tier storage tier = _getTier(tierId);
         if (!tier.active) revert TierInactive();
         if (msg.value != tier.price) revert WrongPayment();
+        _requireCanMint();
 
         // After every id of the previous contract, so its drives can move here with theirs.
         tokenId = _nextNewTokenId(_nextTokenId);
@@ -222,6 +223,12 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
     /// Disabled: without an owner, prices could never change and held payments would be stuck.
     function renounceOwnership() public view override onlyOwner {
         revert RenounceDisabled();
+    }
+
+    /// Stops minting for good, before the next version takes this one's drives (its ids must
+    /// be final). Irreversible: drives keep working and can still be transferred and moved.
+    function closeSales() external onlyOwner {
+        _closeSales();
     }
 
     /// Opens moves from the previous contract, once the server follows it (docs/MIGRATION.md).

@@ -37,11 +37,8 @@ contract EtherdiskMigrationTest is Test {
         vm.prank(alice);
         v1.mint{value: 0.001 ether}(2);
         // The old contract's sales close for good before the new one.
-        vm.startPrank(admin);
-        for (uint256 i; i < 3; i++) {
-            v1.setTierActive(i, false);
-        }
-        vm.stopPrank();
+        vm.prank(admin);
+        v1.closeSales();
 
         v2 = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(v1)));
         vm.prank(admin);
@@ -146,25 +143,59 @@ contract EtherdiskMigrationTest is Test {
     }
 
     function test_aCapacityWithoutATierHereNeedsOneAdded() public {
-        // An 8 GB tier on the old contract that the new one doesn't have.
+        // An 8 GB drive on an old contract whose successor has no 8 GB tier.
+        Etherdisk old = TestTiers.deploy(admin);
         vm.startPrank(admin);
-        uint256 t8 = v1.addTier(8, 0.002 ether, 0x123456);
-        v1.setTierActive(t8, true);
+        uint256 t8 = old.addTier(8, 0.002 ether, 0x123456);
+        old.setTierActive(t8, true);
         vm.stopPrank();
         vm.prank(bob);
-        uint256 id = v1.mint{value: 0.002 ether}(t8);
-        // The new contract's ids still come after it.
+        uint256 id = old.mint{value: 0.002 ether}(t8);
+        vm.startPrank(admin);
+        old.closeSales();
+        Etherdisk next = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(old)));
+        next.setMigrationOpen(true);
+        vm.stopPrank();
         vm.prank(bob);
         vm.expectRevert(abi.encodeWithSelector(Etherdisk.NoTierForCapacity.selector, uint32(8)));
-        v1.safeTransferFrom(bob, address(v2), id);
+        old.safeTransferFrom(bob, address(next), id);
         vm.prank(admin);
-        uint256 here = v2.addTier(8, 0, 0xabcdef);
+        uint256 here = next.addTier(8, 0, 0xabcdef);
         vm.prank(admin);
-        v2.setTierHidden(here, true);
+        next.setTierHidden(here, true);
         vm.prank(bob);
-        v1.safeTransferFrom(bob, address(v2), id);
-        assertEq(v2.capacityOf(id), 8);
-        assertEq(v2.tierOf(id), here);
+        old.safeTransferFrom(bob, address(next), id);
+        assertEq(next.capacityOf(id), 8);
+        assertEq(next.tierOf(id), here);
+    }
+
+    /// No id twice: the new contract neither mints nor takes moves while the old one can mint.
+    function test_nothingUntilTheOldContractClosesItsSalesForGood() public {
+        Etherdisk old = TestTiers.deploy(admin);
+        Etherdisk next = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(old)));
+        vm.prank(admin);
+        vm.expectRevert(EtherdiskMigration.LegacyStillSelling.selector);
+        next.setMigrationOpen(true);
+        vm.prank(bob);
+        vm.expectRevert(EtherdiskMigration.LegacyStillSelling.selector);
+        next.mint{value: 0.0005 ether}(0);
+
+        // Only the owner closes them, and for good: no tier sells after that.
+        vm.prank(bob);
+        vm.expectRevert();
+        old.closeSales();
+        vm.startPrank(admin);
+        old.closeSales();
+        old.setTierActive(0, true);
+        vm.stopPrank();
+        vm.prank(bob);
+        vm.expectRevert(EtherdiskMigration.SalesClosedForGood.selector);
+        old.mint{value: 0.0005 ether}(0);
+
+        vm.prank(admin);
+        next.setMigrationOpen(true);
+        vm.prank(bob);
+        assertEq(next.mint{value: 0.0005 ether}(0), 1);
     }
 
     /// v1 → v2 → v3: each version takes the previous one's drives, one step at a time.
@@ -174,9 +205,7 @@ contract EtherdiskMigrationTest is Test {
         vm.prank(bob);
         uint256 newOnV2 = v2.mint{value: 0.0005 ether}(0);
         vm.startPrank(admin);
-        for (uint256 i; i < 3; i++) {
-            v2.setTierActive(i, false);
-        }
+        v2.closeSales();
         Etherdisk v3 = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(v2)));
         v3.setMigrationOpen(true);
         vm.stopPrank();

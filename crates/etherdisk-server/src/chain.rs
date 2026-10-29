@@ -180,7 +180,9 @@ impl Ownership {
             return Ok(None);
         }
         let home = self.chain.legacy_home(token_id).await?;
-        if home.is_none() {
+        // Remembered only once it exists on the current contract (not for a number nobody
+        // holds yet, or a drive stuck in a contract).
+        if home.is_none() && self.chain.owner_of(token_id).await?.is_some() {
             self.on_current.lock().unwrap().insert(token_id);
         }
         Ok(home)

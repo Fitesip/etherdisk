@@ -13,6 +13,13 @@ export const vaultNftAbi = [
   },
   {
     type: "function",
+    name: "legacy",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
     name: "tierCount",
     stateMutability: "view",
     inputs: [],
