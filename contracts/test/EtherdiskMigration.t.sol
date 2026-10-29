@@ -4,9 +4,11 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {IERC4906} from "@openzeppelin/contracts/interfaces/IERC4906.sol";
 
 import {Etherdisk} from "../src/Etherdisk.sol";
 import {EtherdiskMigration, IEtherdiskLegacy} from "../src/migration/EtherdiskMigration.sol";
+import {EtherdiskRenderer} from "../src/EtherdiskRenderer.sol";
 import {TestTiers} from "./TestTiers.sol";
 
 /// Another NFT, to check that only legacy drives move.
@@ -36,13 +38,12 @@ contract EtherdiskMigrationTest is Test {
         v1.mint{value: 0.00075 ether}(1);
         vm.prank(alice);
         v1.mint{value: 0.001 ether}(2);
-        // The old contract's sales close for good before the new one.
-        vm.prank(admin);
-        v1.closeSales();
-
+        // v1 hands over to v2 (its sales end for good), then v2 opens moves.
         v2 = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(v1)));
-        vm.prank(admin);
+        vm.startPrank(admin);
+        v1.setSuccessor(address(v2));
         v2.setMigrationOpen(true);
+        vm.stopPrank();
     }
 
     function test_moveInOneTransfer_sameIdAndCapacity_oldTokenToTheSafe() public {
@@ -126,20 +127,21 @@ contract EtherdiskMigrationTest is Test {
         assertEq(v2.totalSupply(), 4);
     }
 
-    function test_rescueADriveSentWithPlainTransfer() public {
+    function test_anyoneCompletesAMoveSentWithPlainTransfer_forItsSender() public {
         vm.prank(alice);
         v1.transferFrom(alice, address(v2), 3);
         assertEq(v1.ownerOf(3), address(v2), "stuck: no move without the callback");
-        vm.prank(alice);
-        vm.expectRevert();
-        v2.rescueMigration(3, alice);
-        vm.prank(admin);
-        v2.rescueMigration(3, alice);
+        assertEq(v1.sentToSuccessorBy(3), alice);
+        // Bob finishes it, but the drive is Alice's: the old contract recorded the sender.
+        vm.prank(bob);
+        v2.completeMigration(3);
         assertEq(v2.ownerOf(3), alice);
         assertEq(v1.ownerOf(3), admin);
-        vm.prank(admin);
         vm.expectRevert(EtherdiskMigration.NotStuck.selector);
-        v2.rescueMigration(3, alice);
+        v2.completeMigration(3);
+        // Nothing to complete for a drive that wasn't sent.
+        vm.expectRevert(EtherdiskMigration.NotStuck.selector);
+        v2.completeMigration(2);
     }
 
     function test_aCapacityWithoutATierHereNeedsOneAdded() public {
@@ -152,8 +154,8 @@ contract EtherdiskMigrationTest is Test {
         vm.prank(bob);
         uint256 id = old.mint{value: 0.002 ether}(t8);
         vm.startPrank(admin);
-        old.closeSales();
         Etherdisk next = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(old)));
+        old.setSuccessor(address(next));
         next.setMigrationOpen(true);
         vm.stopPrank();
         vm.prank(bob);
@@ -169,23 +171,31 @@ contract EtherdiskMigrationTest is Test {
         assertEq(next.tierOf(id), here);
     }
 
-    /// No id twice: the new contract neither mints nor takes moves while the old one can mint.
-    function test_nothingUntilTheOldContractClosesItsSalesForGood() public {
+    /// No id twice: the new contract neither mints nor takes moves until the old one has
+    /// handed over to it, which ends the old one's sales for good.
+    function test_nothingUntilTheOldContractHandsOver() public {
         Etherdisk old = TestTiers.deploy(admin);
         Etherdisk next = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(old)));
         vm.prank(admin);
-        vm.expectRevert(EtherdiskMigration.LegacyStillSelling.selector);
+        vm.expectRevert(EtherdiskMigration.LegacyNotHandedOver.selector);
         next.setMigrationOpen(true);
         vm.prank(bob);
-        vm.expectRevert(EtherdiskMigration.LegacyStillSelling.selector);
+        vm.expectRevert(EtherdiskMigration.LegacyNotHandedOver.selector);
         next.mint{value: 0.0005 ether}(0);
 
-        // Only the owner closes them, and for good: no tier sells after that.
+        // Only the owner hands over, only to a contract built on it, and once.
         vm.prank(bob);
         vm.expectRevert();
-        old.closeSales();
+        old.setSuccessor(address(next));
         vm.startPrank(admin);
-        old.closeSales();
+        vm.expectRevert(EtherdiskMigration.NotSuccessor.selector);
+        old.setSuccessor(address(v2));
+        vm.expectRevert(EtherdiskMigration.NotSuccessor.selector);
+        old.setSuccessor(address(0));
+        old.setSuccessor(address(next));
+        vm.expectRevert(EtherdiskMigration.SuccessorAlreadySet.selector);
+        old.setSuccessor(address(next));
+        // No tier sells on the old one after that.
         old.setTierActive(0, true);
         vm.stopPrank();
         vm.prank(bob);
@@ -198,6 +208,61 @@ contract EtherdiskMigrationTest is Test {
         assertEq(next.mint{value: 0.0005 ether}(0), 1);
     }
 
+    /// The old token of a moved drive shows as a legacy one, with its version.
+    function test_aMovedDrivesOldTokenIsLegacy() public {
+        assertEq(v1.version(), 1);
+        assertEq(v2.version(), 2);
+        string memory before = v1.tokenURI(3);
+        vm.expectEmit(address(v1));
+        emit IERC4906.MetadataUpdate(3);
+        vm.prank(alice);
+        v1.safeTransferFrom(alice, address(v2), 3);
+
+        EtherdiskRenderer r = EtherdiskRenderer(address(v1.renderer()));
+        string memory j = r.json(3, 4, 0xf59e0b, 1, address(v2));
+        assertEq(v1.tokenURI(3), _uri(j));
+        assertTrue(keccak256(bytes(v1.tokenURI(3))) != keccak256(bytes(before)));
+        assertEq(vm.parseJsonString(j, ".name"), unicode"Etherdisk #3 · Legacy v1");
+        assertEq(vm.parseJsonString(j, ".attributes[0].value"), "4 GB");
+        assertEq(vm.parseJsonString(j, ".attributes[1].trait_type"), "Status");
+        assertEq(vm.parseJsonString(j, ".attributes[1].value"), "Legacy");
+        assertEq(vm.parseJsonString(j, ".attributes[2].trait_type"), "Version");
+        assertEq(vm.parseJsonString(j, ".attributes[2].value"), "v1");
+        string memory text = vm.parseJsonString(j, ".description");
+        assertTrue(_has(text, "moved to Etherdisk v2"));
+        assertTrue(_has(text, vm.toLowercase(vm.toString(address(v2)))));
+
+        // A drive that hasn't moved, and the moved drive on v2, look as usual.
+        assertEq(v1.tokenURI(1), _uri(r.json(1, 1, 0x6366f1, 1, address(0))));
+        EtherdiskRenderer r2 = EtherdiskRenderer(address(v2.renderer()));
+        assertEq(v2.tokenURI(3), _uri(r2.json(3, 4, 0xf59e0b, 2, address(0))));
+    }
+
+    /// A drive stuck in the new contract (plain transfer) isn't legacy until its move completes.
+    function test_aStuckDriveIsNotLegacyYet() public {
+        vm.prank(alice);
+        v1.transferFrom(alice, address(v2), 3);
+        EtherdiskRenderer r = EtherdiskRenderer(address(v1.renderer()));
+        assertEq(v1.tokenURI(3), _uri(r.json(3, 4, 0xf59e0b, 1, address(0))));
+    }
+
+    function _uri(string memory json) private pure returns (string memory) {
+        return string.concat("data:application/json;base64,", vm.toBase64(bytes(json)));
+    }
+
+    function _has(string memory hay, string memory needle) private pure returns (bool) {
+        bytes memory h = bytes(hay);
+        bytes memory n = bytes(needle);
+        for (uint256 i; i + n.length <= h.length; i++) {
+            bool ok = true;
+            for (uint256 k; k < n.length && ok; k++) {
+                ok = h[i + k] == n[k];
+            }
+            if (ok) return true;
+        }
+        return false;
+    }
+
     /// v1 → v2 → v3: each version takes the previous one's drives, one step at a time.
     function test_drivesMoveAlongTheChainOfVersions() public {
         vm.prank(alice);
@@ -205,11 +270,12 @@ contract EtherdiskMigrationTest is Test {
         vm.prank(bob);
         uint256 newOnV2 = v2.mint{value: 0.0005 ether}(0);
         vm.startPrank(admin);
-        v2.closeSales();
         Etherdisk v3 = TestTiers.deployAfter(admin, IEtherdiskLegacy(address(v2)));
+        v2.setSuccessor(address(v3));
         v3.setMigrationOpen(true);
         vm.stopPrank();
 
+        assertEq(v3.version(), 3);
         assertEq(v3.totalSupply(), 4, "after every v1 and v2 id");
         vm.prank(alice);
         v2.safeTransferFrom(alice, address(v3), 1);

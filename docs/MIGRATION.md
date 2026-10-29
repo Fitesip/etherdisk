@@ -2,7 +2,7 @@
 
 A deployed Etherdisk contract can't be changed. When a new version is needed (new features, a fix), drives move to it **without losing data**: the holder sends the old drive to the new contract and gets a drive with **the same number and capacity** in the same transaction, paying only the network fee. Files, the key, the recovery key, labels and links are bound to the drive's number, so they stay where they are; nothing is re-encrypted.
 
-Every version is built for this: each one inherits `contracts/src/migration/EtherdiskMigration.sol` with the previous version as `legacy` (`address(0)` for v1, the first). Drives move one version at a time (v1 → v2 → v3), whenever their holders like.
+Every version is built for this: each one inherits `contracts/src/migration/EtherdiskMigration.sol` with the previous version as `legacy` (`address(0)` for v1, the first) and knows its number (`version()`: 1, 2, 3…). Drives move one version at a time (v1 → v2 → v3), whenever their holders like.
 
 ## How a move works
 
@@ -11,10 +11,11 @@ Every version is built for this: each one inherits `contracts/src/migration/Ethe
 - **Old drives only:** other NFTs, and drives of versions before the previous one, are rejected (`NotLegacyToken`); those move through each version in turn (the site finds the next version on chain, through each contract's `legacy()`).
 - **A capacity the new contract has no tier for** reverts with `NoTierForCapacity`: add the tier first (`addTier`; it can stay hidden and off sale).
 - **Closed until the owner opens it** (`setMigrationOpen`): the server has to follow the new contract first.
-- **New drives' numbers** come after every number of the previous version (`totalSupply` counts them too), so the next version numbers after both. No number is ever handed out twice: the new contract neither mints nor opens moves until the previous one has closed its sales for good (`closeSales()`, irreversible; `LegacyStillSelling` otherwise).
-- **Sent with a plain `transferFrom`** (no move): the drive is stuck in the new contract. The Safe completes the move for the sender: `rescueMigration(tokenId, sender)` (the sender is in the old contract's `Transfer` event). Until then the drive opens for nobody.
+- **New drives' numbers** come after every number of the previous version (`totalSupply` counts them too), so the next version numbers after both. No number is ever handed out twice: the new contract neither mints nor opens moves until the previous one has handed over to it (`setSuccessor(new)` from the Safe: once, only to a contract whose `legacy` it is, and it ends the old contract's sales for good; `LegacyNotHandedOver` otherwise).
+- **The old token becomes a legacy one.** It goes to the Safe and its metadata changes (the old contract asks its successor whether the drive is there): "Etherdisk #N · Legacy v1", gray, stamped "LEGACY V1", traits `Status: Legacy` and `Version: v1`, a description pointing to the new version. Marketplaces are told to refresh it (ERC-4906 `MetadataUpdate`). It holds no storage; the Safe never sells it.
+- **Sent with a plain `transferFrom`** (no move): the drive is stuck in the new contract. The old contract records who sent it (`sentToSuccessorBy`), so **anyone** completes the move for that wallet: `completeMigration(tokenId)`. Until then the drive opens for nobody.
 
-Tests: `forge test --match-contract EtherdiskMigrationTest` (a move, an operator, approve + migrate, a repeated and a foreign move, a closed move, numbering, closing the previous version's sales, a stuck drive, a missing tier, v1 → v2 → v3).
+Tests: `forge test --match-contract EtherdiskMigrationTest` (a move, an operator, approve + migrate, a repeated and a foreign move, a closed move, numbering, the hand-over, a stuck drive, a missing tier, legacy metadata, v1 → v2 → v3).
 
 ## Server
 
@@ -37,8 +38,8 @@ The site needs no list of its own: the server names the contract each drive is o
 ## The order of an update
 
 1. **The new contract**, with the current one as `legacy`; its sales and moves are **closed** at deploy time. Tests and a review, as for the first one.
-2. **Close the current contract's sales for good:** `closeSales()` from the Safe (irreversible; its drives keep working).
-3. **Deploy the new one:** `LEGACY=<current> contracts/script/deploy-mainnet.sh`; verify it on Etherscan. Every capacity of the old contract needs a tier on the new one (hidden and off sale is fine).
+2. **Deploy the new one:** `LEGACY=<current> contracts/script/deploy-mainnet.sh`; verify it on Etherscan. Every capacity of the old contract needs a tier on the new one (hidden and off sale is fine).
+3. **Hand over:** `setSuccessor(<new>)` on the current contract from the Safe. Irreversible: its sales end for good (its drives keep working).
 4. **Server:** `CONTRACT_ADDRESS=<new>`, `LEGACY_CONTRACT_ADDRESS=<current>,<older…>`, the same `START_BLOCK`; restart. The log says `database moved on to the successor contract`.
 5. **Site:** `NEXT_PUBLIC_CONTRACT_ADDRESS=<new>`; build and deploy.
 6. **Open moves and the new contract's sales** from the Safe (`setMigrationOpen(true)`, `setTierActive`).

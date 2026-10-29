@@ -10,8 +10,14 @@ interface IEtherdiskLegacy is IERC721 {
     function capacityOf(uint256 tokenId) external view returns (uint32);
     /// The highest token id it has handed out (ids run from 1 to this).
     function totalSupply() external view returns (uint256);
-    /// Whether it stopped minting for good (its ids are final).
-    function salesClosed() external view returns (bool);
+    /// Its place in the chain of versions: 1 for the first.
+    function version() external view returns (uint256);
+    /// The version before it (address(0) for the first).
+    function legacy() external view returns (IEtherdiskLegacy);
+    /// The version after it, once it has handed over (it mints no more from then on).
+    function successor() external view returns (address);
+    /// Who last sent `tokenId` to the successor: the holder a move without the callback is for.
+    function sentToSuccessorBy(uint256 tokenId) external view returns (address);
 }
 
 /// @title EtherdiskMigration
@@ -30,30 +36,40 @@ interface IEtherdiskLegacy is IERC721 {
 ///         the chain one version at a time, whenever their holders like. New drives take ids
 ///         after every legacy id (`_nextNewTokenId`), and `totalSupply` counts those too, so the
 ///         next version numbers after both. That holds only while the legacy contract mints no
-///         more: this contract neither mints nor takes moves until the legacy one has closed its
-///         sales for good (`salesClosed`, irreversible), so no id is ever handed out twice.
+///         more: this contract neither mints nor takes moves until the legacy one has handed
+///         over to it (`setSuccessor`, irreversible, which ends its sales), so no id is ever
+///         handed out twice. A moved drive's old token shows as "Legacy" (its contract knows
+///         the successor and asks it whether the drive is there).
 ///         Moves are closed until the owner opens them (`_setMigrationOpen`): the server must
 ///         follow the legacy contract first (docs/MIGRATION.md), or it would take a move for a sale.
 abstract contract EtherdiskMigration is IERC721Receiver {
     /// The previous contract; address(0) for the first one (nothing to move).
     IEtherdiskLegacy public immutable legacy;
+    /// 1 for the first contract, one more than `legacy`'s for each later one.
+    uint256 public immutable version;
     bool public migrationOpen;
-    /// No more mints here, ever: set before the next version takes this one's drives.
-    bool public salesClosed;
+    /// The next version, which takes this one's drives; set once, and no more mints here.
+    address public successor;
+    /// Who last sent each token to the successor (a plain transfer gets no move by itself).
+    mapping(uint256 tokenId => address holder) public sentToSuccessorBy;
 
     event MigrationOpened(bool open);
-    event SalesClosed();
+    event SuccessorSet(address indexed successor);
     event DriveMigrated(uint256 indexed tokenId, address indexed holder, uint32 capacityGb);
 
     error NotLegacyToken();
     error MigrationClosed();
     error NotStuck();
     error SalesClosedForGood();
-    /// The previous contract still mints: its ids aren't final yet.
-    error LegacyStillSelling();
+    /// The previous version hasn't handed over to this one: its ids aren't final yet.
+    error LegacyNotHandedOver();
+    error SuccessorAlreadySet();
+    /// Not a version whose `legacy` is this contract.
+    error NotSuccessor();
 
     constructor(IEtherdiskLegacy legacy_) {
         legacy = legacy_;
+        version = address(legacy_) == address(0) ? 1 : legacy_.version() + 1;
     }
 
     /// @notice The move: called by the legacy contract when a holder sends it a drive with
@@ -101,33 +117,54 @@ abstract contract EtherdiskMigration is IERC721Receiver {
 
     /// @dev Owner only: open after the server follows the legacy contract.
     function _setMigrationOpen(bool open) internal {
-        if (open) _requireLegacyClosed();
+        if (open) _requireHandedOver();
         migrationOpen = open;
         emit MigrationOpened(open);
     }
 
-    /// @dev Owner only: a legacy drive sent here with plain `transferFrom` (no callback, so no
-    ///      move) is stuck without a drive in return. The owner completes the move for `holder`,
-    ///      the wallet that sent it (from the legacy `Transfer` event).
-    function _rescueMigration(uint256 tokenId, address holder) internal {
+    /// @dev Anyone: a legacy drive sent here with plain `transferFrom` (no callback, so no
+    ///      move) is stuck without a drive in return. This completes the move for the wallet
+    ///      that sent it, as the legacy contract recorded it.
+    function _completeMigration(uint256 tokenId) internal {
         if (legacy.ownerOf(tokenId) != address(this) || _existsHere(tokenId)) revert NotStuck();
-        _migrate(holder, tokenId);
+        _migrate(legacy.sentToSuccessorBy(tokenId), tokenId);
     }
 
-    /// @dev Owner only, irreversible: this contract mints no more (before the next version).
-    function _closeSales() internal {
-        salesClosed = true;
-        emit SalesClosed();
+    /// @dev Owner only, once: hands over to the next version (whose `legacy` must be this
+    ///      contract). Sales here end for good, so its ids are final.
+    function _setSuccessor(address next) internal {
+        if (successor != address(0)) revert SuccessorAlreadySet();
+        if (next == address(0) || address(IEtherdiskLegacy(next).legacy()) != address(this)) revert NotSuccessor();
+        successor = next;
+        emit SuccessorSet(next);
     }
 
-    /// @dev Before a mint here: this contract's sales are open and the legacy one's ids are final.
+    /// @dev On every transfer: one to the successor is a move (or its first half). Returns
+    ///      whether it was, so the token's metadata (soon "Legacy") can be refreshed.
+    function _noteSentToSuccessor(address from, address to, uint256 tokenId) internal returns (bool) {
+        if (to == address(0) || to != successor) return false;
+        sentToSuccessorBy[tokenId] = from;
+        return true;
+    }
+
+    /// @dev The successor if the drive has moved there (its old token here is a legacy one).
+    function _movedTo(uint256 tokenId) internal view returns (address) {
+        if (successor == address(0)) return address(0);
+        try IEtherdiskLegacy(successor).ownerOf(tokenId) returns (address) {
+            return successor;
+        } catch {
+            return address(0);
+        }
+    }
+
+    /// @dev Before a mint here: no successor yet, and the legacy version has handed over.
     function _requireCanMint() internal view {
-        if (salesClosed) revert SalesClosedForGood();
-        _requireLegacyClosed();
+        if (successor != address(0)) revert SalesClosedForGood();
+        _requireHandedOver();
     }
 
-    function _requireLegacyClosed() private view {
-        if (address(legacy) != address(0) && !legacy.salesClosed()) revert LegacyStillSelling();
+    function _requireHandedOver() private view {
+        if (address(legacy) != address(0) && legacy.successor() != address(this)) revert LegacyNotHandedOver();
     }
 
     /// @dev The id for the next new drive: never one a legacy drive has.

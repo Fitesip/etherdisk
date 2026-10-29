@@ -41,11 +41,35 @@ library EtherdiskArt {
         return string.concat(uint256(capacityGb).toString(), " GB");
     }
 
+    /// The color of a legacy token, whatever its tier.
+    uint24 internal constant LEGACY_GRAY = 0x52525b;
+
     /// @notice An opened hard drive: the name and number on a strip in the tier color, the
-    ///         capacity on the platter's hub.
-    function svg(uint256 tokenId, uint32 capacityGb, uint24 rgb) internal pure returns (string memory) {
-        string memory c = _color(rgb);
-        return string.concat(_chassis(c, tokenId.toString()), _platter(c, capacityGb), _arm(c), "</svg>");
+    ///         capacity on the platter's hub. A legacy token (`legacyVersion` > 0) is gray and
+    ///         stamped "LEGACY V<version>".
+    function svg(uint256 tokenId, uint32 capacityGb, uint24 rgb, uint256 legacyVersion)
+        internal
+        pure
+        returns (string memory)
+    {
+        string memory c = _color(legacyVersion == 0 ? rgb : LEGACY_GRAY);
+        return string.concat(
+            _chassis(c, tokenId.toString()),
+            _platter(c, capacityGb),
+            _arm(c),
+            legacyVersion == 0 ? "" : _stamp(legacyVersion),
+            "</svg>"
+        );
+    }
+
+    /// @dev A band across the drive: "LEGACY V1".
+    function _stamp(uint256 legacyVersion) private pure returns (string memory) {
+        return string.concat(
+            '<g transform="rotate(-20 200 220)"><rect x="30" y="190" width="340" height="60" rx="8" fill="#0b0b0d" fill-opacity=".9" stroke="#fff" stroke-opacity=".6" stroke-width="2"/>',
+            '<text x="200" y="231" text-anchor="middle" fill="#fff" font-size="30" font-weight="800" letter-spacing="6">LEGACY V',
+            legacyVersion.toString(),
+            "</text></g>"
+        );
     }
 
     function _chassis(string memory c, string memory id) private pure returns (string memory) {

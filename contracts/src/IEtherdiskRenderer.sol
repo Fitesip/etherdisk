@@ -6,5 +6,11 @@ pragma solidity 0.8.28;
 ///         until the owner freezes them.
 interface IEtherdiskRenderer {
     /// @param rgb  the color of the drive's tier, 0xrrggbb
-    function tokenURI(uint256 tokenId, uint32 capacityGb, uint24 rgb) external view returns (string memory);
+    /// @param version  the Etherdisk version of the token's contract (1 for the first)
+    /// @param movedTo  the next version if the drive has moved there (the token is a legacy
+    ///        one, holding no storage), else address(0)
+    function tokenURI(uint256 tokenId, uint32 capacityGb, uint24 rgb, uint256 version, address movedTo)
+        external
+        view
+        returns (string memory);
 }

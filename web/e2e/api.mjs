@@ -58,16 +58,17 @@ if ((await rpc("eth_getCode", [CONTRACT, "latest"])) === "0x") {
   // The testnet tiers, plus 8 GB listed but not on sale ("coming soon"); 5% royalty.
   const tiers = ["[1,2,4,8]", "[500000000000000,750000000000000,1000000000000000,2000000000000000]", "[true,true,true,false]", "[6514417,1096065,16096779,15485081]"];
 
-  // The previous version: Carol's drive #1, then its sales close for good.
+  // The previous version, with Carol's drive #1.
   create(LEGACY_DEPLOYER_KEY, "src/EtherdiskRenderer.sol:EtherdiskRenderer", "http://localhost:3001/nft/");
   create(LEGACY_DEPLOYER_KEY, "src/Etherdisk.sol:Etherdisk", LEGACY_DEPLOYER, LEGACY_RENDERER, ...tiers, "500", ZERO);
   send(CAROL_KEY, LEGACY, "mint(uint256)", "0", "--value", "500000000000000");
-  send(LEGACY_DEPLOYER_KEY, LEGACY, "closeSales()");
 
   // Deployer nonce 0: the renderer (at RENDERER); nonce 1: Etherdisk (at CONTRACT), taking
   // the previous version's drives.
   create(DEPLOYER_KEY, "src/EtherdiskRenderer.sol:EtherdiskRenderer", "http://localhost:3001/nft/");
   create(DEPLOYER_KEY, "src/Etherdisk.sol:Etherdisk", DEPLOYER, RENDERER, ...tiers, "500", LEGACY);
+  // The previous version hands over (its sales end for good), then moves open.
+  send(LEGACY_DEPLOYER_KEY, LEGACY, "setSuccessor(address)", CONTRACT);
   send(DEPLOYER_KEY, CONTRACT, "setMigrationOpen(bool)", "true");
 }
 await rpc("anvil_setCode", [MULTICALL3, readFileSync(join(here, "fixtures/multicall3.hex"), "utf8").trim()]);

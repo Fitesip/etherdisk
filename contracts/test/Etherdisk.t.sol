@@ -13,7 +13,7 @@ import {IERC4906} from "@openzeppelin/contracts/interfaces/IERC4906.sol";
 /// Exposes the library's internal functions to tests.
 contract ArtHarness {
     function svg(uint256 id, uint32 gb, uint24 rgb) external pure returns (string memory) {
-        return EtherdiskArt.svg(id, gb, rgb);
+        return EtherdiskArt.svg(id, gb, rgb, 0);
     }
 }
 
@@ -389,7 +389,7 @@ contract EtherdiskTest is Test {
 
     function _json(uint256 id) internal view returns (string memory) {
         Etherdisk.Tier memory t = disk.getTier(disk.tierOf(id));
-        return EtherdiskRenderer(address(disk.renderer())).json(id, t.capacityGb, t.color);
+        return EtherdiskRenderer(address(disk.renderer())).json(id, t.capacityGb, t.color, 1, address(0));
     }
 
     function test_metadataHasOneCapacityTraitAndTheDrivePage() public {
@@ -412,7 +412,7 @@ contract EtherdiskTest is Test {
         uint256 id = disk.mint{value: 0.001 ether}(2);
         vm.prank(bob);
         disk.mint{value: 0.0005 ether}(0);
-        assertTrue(_has(_json(id), vm.toBase64(bytes(EtherdiskArt.svg(id, 4, 0xf59e0b)))));
+        assertTrue(_has(_json(id), vm.toBase64(bytes(EtherdiskArt.svg(id, 4, 0xf59e0b, 0)))));
 
         vm.expectEmit(address(disk));
         emit Etherdisk.TierColorUpdated(2, 0x00ff00);

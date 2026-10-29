@@ -154,7 +154,7 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
     function tokenURI(uint256 tokenId) public view override returns (string memory) {
         _requireOwned(tokenId);
         Tier storage tier = _tiers[_tokenTier[tokenId]];
-        return renderer.tokenURI(tokenId, tier.capacityGb, tier.color);
+        return renderer.tokenURI(tokenId, tier.capacityGb, tier.color, version, _movedTo(tokenId));
     }
 
     /// ERC-721, ERC-2981 and ERC-4906 (metadata update events).
@@ -225,10 +225,10 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
         revert RenounceDisabled();
     }
 
-    /// Stops minting for good, before the next version takes this one's drives (its ids must
-    /// be final). Irreversible: drives keep working and can still be transferred and moved.
-    function closeSales() external onlyOwner {
-        _closeSales();
+    /// Hands over to the next version (deployed with this contract as its `legacy`): minting
+    /// here stops for good, so the ids are final, and drives can move there. Once only.
+    function setSuccessor(address next) external onlyOwner {
+        _setSuccessor(next);
     }
 
     /// Opens moves from the previous contract, once the server follows it (docs/MIGRATION.md).
@@ -236,9 +236,10 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
         _setMigrationOpen(open);
     }
 
-    /// Completes the move of a legacy drive sent here with a plain `transferFrom` (stuck).
-    function rescueMigration(uint256 tokenId, address holder) external onlyOwner {
-        _rescueMigration(tokenId, holder);
+    /// Completes the move of a legacy drive sent here with a plain `transferFrom` (stuck), for
+    /// the wallet that sent it. Anyone may call it.
+    function completeMigration(uint256 tokenId) external {
+        _completeMigration(tokenId);
     }
 
     function withdraw(address payable to) external onlyOwner {
@@ -300,6 +301,12 @@ contract Etherdisk is ERC721, ERC2981, IERC4906, Ownable2Step, EtherdiskMigratio
         if (tierId == n) revert NoTierForCapacity(capacityGb);
         _tokenTier[tokenId] = tierId;
         _mint(holder, tokenId);
+    }
+
+    /// A drive sent to the next version turns into a legacy token here: marketplaces refresh it.
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address from) {
+        from = super._update(to, tokenId, auth);
+        if (_noteSentToSuccessor(from, to, tokenId)) emit MetadataUpdate(tokenId);
     }
 
     function _existsHere(uint256 tokenId) internal view override returns (bool) {
