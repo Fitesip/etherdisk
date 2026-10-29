@@ -23,7 +23,7 @@ import { formatEther } from "viem";
 
 import { useT, type MessageKey } from "@/i18n";
 import { IS_TESTNET } from "@/lib/chain";
-import { WINDOWS_DOWNLOAD_URL } from "@/lib/config";
+import { APP_VERSION, RELEASES_URL, WINDOWS_DOWNLOAD_URL } from "@/lib/config";
 import { formatCapacity } from "@/lib/format";
 import { isDesktop } from "@/lib/shared-files";
 import { useTiers } from "@/lib/tiers";
@@ -763,6 +763,14 @@ export function Landing() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-6 text-xs text-muted">
           <span>
             © <CurrentYear /> Etherdisk{IS_TESTNET && <> · {t("landing.footer")}</>}
+            {APP_VERSION && (
+              <>
+                {" · "}
+                <a href={`${RELEASES_URL}/tag/${APP_VERSION}`} target="_blank" rel="noreferrer" className="font-mono hover:text-fg" title={t("landing.version")}>
+                  v{APP_VERSION}
+                </a>
+              </>
+            )}
           </span>
           <span className="flex gap-4">
             <Link href="/terms" className="hover:text-fg">

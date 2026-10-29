@@ -18,6 +18,10 @@ export const siteUrl = () =>
  * The Windows installer of the latest release (desktop/). The release workflow uploads it
  * under this fixed name next to the versioned one, with its SHA-256 and build provenance.
  */
+/** The released version (from CHANGELOG.md at build time), e.g. "1.2.2.20261025"; "" if unknown. */
+export const APP_VERSION = process.env.APP_VERSION ?? "";
+export const RELEASES_URL = "https://github.com/Fitesip/etherdisk/releases";
+
 export const WINDOWS_DOWNLOAD_URL = "https://github.com/Fitesip/etherdisk/releases/latest/download/Etherdisk-windows-x64-setup.exe";
 export const WC_PROJECT_ID = process.env.NEXT_PUBLIC_WC_PROJECT_ID || undefined;
 

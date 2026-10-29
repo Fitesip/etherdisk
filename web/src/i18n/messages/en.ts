@@ -121,6 +121,7 @@ export const en = {
     footer: "Testnet prototype. Do not store anything you cannot afford to lose.",
     terms: "Terms of Service",
     privacy: "Privacy Policy",
+    version: "What's new in this version",
   },
   custom: {
     star: "Star",

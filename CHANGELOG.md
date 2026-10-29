@@ -18,6 +18,7 @@ Versions: `MAJOR.FEATURE.FIX.YYYYMMDD`
   - The deploy script deploys and checks both contracts (renderer, then Etherdisk) and verifies both on Etherscan; `mainnet-tiers.env` adds the tier colors, `ROYALTY_BPS` and `PAGE_BASE`.
 - The site reads the tiers' colors and hidden flags from the contract: hidden tiers are left out of the mint and pricing lists, and drives everywhere take their tier's color.
 - **Contract updates on the server and the site** (docs/MIGRATION.md): `LEGACY_CONTRACT_ADDRESS` lists every earlier contract, newest first. A drive that hasn't moved yet shows a notice with a **Move drive** button and stays read-only until it moves: its files open and download, but uploads, folders, renames, moves, deletion, links and settings are off (the server answers `409 old_contract`). Drive cards mark it "Needs moving".
+- The site's footer (and the desktop app's) shows the released version, linked to its release notes; it is read from this changelog at build time.
 - **The desktop app keeps its data in an `Etherdisk` folder** (`%APPDATA%\Etherdisk` on Windows, `~/Library/Application Support/Etherdisk` on macOS) instead of folders named after the bundle identifier (`app.etherdisk.desktop`). The data of earlier versions (the sign-in and settings, the window's position) moves there on the first start; uninstalling with "Delete the application data" removes the new folder too.
 
 ### Changed
