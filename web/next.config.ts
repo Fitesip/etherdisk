@@ -1,9 +1,21 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { NextConfig } from "next";
 import { mainnet, sepolia } from "viem/chains";
 
 const isDev = process.env.NODE_ENV === "development";
 // A static export for the desktop app (NEXT_OUTPUT=export): plain HTML, JS and WASM files.
 const isExport = process.env.NEXT_OUTPUT === "export";
+// The released version, shown in the footer: the newest "## 1.2.2.20261025" heading of the
+// repo's CHANGELOG.md (a release commit writes it; "Unreleased" doesn't count).
+const appVersion = (() => {
+  try {
+    return /^## (\d+\.\d+\.\d+\.\d{8})\s*$/m.exec(readFileSync(join(process.cwd(), "..", "CHANGELOG.md"), "utf8"))?.[1] ?? "";
+  } catch {
+    return "";
+  }
+})();
 // Same rule as src/lib/chain.ts: mainnet when NEXT_PUBLIC_CHAIN_ID=1, Sepolia otherwise.
 const chain = process.env.NEXT_PUBLIC_CHAIN_ID === "1" ? mainnet : sepolia;
 const origin = (url: string | undefined) => {
@@ -75,7 +87,11 @@ const nextConfig: NextConfig = {
   },
   // A static export (the desktop app) has no server to send headers: its pages carry the
   // same policy in a <meta> tag (where frame-ancestors doesn't apply).
-  ...(isExport ? { env: { EXPORT_CSP: csp.replace("; frame-ancestors 'none'", "") } } : { headers }),
+  env: {
+    APP_VERSION: appVersion,
+    ...(isExport && { EXPORT_CSP: csp.replace("; frame-ancestors 'none'", "") }),
+  },
+  ...(!isExport && { headers }),
 };
 
 async function headers() {

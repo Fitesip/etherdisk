@@ -14,6 +14,8 @@ COPY crates crates
 COPY web/package.json web/package-lock.json web/
 RUN cd web && npm ci
 COPY web web
+# The footer shows the released version, read from the changelog at build time.
+COPY CHANGELOG.md ./
 
 ARG NEXT_PUBLIC_CHAIN_ID=11155111
 ARG NEXT_PUBLIC_API_URL
