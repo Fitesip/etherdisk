@@ -78,6 +78,8 @@ export interface VaultInfo {
   recovery_at: number | null;
   /** Put up for sale by its current owner (null otherwise). */
   sale: Sale | null;
+  /** The earlier contract the drive still lives on (null once moved): read-only until it moves. */
+  legacy_contract: string | null;
   /** Owner-chosen look; null = defaults. Plaintext on the server. */
   name: string | null;
   stroke: string | null;

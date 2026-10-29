@@ -19,6 +19,7 @@ import { IncomingHandover } from "../handover";
 import { RequireSession } from "../require-session";
 import { Button, cn, Notice, Spinner } from "../ui";
 import { FileBrowser, lastFolderKey } from "./browser";
+import { MoveDriveBanner, onOldContract } from "./move-drive";
 import { DriveSettingsPanel } from "./settings";
 import { SetupForm, UnlockForm } from "./unlock";
 
@@ -92,11 +93,18 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
   }
   const vault = info.data!;
   const name = driveName(vault, t);
+  // On an earlier contract: files open and download; nothing changes until the drive moves.
+  const old = onOldContract(vault);
 
   let body;
-  if (tab === "settings") body = <DriveSettingsPanel token={token} info={vault} />;
+  if (tab === "settings")
+    body = (
+      <fieldset disabled={old} className={cn("min-w-0", old && "opacity-60")}>
+        <DriveSettingsPanel token={token} info={vault} />
+      </fieldset>
+    );
   else if (unlocked) body = <FileBrowser token={token} info={vault} unlocked={unlocked} />;
-  else if (!vault.initialized) body = <SetupForm token={token} tokenId={tokenId} name={name} />;
+  else if (!vault.initialized) body = old ? null : <SetupForm token={token} tokenId={tokenId} name={name} />;
   else if (key.data && !(kept && restore.isPending))
     body = (
       <>
@@ -143,6 +151,11 @@ function DriveGate({ token, tokenId, tab }: { token: string; tokenId: string; ta
         </div>
         <Tabs info={vault} tab={tab} />
       </header>
+      {old && (
+        <div className="mb-6">
+          <MoveDriveBanner key={vault.legacy_contract} token={token} info={vault} />
+        </div>
+      )}
       <div key={tab} className="animate-fade-up">
         {body}
       </div>

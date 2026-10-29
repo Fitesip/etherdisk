@@ -925,6 +925,7 @@ dependencies = [
 name = "etherdisk-desktop"
 version = "1.2.2"
 dependencies = [
+ "dirs",
  "serde",
  "tauri",
  "tauri-build",

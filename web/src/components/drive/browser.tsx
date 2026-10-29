@@ -46,6 +46,7 @@ import { Viewer, type Gallery } from "../viewer";
 import { FolderLookDialog, LabelChip, LabelsDialog, updateMeta } from "./customize";
 import { createFolder, LinksDialog, MoveDialog, NameDialog, renameItem, ShareDialog, type DriveCtx } from "./dialogs";
 import { ItemGrid, ItemList, Menu, MenuItem, useDropTarget, type ItemActions, type Sort, type SortKey } from "./items";
+import { onOldContract } from "./move-drive";
 import { ResumeBanner } from "./resume";
 import { SearchBox, useSearch } from "./search";
 import { RecoveryBanner } from "./recovery";
@@ -121,6 +122,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const router = useRouter();
   const tokenId = info.token_id;
   const name = driveName(info, t);
+  // On an earlier contract: browse, open and download only, until the drive moves.
+  const readOnly = onOldContract(info);
   const ctx: DriveCtx = useMemo(() => ({ token, tokenId, name, vault: unlocked.vault }), [token, tokenId, name, unlocked.vault]);
 
   // Where we are lives in the URL (?folder=id, ?view=trash): reload and back/forward keep it.
@@ -221,7 +224,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     }
   };
 
-  const actions: ItemActions = {
+  const allActions: ItemActions = {
     open: (item) => {
       if (item.row.kind === "folder") {
         if (!searching) seedPath(item.row);
@@ -288,6 +291,10 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
     },
   };
 
+  const actions: ItemActions = readOnly
+    ? { open: allActions.open, download: allActions.download, zip: allActions.zip }
+    : allActions;
+
   const toggle = (id: string) =>
     setSelected((s) => {
       const next = new Set(s);
@@ -349,7 +356,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const dropInto = useRef<(data: DataTransfer) => void>(() => {});
   useEffect(() => {
     dropInto.current = (data) => {
-      if (inTrash) return;
+      if (inTrash || readOnly) return;
       const target = current;
       entriesFromDrop(data).then((entries) => plan(entries, target));
     };
@@ -360,7 +367,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   const takeShared = useRef(() => {});
   useEffect(() => {
     takeShared.current = () => {
-      if (inTrash || !objects.data) return;
+      if (inTrash || readOnly || !objects.data) return;
       const entries = takeSharedFor(tokenId);
       if (entries) plan(entries, current);
     };
@@ -405,11 +412,12 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target) || document.querySelector("dialog[open]") || inTrash) return;
+      const writes = !!keys.current.actions?.trash;
       const { selectedItems: sel, actions: act, toggleAll: all } = keys.current;
       if (!act) return;
-      if ((e.key === "Delete" || e.key === "Backspace") && sel.length) {
+      if ((e.key === "Delete" || e.key === "Backspace") && sel.length && writes) {
         e.preventDefault();
-        void act.trash(sel);
+        void act.trash!(sel);
       } else if (e.key.toLowerCase() === "a" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         all();
@@ -418,9 +426,9 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
       } else if (e.key === "/") {
         e.preventDefault();
         searchBox.current?.querySelector("input")?.focus();
-      } else if (e.key === "F2" && sel.length === 1 && sel[0].meta) {
+      } else if (e.key === "F2" && sel.length === 1 && sel[0].meta && writes) {
         e.preventDefault();
-        act.rename(sel[0]);
+        act.rename!(sel[0]);
       } else if (e.key === "Enter" && sel.length === 1) {
         e.preventDefault();
         act.open(sel[0]);
@@ -486,29 +494,37 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
             <X className="h-4 w-4" />
           </Button>
           <span className="mr-auto text-sm font-medium">{t("files.selected", { n: selected.size })}</span>
-          <Button
-            size="sm"
-            aria-label={t("custom.star")}
-            title={t("custom.star")}
-            onClick={() => actions.star!(selectedItems, !selectedItems.every((i) => i.meta?.starred))}
-          >
-            <Star className="h-4 w-4" />
-          </Button>
-          <Button size="sm" aria-label={t("custom.labels")} title={t("custom.labels")} onClick={() => actions.labels!(selectedItems)}>
-            <Tag className="h-4 w-4" />
-          </Button>
+          {!readOnly && (
+            <>
+              <Button
+                size="sm"
+                aria-label={t("custom.star")}
+                title={t("custom.star")}
+                onClick={() => actions.star!(selectedItems, !selectedItems.every((i) => i.meta?.starred))}
+              >
+                <Star className="h-4 w-4" />
+              </Button>
+              <Button size="sm" aria-label={t("custom.labels")} title={t("custom.labels")} onClick={() => actions.labels!(selectedItems)}>
+                <Tag className="h-4 w-4" />
+              </Button>
+            </>
+          )}
           <Button size="sm" onClick={() => zip(selectedItems)}>
             <Download className="h-4 w-4" />
             <span className="hidden sm:inline">{t("files.downloadZip")}</span>
           </Button>
-          <Button size="sm" onClick={() => setDialog({ type: "move", items: selectedItems })}>
-            <Move className="h-4 w-4" />
-            <span className="hidden sm:inline">{t("files.move")}</span>
-          </Button>
-          <Button size="sm" variant="danger" onClick={() => actions.trash(selectedItems)}>
-            <Trash2 className="h-4 w-4" />
-            <span className="hidden sm:inline">{t("files.delete")}</span>
-          </Button>
+          {!readOnly && (
+            <>
+              <Button size="sm" onClick={() => setDialog({ type: "move", items: selectedItems })}>
+                <Move className="h-4 w-4" />
+                <span className="hidden sm:inline">{t("files.move")}</span>
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => actions.trash!(selectedItems)}>
+                <Trash2 className="h-4 w-4" />
+                <span className="hidden sm:inline">{t("files.delete")}</span>
+              </Button>
+            </>
+          )}
         </div>
       ) : (
         !inTrash && (
@@ -547,30 +563,34 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
                 e.target.value = "";
               }}
             />
-            <Menu
-              align="left"
-              trigger={
-                <Button variant="primary">
-                  <Upload className="h-4 w-4" />
-                  {t("files.upload")}
+            {!readOnly && (
+              <>
+                <Menu
+                  align="left"
+                  trigger={
+                    <Button variant="primary">
+                      <Upload className="h-4 w-4" />
+                      {t("files.upload")}
+                    </Button>
+                  }
+                >
+                  {(closeMenu) => (
+                    <>
+                      <MenuItem icon={Upload} label={t("files.uploadFiles")} onClick={() => (closeMenu(), fileInput.current?.click())} />
+                      <MenuItem icon={FolderUp} label={t("files.uploadFolder")} onClick={() => (closeMenu(), folderInput.current?.click())} />
+                      {/* Phones: straight from the camera. */}
+                      <div className="sm:hidden">
+                        <MenuItem icon={Camera} label={t("files.takePhoto")} onClick={() => (closeMenu(), cameraInput.current?.click())} />
+                      </div>
+                    </>
+                  )}
+                </Menu>
+                <Button onClick={() => setDialog({ type: "newFolder" })}>
+                  <FolderPlus className="h-4 w-4" />
+                  <span className="hidden sm:inline">{t("files.newFolder")}</span>
                 </Button>
-              }
-            >
-              {(closeMenu) => (
-                <>
-                  <MenuItem icon={Upload} label={t("files.uploadFiles")} onClick={() => (closeMenu(), fileInput.current?.click())} />
-                  <MenuItem icon={FolderUp} label={t("files.uploadFolder")} onClick={() => (closeMenu(), folderInput.current?.click())} />
-                  {/* Phones: straight from the camera. */}
-                  <div className="sm:hidden">
-                    <MenuItem icon={Camera} label={t("files.takePhoto")} onClick={() => (closeMenu(), cameraInput.current?.click())} />
-                  </div>
-                </>
-              )}
-            </Menu>
-            <Button onClick={() => setDialog({ type: "newFolder" })}>
-              <FolderPlus className="h-4 w-4" />
-              <span className="hidden sm:inline">{t("files.newFolder")}</span>
-            </Button>
+              </>
+            )}
 
             <div className="ml-auto flex items-center gap-1">
               <Menu
@@ -623,12 +643,16 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
                   </button>
                 ))}
               </div>
-              <Button size="icon" variant="ghost" aria-label={t("files.links")} title={t("files.links")} onClick={() => setDialog({ type: "links" })}>
-                <Link2 className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="ghost" aria-label={t("files.trash")} title={t("files.trash")} onClick={() => navigate("view=trash")}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              {!readOnly && (
+                <>
+                  <Button size="icon" variant="ghost" aria-label={t("files.links")} title={t("files.links")} onClick={() => setDialog({ type: "links" })}>
+                    <Link2 className="h-4 w-4" />
+                  </Button>
+                  <Button size="icon" variant="ghost" aria-label={t("files.trash")} title={t("files.trash")} onClick={() => navigate("view=trash")}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </>
+              )}
               <Menu
                 trigger={
                   <Button size="icon" variant="ghost" aria-label="Drive menu">
@@ -690,8 +714,8 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
         </div>
       )}
 
-      {!inTrash && <RecoveryBanner ctx={ctx} recoveryAt={info.recovery_at} />}
-      {!inTrash && <ResumeBanner ctx={ctx} onResume={uploads.resume} active={uploads.started} />}
+      {!inTrash && !readOnly && <RecoveryBanner ctx={ctx} recoveryAt={info.recovery_at} />}
+      {!inTrash && !readOnly && <ResumeBanner ctx={ctx} onResume={uploads.resume} active={uploads.started} />}
 
       {missing && !inTrash && (
         <Notice tone="danger">
@@ -748,6 +772,7 @@ export function FileBrowser({ token, info, unlocked }: { token: string; info: Va
 
       {dragging &&
         !inTrash &&
+        !readOnly &&
         createPortal(
           // Over the whole window, in the drive's colors (a portal: no transformed ancestor
           // can shrink a fixed overlay to its own box). Its content ignores the pointer, so

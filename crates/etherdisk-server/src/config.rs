@@ -16,10 +16,10 @@ pub struct Config {
     /// One or more endpoints (`RPC_URL`, comma-separated): the first that works is used.
     pub rpc_urls: Vec<String>,
     pub contract_address: Address,
-    /// The contract drives were first minted on, when `contract_address` is its successor
-    /// (`LEGACY_CONTRACT_ADDRESS`, docs/MIGRATION.md): drives not swapped yet keep working
-    /// from it, and a swap keeps the drive's data (same token id).
-    pub legacy_contract_address: Option<Address>,
+    /// The earlier contracts drives move from, newest first (`LEGACY_CONTRACT_ADDRESS`,
+    /// comma-separated, docs/MIGRATION.md): drives not moved yet are read from them (and
+    /// can't change until they move), and a move keeps the drive's data (same token id).
+    pub legacy_contract_addresses: Vec<Address>,
     pub chain_id: u64,
     /// Block the contract was deployed in; the Transfer indexer starts here.
     pub start_block: u64,
@@ -56,10 +56,12 @@ impl Config {
             data_dirs: var_or("DATA_DIR", "data/blobs").split(',').map(str::trim).filter(|d| !d.is_empty()).map(PathBuf::from).collect(),
             rpc_urls: var("RPC_URL")?.split(',').map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()).collect(),
             contract_address: parse("CONTRACT_ADDRESS", &var("CONTRACT_ADDRESS")?)?,
-            legacy_contract_address: match std::env::var("LEGACY_CONTRACT_ADDRESS").ok().filter(|s| !s.trim().is_empty()) {
-                Some(a) => Some(parse("LEGACY_CONTRACT_ADDRESS", &a)?),
-                None => None,
-            },
+            legacy_contract_addresses: var_or("LEGACY_CONTRACT_ADDRESS", "")
+                .split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .map(|a| parse("LEGACY_CONTRACT_ADDRESS", a))
+                .collect::<anyhow::Result<_>>()?,
             chain_id: parse("CHAIN_ID", &var_or("CHAIN_ID", "11155111"))?,
             start_block: parse("START_BLOCK", &var("START_BLOCK")?)?,
             log_block_range: parse("LOG_BLOCK_RANGE", &var_or("LOG_BLOCK_RANGE", "500"))?,

@@ -62,9 +62,9 @@ pub fn fmt_bytes(n: u64) -> String {
     const GB: f64 = (1u64 << 30) as f64;
     let gb = n as f64 / GB;
     if gb >= 1024.0 {
-        format!("{:.2} ТБ", gb / 1024.0)
+        format!("{:.2} TB", gb / 1024.0)
     } else {
-        format!("{gb:.1} ГБ")
+        format!("{gb:.1} GB")
     }
 }
 
@@ -94,11 +94,11 @@ fn space_problems(out: &mut Vec<Problem>, places: Vec<Place>, t: &Thresholds) {
         let key = d.iter().map(|p| p.key.as_str()).collect::<Vec<_>>().join("+");
         let what = d.iter().map(|p| p.label.as_str()).collect::<Vec<_>>().join(", ");
         // Volumes reserve their drives' capacity: free space is what no drive has been sold.
-        let detail = format!("свободно (не занято и не зарезервировано за дисками) {} из {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
+        let detail = format!("free (neither used nor reserved for drives) {} of {} ({pc}%)", fmt_bytes(free), fmt_bytes(total));
         if pc < t.critical_percent {
-            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Почти нет места: {what} — {detail}. Новые диски не поместятся: закройте продажи или добавьте хранилище") });
+            out.push(Problem { key: format!("{key}:critical"), text: format!("🔴 Almost out of space: {what} — {detail}. New drives won't fit: close sales or add storage") });
         } else if pc < t.free_percent {
-            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Мало места: {what} — {detail}. Пора планировать расширение хранилища") });
+            out.push(Problem { key: format!("{key}:low"), text: format!("🟠 Low on space: {what} — {detail}. Time to plan more storage") });
         }
     }
 }
@@ -109,10 +109,10 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
     let mut places: Vec<Place> = s
         .volumes
         .iter()
-        .map(|v| Place { key: format!("volume:{}", v.id), label: format!("том {}", v.root.display()), free: v.available_bytes, total: v.total_bytes })
+        .map(|v| Place { key: format!("volume:{}", v.id), label: format!("volume {}", v.root.display()), free: v.available_bytes, total: v.total_bytes })
         .collect();
     if let Some((dir, free, total)) = &s.db_disk {
-        places.push(Place { key: "db".into(), label: format!("база данных ({})", dir.display()), free: *free, total: *total });
+        places.push(Place { key: "db".into(), label: format!("database ({})", dir.display()), free: *free, total: *total });
     }
     space_problems(&mut out, places, t);
     if !s.shortages.is_empty() {
@@ -121,7 +121,7 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
         out.push(Problem {
             key: "reserve".into(),
             text: format!(
-                "🔴 Не хватает места на резерв дисков: {} не зарезервировано ({}). Эти диски могут упереться в полный том: добавьте хранилище и закройте продажи",
+                "🔴 Not enough space to reserve for drives: {} not reserved ({}). These drives may hit a full volume: add storage and close sales",
                 fmt_bytes(total),
                 drives.join(", ")
             ),
@@ -130,7 +130,7 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
     for (id, drives) in &s.missing_volumes {
         out.push(Problem {
             key: format!("missing:{id}"),
-            text: format!("🔴 Том {id} недоступен (не примонтирован или убран из DATA_DIR): {drives} дисков не открываются"),
+            text: format!("🔴 Volume {id} is unavailable (not mounted or taken out of DATA_DIR): {drives} drives don't open"),
         });
     }
     match &s.indexer {
@@ -140,19 +140,19 @@ pub fn problems(s: &Snapshot, t: &Thresholds) -> Vec<Problem> {
                 out.push(Problem {
                     key: "indexer".into(),
                     text: format!(
-                        "🟠 Индексатор отстаёт на {lag} блоков (≈ {} мин): переводы дисков обрабатываются с задержкой",
+                        "🟠 The indexer is {lag} blocks behind (≈ {} min): drive transfers are handled late",
                         lag * 12 / 60
                     ),
                 });
             }
         }
-        Some(Err(e)) => out.push(Problem { key: "rpc".into(), text: format!("🔴 RPC не отвечает: {e}") }),
+        Some(Err(e)) => out.push(Problem { key: "rpc".into(), text: format!("🔴 RPC doesn't answer: {e}") }),
         None => {}
     }
     if s.errors >= t.errors_per_check {
         out.push(Problem {
             key: "errors".into(),
-            text: format!("🟠 {} ошибок сервера (5xx) с прошлой проверки — подробности в логе", s.errors),
+            text: format!("🟠 {} server errors (5xx) since the last check — details in the log", s.errors),
         });
     }
     out
@@ -171,7 +171,7 @@ impl Tracker {
         let keys: Vec<String> = current.iter().map(|p| p.key.clone()).collect();
         for (key, (text, _)) in self.active.iter() {
             if !keys.contains(key) {
-                out.push(format!("✅ Исправлено: {}", strip_icon(text)));
+                out.push(format!("✅ Resolved: {}", strip_icon(text)));
             }
         }
         self.active.retain(|k, _| keys.contains(k));
@@ -184,7 +184,7 @@ impl Tracker {
                 Some((text, sent)) => {
                     *text = p.text;
                     if now - *sent >= REMIND_SECS {
-                        out.push(format!("⏰ Всё ещё: {}", strip_icon(text)));
+                        out.push(format!("⏰ Still: {}", strip_icon(text)));
                         *sent = now;
                     }
                 }
@@ -320,7 +320,7 @@ impl Outbox {
     /// Sends what's waiting, oldest first; stops at the first failure (kept for next time).
     pub async fn flush(&mut self, tg: &Telegram, now: i64) {
         if self.dropped > 0 {
-            let note = format!("⚠️ Telegram был недоступен: {} старых сообщений не сохранилось (подробности в логе сервера)", self.dropped);
+            let note = format!("⚠️ Telegram was unreachable: {} older messages were dropped (details in the server log)", self.dropped);
             if let Err(e) = tg.send(&note).await {
                 return tracing::warn!(waiting = self.queue.len(), "monitor: Telegram: {e:#}");
             }
@@ -328,7 +328,7 @@ impl Outbox {
         }
         while let Some((at, text)) = self.queue.front() {
             let late = now - at;
-            let text = if late >= LATE_SECS { format!("⏳ С опозданием на {} мин (Telegram был недоступен):\n{text}", late / 60) } else { text.clone() };
+            let text = if late >= LATE_SECS { format!("⏳ Late by {} min (Telegram was unreachable):\n{text}", late / 60) } else { text.clone() };
             if let Err(e) = tg.send(&text).await {
                 return tracing::warn!(waiting = self.queue.len(), "monitor: Telegram: {e:#}");
             }
@@ -431,7 +431,7 @@ impl Monitor {
         }
         let s = self.snapshot(0).await;
         if let Some(tg) = &self.telegram {
-            let text = format!("🟢 Сервер Etherdisk запущен\n\n{}", status_text(&s, 0));
+            let text = format!("🟢 The Etherdisk server started\n\n{}", status_text(&s, 0));
             let mut outbox = self.outbox.lock().await;
             outbox.push(now(), text);
             outbox.flush(tg, now()).await;
@@ -485,10 +485,10 @@ async fn answer_status(m: Arc<Monitor>, tg: Telegram) {
 }
 
 pub fn status_text(s: &Snapshot, problems: usize) -> String {
-    let mut lines = vec!["📊 Состояние".to_owned()];
+    let mut lines = vec!["📊 Status".to_owned()];
     for v in &s.volumes {
         lines.push(format!(
-            "• Том {}: свободно {} из {} ({}%), зарезервировано за дисками {}, дисков: {}",
+            "• Volume {}: {} free of {} ({}%), {} reserved for drives, drives: {}",
             v.root.display(),
             fmt_bytes(v.available_bytes),
             fmt_bytes(v.total_bytes),
@@ -498,17 +498,17 @@ pub fn status_text(s: &Snapshot, problems: usize) -> String {
         ));
     }
     for (id, drives) in &s.missing_volumes {
-        lines.push(format!("• Том {id}: недоступен, дисков: {drives}"));
+        lines.push(format!("• Volume {id}: unavailable, drives: {drives}"));
     }
     if let Some((dir, free, total)) = &s.db_disk {
-        lines.push(format!("• База ({}): свободно {} из {}", dir.display(), fmt_bytes(*free), fmt_bytes(*total)));
+        lines.push(format!("• Database ({}): {} free of {}", dir.display(), fmt_bytes(*free), fmt_bytes(*total)));
     }
     match &s.indexer {
-        Some(Ok((next, head))) => lines.push(format!("• Индексатор: блок {next}, сеть {head}, отставание {}", head.saturating_sub(*next))),
-        Some(Err(e)) => lines.push(format!("• RPC не отвечает: {e}")),
+        Some(Ok((next, head))) => lines.push(format!("• Indexer: block {next}, chain {head}, {} behind", head.saturating_sub(*next))),
+        Some(Err(e)) => lines.push(format!("• RPC doesn't answer: {e}")),
         None => {}
     }
-    lines.push(if problems == 0 { "Проблем нет ✅".to_owned() } else { format!("Проблем: {problems}") });
+    lines.push(if problems == 0 { "No problems ✅".to_owned() } else { format!("Problems: {problems}") });
     lines.join("\n")
 }
 
@@ -542,7 +542,7 @@ mod tests {
         let found = problems(&s, &T);
         let keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
         assert_eq!(keys, ["volume:b:low", "volume:c:critical", "reserve", "missing:d", "indexer", "errors"]);
-        assert!(found[2].text.contains("#7 (3.0 ГБ)"), "{}", found[2].text);
+        assert!(found[2].text.contains("#7 (3.0 GB)"), "{}", found[2].text);
         // A volume and the database on one disk: one message naming both.
         let shared = Snapshot {
             volumes: vec![vol("a", 2 * GB, 100 * GB)],
@@ -552,7 +552,7 @@ mod tests {
         let p = problems(&shared, &T);
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].key, "volume:a+db:critical");
-        assert!(p[0].text.contains("том /mnt/a, база данных (data)"), "{}", p[0].text);
+        assert!(p[0].text.contains("volume /mnt/a, database (data)"), "{}", p[0].text);
         let healthy = Snapshot { indexer: Some(Ok((1000, 1200))), volumes: vec![vol("a", 50 * GB, 100 * GB)], ..Default::default() };
         assert!(problems(&healthy, &T).is_empty());
         let down = Snapshot { indexer: Some(Err("timeout".into())), ..Default::default() };
@@ -565,16 +565,16 @@ mod tests {
         let mut t = Tracker::default();
         assert_eq!(t.update(vec![p("x")], 0), ["🟠 problem x"]);
         assert!(t.update(vec![p("x")], 60).is_empty(), "no repeat every minute");
-        assert_eq!(t.update(vec![p("x"), p("y")], REMIND_SECS), ["⏰ Всё ещё: problem x", "🟠 problem y"]);
-        assert_eq!(t.update(vec![p("y")], REMIND_SECS + 60), ["✅ Исправлено: problem x"]);
+        assert_eq!(t.update(vec![p("x"), p("y")], REMIND_SECS), ["⏰ Still: problem x", "🟠 problem y"]);
+        assert_eq!(t.update(vec![p("y")], REMIND_SECS + 60), ["✅ Resolved: problem x"]);
         assert_eq!(t.active(), 1);
-        assert_eq!(t.update(vec![], REMIND_SECS + 120), ["✅ Исправлено: problem y"]);
+        assert_eq!(t.update(vec![], REMIND_SECS + 120), ["✅ Resolved: problem y"]);
     }
 
     #[test]
     fn formats_sizes_and_db_dir() {
-        assert_eq!(fmt_bytes(512 * GB), "512.0 ГБ");
-        assert_eq!(fmt_bytes(3 * 1024 * GB), "3.00 ТБ");
+        assert_eq!(fmt_bytes(512 * GB), "512.0 GB");
+        assert_eq!(fmt_bytes(3 * 1024 * GB), "3.00 TB");
         assert_eq!(db_dir("sqlite://data/v4/etherdisk.db"), PathBuf::from("data/v4"));
         assert_eq!(db_dir("sqlite://etherdisk.db?mode=rwc"), PathBuf::from("."));
     }

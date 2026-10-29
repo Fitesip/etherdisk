@@ -1,5 +1,5 @@
 ; Etherdisk: Tauri's NSIS template (tauri-cli 2.12.3, crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi),
-; used through tauri.conf.json > bundle > windows > nsis > template. One change, marked "Etherdisk:"
+; used through tauri.conf.json > bundle > windows > nsis > template. Changes are marked "Etherdisk:"
 ; below. Compare with upstream when updating @tauri-apps/cli (desktop/package.json).
 Unicode true
 ManifestDPIAware true
@@ -907,6 +907,8 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; Etherdisk: the app keeps its data in "Etherdisk" (src/dirs.rs), not the identifier's folders.
+    RmDir /r "$APPDATA\Etherdisk"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

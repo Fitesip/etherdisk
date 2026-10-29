@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, LockOpen, Sparkles, Tag } from "lucide-react";
+import { ArrowUpRight, Lock, LockOpen, Sparkles, Tag } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatEther } from "viem";
@@ -17,6 +17,7 @@ import { useTiers, type Tier } from "@/lib/tiers";
 import { useUnlocked } from "@/lib/unlocked";
 
 import { DriveTile } from "./drive/dialogs";
+import { onOldContract } from "./drive/move-drive";
 import { DriveArt } from "./drive-art";
 import { freeBytes, UsageText } from "./drive-size";
 import { InboxHint, OutgoingHandovers } from "./handover";
@@ -36,6 +37,12 @@ function DriveCard({ v }: { v: VaultInfo }) {
         info={v}
         status={
           <span className="flex shrink-0 items-center gap-2 text-xs text-muted">
+            {onOldContract(v) && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-600 dark:text-amber-400">
+                <ArrowUpRight className="h-3 w-3" />
+                {t("drives.oldContract")}
+              </span>
+            )}
             {v.sale && (
               <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 font-medium text-accent">
                 <Tag className="h-3 w-3" />

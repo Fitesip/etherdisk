@@ -57,6 +57,9 @@ pub struct VaultInfo {
     recovery_at: Option<i64>,
     /// Put up for sale by the current owner (sale.rs).
     sale: Option<crate::sale::Sale>,
+    /// The earlier contract the drive still lives on: it opens and downloads, but changes
+    /// only after it moves to the current one (docs/MIGRATION.md). Null once it has moved.
+    legacy_contract: Option<String>,
     #[serde(flatten)]
     profile: Profile,
 }
@@ -113,6 +116,7 @@ async fn info(st: &AppState, id: U256, owner: Address) -> AppResult<VaultInfo> {
         initialized,
         recovery_at,
         sale: crate::sale::sale_of(st, &token, owner).await?,
+        legacy_contract: st.chain.on_legacy(id).await?.map(|a| format!("{a:#x}")),
         token_id: token,
     })
 }

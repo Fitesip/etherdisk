@@ -100,10 +100,10 @@ pub async fn bind_deployment(
     db: &SqlitePool,
     contract: alloy::primitives::Address,
     chain_id: u64,
-    legacy: Option<alloy::primitives::Address>,
+    legacies: &[alloy::primitives::Address],
 ) -> anyhow::Result<()> {
     let contract = format!("{contract:#x}");
-    if let Some(legacy) = legacy {
+    for legacy in legacies {
         let legacy = format!("{legacy:#x}");
         let moved = sqlx::query("UPDATE deployment SET contract = ? WHERE id = 1 AND contract = ? AND chain_id = ?")
             .bind(&contract)
@@ -139,15 +139,48 @@ pub fn router(state: AppState) -> Router {
         .merge(ideas::routes())
         .merge(tiers::routes())
         .merge(sale::public_routes())
+        .route_layer(from_fn_with_state(state.clone(), read_only_on_old_contract))
         .route_layer(from_fn_with_state(state.clone(), ratelimit::public));
     let rest = vaults::routes()
         .merge(sale::routes())
         .merge(objects::routes())
+        .route_layer(from_fn_with_state(state.clone(), read_only_on_old_contract))
         .route_layer(from_fn_with_state(state.clone(), ratelimit::default));
     Router::new()
         .nest("/api", auth.merge(public).merge(rest))
         .layer(axum::middleware::map_response_with_state(state.clone(), count_errors))
         .with_state(state)
+}
+
+/// A drive still on an earlier contract opens and downloads as before, but nothing about it
+/// changes until it moves to the current one (docs/MIGRATION.md): any write to a route with
+/// the drive's `{token_id}` (links and handover included) is refused with `old_contract`.
+async fn read_only_on_old_contract(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use axum::RequestPartsExt;
+    let writes = !matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD);
+    if !writes || st.config.legacy_contract_addresses.is_empty() {
+        return next.run(req).await;
+    }
+    // The route's own parameter, decoded as the handler sees it (`%31` and `01` are drive 1).
+    let (mut parts, body) = req.into_parts();
+    let token = match parts.extract::<axum::extract::RawPathParams>().await {
+        Ok(params) => params.iter().find(|(name, _)| *name == "token_id").and_then(|(_, id)| vaults::parse_token(id).ok()),
+        Err(_) => None,
+    };
+    let req = axum::extract::Request::from_parts(parts, body);
+    if let Some(token) = token {
+        match st.chain.on_legacy(token).await {
+            Ok(Some(_)) => return AppError::OldContract.into_response(),
+            Ok(None) => {}
+            Err(e) => return e.into_response(),
+        }
+    }
+    next.run(req).await
 }
 
 async fn count_errors(axum::extract::State(st): axum::extract::State<AppState>, res: axum::response::Response) -> axum::response::Response {

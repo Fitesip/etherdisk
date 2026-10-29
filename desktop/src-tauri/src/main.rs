@@ -7,6 +7,7 @@
 // No console window next to the app on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dirs;
 mod share;
 
 use std::borrow::Cow;
@@ -105,6 +106,13 @@ fn forget_shared(shared: State<share::Shared>, ids: Vec<String>) {
 }
 
 fn main() {
+    let mut context = tauri::generate_context!();
+    // Data in an "Etherdisk" folder rather than ones named after the identifier (dirs.rs).
+    dirs::move_old_data(&context.config().identifier);
+    if let Some(dir) = dirs::app_dir() {
+        context.config_mut().app.app_directories_override =
+            Some(tauri::utils::config::AppDirectoriesOverride::Root(dir));
+    }
     tauri::Builder::default()
         .manage(share::Shared::default())
         // A second launch brings the open window forward instead of starting another app,
@@ -190,7 +198,7 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Etherdisk");
 }
 

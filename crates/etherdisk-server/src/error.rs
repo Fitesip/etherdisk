@@ -23,6 +23,10 @@ pub enum AppError {
     /// that part of it yet (storage ran out): not the user's doing.
     #[error("the server has no room for this drive's full capacity yet")]
     StorageShort,
+    /// The drive still lives on an earlier contract: it opens and downloads, but changes only
+    /// after it moves to the current one (docs/MIGRATION.md).
+    #[error("this drive is on an old contract; move it to the new one to change it")]
+    OldContract,
     #[error("too many requests")]
     RateLimited(u64),
     #[error("requested range not satisfiable")]
@@ -62,6 +66,7 @@ impl IntoResponse for AppError {
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::QuotaExceeded => (StatusCode::INSUFFICIENT_STORAGE, "quota_exceeded"),
             Self::StorageShort => (StatusCode::INSUFFICIENT_STORAGE, "storage_short"),
+            Self::OldContract => (StatusCode::CONFLICT, "old_contract"),
             Self::RateLimited(retry) => return crate::ratelimit::too_many(*retry),
             Self::RangeNotSatisfiable { len } => {
                 return (

@@ -76,7 +76,7 @@ async fn poll(st: &AppState, chain: &RpcChain) -> anyhow::Result<bool> {
         } else {
             let ev = log.log_decode::<Transfer>()?.inner.data;
             if legacy {
-                on_legacy_transfer(st, ev.from, ev.to, ev.tokenId).await?;
+                on_legacy_transfer(st, log.address(), ev.from, ev.to, ev.tokenId).await?;
             } else {
                 on_transfer(st, ev.from, ev.to, ev.tokenId).await?;
             }
@@ -123,8 +123,8 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
                 }
             } else {
                 let ev = log.log_decode::<Transfer>()?.inner.data;
-                // A swap's legacy half (to the successor) leaves the holder as is.
-                if !(legacy && ev.to == cfg.contract_address) {
+                // A move's legacy halves (to a newer contract, on to its owner) leave the holder as is.
+                if !(legacy && (ours(cfg, ev.from) || ours(cfg, ev.to))) {
                     set_owner(st, ev.to, &ev.tokenId.to_string()).await?;
                 }
             }
@@ -136,18 +136,27 @@ async fn backfill(st: &AppState, chain: &RpcChain) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The contracts whose events matter: the current one and, during a migration, the legacy one.
+/// The contracts whose events matter: the current one and the earlier ones drives move from.
 fn contracts(cfg: &crate::Config) -> Vec<Address> {
-    std::iter::once(cfg.contract_address).chain(cfg.legacy_contract_address).collect()
+    std::iter::once(cfg.contract_address).chain(cfg.legacy_contract_addresses.iter().copied()).collect()
 }
 
-/// A `Transfer` on the legacy contract. Sending a drive to the successor is the first half of
-/// a swap (the successor mints the same id to the same holder right after): not a change of
-/// hands, so links, keys and votes stay. Any other legacy transfer is one.
-pub async fn on_legacy_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
-    if to == st.config.contract_address {
-        st.chain.invalidate(token_id);
-        tracing::info!(%token_id, holder = %from, "drive sent to the successor contract (swap)");
+fn ours(cfg: &crate::Config, a: Address) -> bool {
+    a == cfg.contract_address || cfg.legacy_contract_addresses.contains(&a)
+}
+
+/// A `Transfer` on an earlier contract (`contract`). A move sends the drive to a newer
+/// contract, which passes the old token on to its owner and mints the same id to the holder:
+/// those halves are no change of hands, so links, keys and votes stay. Neither is any later
+/// transfer of a token whose drive lives on a newer contract (the owner passing an old token
+/// on). Any other transfer of a drive that still lives on `contract` is one.
+pub async fn on_legacy_transfer(st: &AppState, contract: Address, from: Address, to: Address, token_id: U256) -> AppResult<()> {
+    st.chain.invalidate(token_id);
+    if ours(&st.config, from) || ours(&st.config, to) {
+        tracing::info!(%token_id, %from, %to, "drive moving to a newer contract");
+        return Ok(());
+    }
+    if st.chain.on_legacy(token_id).await? != Some(contract) {
         return Ok(());
     }
     on_transfer(st, from, to, token_id).await
@@ -161,6 +170,11 @@ pub async fn on_mint(st: &AppState, token_id: U256, tier_id: U256) -> AppResult<
         .execute(&st.db)
         .await?;
     Ok(())
+}
+
+async fn recorded_owner(st: &AppState, token: &str) -> AppResult<Option<Address>> {
+    let owner: Option<String> = sqlx::query_scalar("SELECT owner FROM token_owners WHERE token_id = ?").bind(token).fetch_optional(&st.db).await?;
+    Ok(owner.and_then(|o| o.parse().ok()))
 }
 
 async fn set_owner(st: &AppState, to: Address, token: &str) -> AppResult<()> {
@@ -178,6 +192,13 @@ async fn set_owner(st: &AppState, to: Address, token: &str) -> AppResult<()> {
 
 pub async fn on_transfer(st: &AppState, from: Address, to: Address, token_id: U256) -> AppResult<()> {
     st.chain.invalidate(token_id);
+    // A mint of a number the database already knows (a drive moving to a newer contract) is
+    // no change of hands only for its holder: to anyone else (it was sold on the old contract
+    // meanwhile, or rescued for another wallet) it is one, from the holder on record.
+    let from = match from {
+        Address::ZERO => recorded_owner(st, &token_id.to_string()).await?.filter(|holder| *holder != to).unwrap_or(Address::ZERO),
+        from => from,
+    };
     set_owner(st, to, &token_id.to_string()).await?;
     if from == Address::ZERO {
         // A new drive: its capacity is reserved on a volume right away.

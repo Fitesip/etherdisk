@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { ALICE, BOB, installWallet, mintAndSetUp, PASSPHRASE, signIn, upload } from "./wallet";
+import { ALICE, BOB, CAROL, installWallet, mintAndSetUp, PASSPHRASE, signIn, upload } from "./wallet";
 
 const text = (name: string, content: string) => ({ name, mimeType: "text/plain", buffer: Buffer.from(content) });
 
@@ -436,4 +436,31 @@ test("sale: the drive's page tells buyers whether they get the files", async ({ 
   await expect(page.getByRole("button", { name: "Put up for sale" })).toBeVisible();
   await buyer.reload();
   await expect(buyer.getByText(/isn't for sale/)).toBeVisible();
+});
+
+test("contract update: a drive on the previous contract moves to the new one", async ({ page }) => {
+  // Carol's drive #1 is on the previous contract (e2e/api.mjs).
+  await installWallet(page, CAROL);
+  await signIn(page);
+  const card = page.locator('a[href="/drive/1"]');
+  await expect(card.getByText("Needs moving")).toBeVisible();
+  await card.click();
+  const notice = page.getByText("The Etherdisk contract has been updated");
+  await expect(notice).toBeVisible();
+  // Nothing changes before the move, setting it up included.
+  await expect(page.getByRole("heading", { name: /^Set up / })).toHaveCount(0);
+
+  // One transaction: the same number and capacity on the new contract.
+  await page.getByRole("button", { name: "Move drive" }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByText("#1 · 1.0 GB")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Set up / })).toBeVisible();
+  await page.locator('input[placeholder="Passphrase"][autocomplete="new-password"]').fill(PASSPHRASE);
+  await page.getByPlaceholder("Repeat passphrase").fill(PASSPHRASE);
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Create drive" }).click();
+  await upload(page, [text("moved.txt", "on the new contract")]);
+  await expect(page.locator("main ul").last().getByText("moved.txt")).toBeVisible();
+  await page.goto("/drive");
+  await expect(page.locator('a[href="/drive/1"]').getByText("Needs moving")).toHaveCount(0);
 });
