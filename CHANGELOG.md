@@ -9,7 +9,7 @@ Versions: `MAJOR.FEATURE.FIX.YYYYMMDD`
 ## Unreleased
 
 ### Added
-- **A new Etherdisk contract** (to be deployed to mainnet in place of the current one, which has no users yet):
+- **A new Etherdisk contract, v1**, live on mainnet at `0xF129064F806c6b0F87c5d3c5553A0e6E23AC3351` (block 26300426) with its renderer at `0xD1722a7EF4271C53DAe0FEbe7ad7a1Dca1558C73`. It replaces the first contract (`0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`), which had no users and whose sales are closed:
   - **Metadata from a replaceable renderer.** The picture and the metadata are built by a separate contract, `EtherdiskRenderer`. The owner can replace it (`setRenderer`) to fix the picture or the texts without moving the tokens, until `freezeMetadata()` makes the metadata final for good. Marketplaces are told to refresh the cards (ERC-4906 `BatchMetadataUpdate`).
   - **Tiers with colors and a hidden flag.** Each tier has its own color (the drive picture and the site), set at creation; `setTierColor` recolors a tier and refreshes its cards (not after the metadata is frozen). `setTierHidden` takes a tier off the site's lists without touching its drives; the owner or an operator. A new tier (`addTier(capacity, price, color)`) is not on sale until `setTierActive`. Prices change with `setTierPrice`, as before.
   - **Royalties (ERC-2981):** 5% of resales to the owner, read by marketplaces that honor the standard; `setRoyalty`, up to 10%.

@@ -1,6 +1,6 @@
 # Launching on Ethereum mainnet
 
-**The contract on mainnet:** `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`, block 26193612, 2026-10-15; owned by the Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 of 3); the deploy took 3,092,394 gas at 0.139 gwei = 0.000430 ETH. The code on chain matches the repository's build; the source is verified on Etherscan and submitted to Sourcify. Deploy data: `contracts/deployments/chain-1.json`. The next version of the contract (renderer, tier colors, royalties; see the CHANGELOG) replaces it with a new deploy following the steps below.
+**The contract on mainnet:** Etherdisk v1 `0xF129064F806c6b0F87c5d3c5553A0e6E23AC3351`, block 26300426, 2026-10-29, with its renderer `0xD1722a7EF4271C53DAe0FEbe7ad7a1Dca1558C73` (block 26300421); owned by the Safe `0xBDcEBBc53331a741316E4faaCf4bfD99D63Ad449` (2 of 3). The deploy took 1,700,721 + 3,175,629 gas at about 0.127 gwei = 0.000619 ETH. Deploy data and constructor arguments: `contracts/deployments/chain-1.json`. The first contract, `0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0` (block 26193612, 2026-10-15; `contracts/deployments/chain-1.retired.json`), is retired: it had no users, its sales are closed, and it isn't part of the chain of versions (v1 has no `legacy`). Later versions follow docs/MIGRATION.md.
 
 The steps of a mainnet launch. Tiers and prices are in `contracts/mainnet-tiers.env`.
 
