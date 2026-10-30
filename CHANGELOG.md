@@ -6,7 +6,7 @@ Versions: `MAJOR.FEATURE.FIX.YYYYMMDD`
 - **FIX** — fixes, and since 1.2.1 also each single new feature or improvement of an existing one (a release for each);
 - **YYYYMMDD** — the date of the release commit.
 
-## Unreleased
+## 1.3.0.20261030
 
 ### Added
 - **A new Etherdisk contract, v1**, live on mainnet at `0xF129064F806c6b0F87c5d3c5553A0e6E23AC3351` (block 26300426) with its renderer at `0xD1722a7EF4271C53DAe0FEbe7ad7a1Dca1558C73`. It replaces the first contract (`0x15B87e1e71B48919CfD6fd23089642A1BA48aBf0`), which had no users and whose sales are closed:
